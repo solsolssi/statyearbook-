@@ -6,6 +6,7 @@ import time
 from uuid import uuid4
 
 from app.core.config import get_settings
+from app.db.migrations import initialize_default_database
 from app.workflows.report_job_repository import ReportProcessingJobRepository
 from app.workflows.report_processing import ReportProcessingError, ReportProcessingWorkflow
 
@@ -43,6 +44,7 @@ def main() -> None:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     args = parser.parse_args()
+    initialize_default_database()
     worker = ReportProcessingWorker()
     if args.once:
         worker.run_once()

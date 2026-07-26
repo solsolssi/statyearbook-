@@ -113,7 +113,8 @@ PROFILE_LLM_MODEL=gpt-5-mini
 ### Railway 백엔드
 
 Railway에서 GitHub 저장소를 연결한 뒤 백엔드 서비스를 만듭니다. 저장소 루트의
-`railway.json`은 루트 `Dockerfile`로 FastAPI 서버를 빌드합니다.
+`railway.json`은 루트 `Dockerfile`로 FastAPI 서버를 빌드하며, 배포 전에 DB
+마이그레이션을 실행하고 `/ready`로 DB 연결까지 확인합니다.
 
 필수 환경 변수:
 
@@ -162,6 +163,10 @@ JOB_LEASE_SECONDS=300
 python -m app.workflows.report_worker
 ```
 
+worker 서비스의 Config File을 `/railway.worker.json`으로 지정하면 Start Command와
+재시작 정책이 자동 적용됩니다. API 서비스는 `/railway.json`을 사용하고
+`JOB_EXECUTOR_BACKEND=worker`로 설정합니다.
+
 단일 백엔드 서비스만 운영한다면 기존처럼 `SOURCE_STORAGE_BACKEND=local`,
 `JOB_EXECUTOR_BACKEND=inprocess`를 사용하면 됩니다.
 
@@ -178,6 +183,9 @@ VITE_API_BASE_URL=https://your-railway-backend.up.railway.app
 
 Vercel 배포 URL이 확정되면 Railway의 `ALLOWED_ORIGINS` 값을 그 URL로 갱신한 뒤
 백엔드 서비스를 재배포합니다.
+
+작업 실패율, 단계별 처리 시간, LLM 토큰·비용, 원본 파일 보존과 PostgreSQL 백업
+설정은 [배포·운영 가이드](docs/deployment-operations.md)를 참고하세요.
 
 ## 구조
 

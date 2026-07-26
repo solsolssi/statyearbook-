@@ -4,7 +4,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.api.operations import router as operations_router
 from app.core.config import get_settings
+from app.db.connection import configured_database_backend, connect
 from app.db.migrations import initialize_default_database
 
 
@@ -29,8 +31,19 @@ app.add_middleware(
 )
 
 app.include_router(router, prefix=settings.api_prefix)
+app.include_router(operations_router, prefix=settings.api_prefix)
 
 
 @app.get("/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/ready")
+def readiness_check() -> dict[str, str]:
+    with connect() as connection:
+        connection.execute("SELECT 1").fetchone()
+    return {
+        "status": "ready",
+        "database": configured_database_backend(),
+    }

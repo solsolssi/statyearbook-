@@ -28,6 +28,8 @@ class Settings(BaseModel):
     object_storage_secret_key: str = ""
     job_executor_backend: str = "inprocess"
     job_lease_seconds: int = 300
+    completed_source_retention_days: int = 365
+    failed_source_retention_days: int = 90
 
 
 @lru_cache
@@ -60,6 +62,12 @@ def get_settings() -> Settings:
         object_storage_secret_key=env_value("OBJECT_STORAGE_SECRET_KEY"),
         job_executor_backend=env_value("JOB_EXECUTOR_BACKEND", default="inprocess"),
         job_lease_seconds=int(env_value("JOB_LEASE_SECONDS", default="300")),
+        completed_source_retention_days=int(
+            env_value("COMPLETED_SOURCE_RETENTION_DAYS", default="365")
+        ),
+        failed_source_retention_days=int(
+            env_value("FAILED_SOURCE_RETENTION_DAYS", default="90")
+        ),
     )
 
 
