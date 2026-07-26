@@ -83,9 +83,48 @@ REQUIRED_RULE_DEFINITIONS: tuple[ValidationRuleDefinition, ...] = (
 
 RULE_DEFINITION_BY_KEY = {definition.key: definition for definition in REQUIRED_RULE_DEFINITIONS}
 
+VALIDATION_DISPLAY_ORDER = (
+    ("sum", "합계 검수", True),
+    ("ratio", "비율 검수", True),
+    ("spelling", "오탈자 검수", True),
+    ("translation", "번역 검수", True),
+    ("metadata", "메타정보 검수", True),
+    ("outlier", "이상치 검수", False),
+    ("blue", "파란색 표기 확인", True),
+)
+
 
 def rule_definition_payload() -> list[dict[str, str]]:
     return [definition.to_dict() for definition in REQUIRED_RULE_DEFINITIONS]
+
+
+def validation_catalog_payload() -> list[dict[str, object]]:
+    """Return the display contract shared by API clients and exports."""
+
+    definitions = RULE_DEFINITION_BY_KEY
+    payload: list[dict[str, object]] = []
+    for order, (key, label, default_visible) in enumerate(VALIDATION_DISPLAY_ORDER):
+        definition = definitions.get(key)
+        payload.append(
+            {
+                "key": key,
+                "label": label,
+                "order": order,
+                "default_visible": default_visible,
+                "default_status": (
+                    definition.default_status if definition else ValidationStatus.NEEDS_REVIEW.value
+                ),
+                "default_severity": (
+                    definition.default_severity if definition else Severity.WARNING.value
+                ),
+                "description": (
+                    definition.description
+                    if definition
+                    else "HWPX 원문에서 파란색으로 표시된 검수 대상을 확인합니다."
+                ),
+            }
+        )
+    return payload
 
 
 def rule_spec(rule_key: str, spec: dict) -> dict:

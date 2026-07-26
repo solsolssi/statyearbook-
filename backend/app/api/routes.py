@@ -2,22 +2,23 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, s
 
 from app.core.config import get_settings
 from app.models.report import (
+    ReportOverviewPayload,
     ReportPayload,
     ReportProcessingJob,
     StatTable,
     ValidationProfileApprovalRequest,
     ValidationProfileSummary,
+    ValidationCatalogItem,
     ValidationRunResult,
 )
+from app.application.imports import ReportImportApplicationService
+from app.application.report_queries import ReportQueryService
+from app.application.validation_operations import ValidationApplicationService
 from app.services.report_service import get_report_service
 from app.services.report_import_service import (
     ReportImportRequest,
-    ReportImportService,
     ReportUploadError,
 )
-from app.validation.profile_repository import ValidationProfileRepository
-from app.validation.profiles import ValidationProfile
-from app.validation.run_validations import run_validations
 from app.workflows.report_processing import (
     ReportProcessingError,
     ReportProcessingWorkflow,
@@ -29,17 +30,22 @@ router = APIRouter()
 
 @router.get("/report", response_model=ReportPayload)
 def get_report(report_id: int | None = Query(default=None)) -> ReportPayload:
-    return get_report_service().get_payload_for_report(report_id)
+    return ReportQueryService(get_report_service()).legacy_payload(report_id)
+
+
+@router.get("/report/overview", response_model=ReportOverviewPayload)
+def get_report_overview(report_id: int | None = Query(default=None)) -> ReportOverviewPayload:
+    return ReportQueryService(get_report_service()).overview(report_id)
 
 
 @router.get("/tables", response_model=list[StatTable])
 def list_tables(report_id: int | None = Query(default=None)) -> list[StatTable]:
-    return get_report_service().list_tables(report_id)
+    return ReportQueryService(get_report_service()).list_tables(report_id)
 
 
 @router.get("/tables/{table_id}", response_model=StatTable)
 def get_table(table_id: str, report_id: int | None = Query(default=None)) -> StatTable:
-    table = get_report_service().get_table(table_id, report_id)
+    table = ReportQueryService(get_report_service()).table_detail(table_id, report_id)
     if table is None:
         raise HTTPException(status_code=404, detail="Table not found")
     return table
@@ -47,8 +53,7 @@ def get_table(table_id: str, report_id: int | None = Query(default=None)) -> Sta
 
 @router.post("/validation/run", response_model=ValidationRunResult)
 def run_validation(report_id: int | None = Query(default=None)) -> ValidationRunResult:
-    result = run_validations(report_id=report_id)
-    return ValidationRunResult(**result)
+    return ValidationApplicationService().run(report_id)
 
 
 @router.post(
@@ -67,9 +72,9 @@ async def create_report_import(
 ) -> ReportProcessingJob:
     """Stream one workbook/document into a queued import and validation job."""
 
-    import_service = ReportImportService()
+    application = ReportImportApplicationService(executor=job_executor(background_tasks))
     try:
-        job = await import_service.create_job(
+        job = await application.create(
             ReportImportRequest(
                 filename=filename,
                 year=year,
@@ -81,14 +86,14 @@ async def create_report_import(
         )
     except ReportUploadError as error:
         raise HTTPException(status_code=error.status_code, detail=str(error)) from error
-    job_id = int(job["id"])
-    job_executor(background_tasks).submit(job_id)
     return ReportProcessingJob(**job)
 
 
 @router.get("/imports/{job_id}", response_model=ReportProcessingJob)
 def get_report_import(job_id: int) -> ReportProcessingJob:
-    job = ReportProcessingWorkflow().get_job(job_id)
+    job = ReportImportApplicationService(
+        executor=QueuedJobExecutor(),
+    ).get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="가져오기 작업을 찾을 수 없습니다.")
     return ReportProcessingJob(**job)
@@ -100,12 +105,11 @@ def get_report_import(job_id: int) -> ReportProcessingJob:
     status_code=status.HTTP_202_ACCEPTED,
 )
 def retry_report_import(job_id: int, background_tasks: BackgroundTasks) -> ReportProcessingJob:
-    workflow = ReportProcessingWorkflow()
-    job = workflow.get_job(job_id)
+    job = ReportImportApplicationService(
+        executor=job_executor(background_tasks),
+    ).retry(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="가져오기 작업을 찾을 수 없습니다.")
-    job = workflow.queue_retry(job_id)
-    job_executor(background_tasks).submit(job_id, retry=True)
     return ReportProcessingJob(**job)
 
 
@@ -131,8 +135,12 @@ def job_executor(background_tasks: BackgroundTasks) -> JobExecutor:
 
 @router.get("/validation/profiles", response_model=list[ValidationProfileSummary])
 def list_validation_profiles() -> list[ValidationProfileSummary]:
-    repository = ValidationProfileRepository()
-    return [profile_to_summary(profile) for profile in repository.list_profiles()]
+    return ValidationApplicationService().list_profiles()
+
+
+@router.get("/validation/catalog", response_model=list[ValidationCatalogItem])
+def get_validation_catalog() -> list[ValidationCatalogItem]:
+    return ValidationApplicationService().catalog()
 
 
 @router.post("/validation/profiles/{profile_id}/approve", response_model=ValidationProfileSummary)
@@ -140,27 +148,10 @@ def approve_validation_profile(
     profile_id: int,
     payload: ValidationProfileApprovalRequest,
 ) -> ValidationProfileSummary:
-    repository = ValidationProfileRepository()
-    profile = repository.approve_profile(profile_id, approved_by=payload.approved_by)
+    profile = ValidationApplicationService().approve_profile(
+        profile_id,
+        approved_by=payload.approved_by,
+    )
     if profile is None:
         raise HTTPException(status_code=404, detail="Validation profile not found")
-    return profile_to_summary(profile)
-
-
-def profile_to_summary(profile: ValidationProfile) -> ValidationProfileSummary:
-    return ValidationProfileSummary(
-        id=profile.id,
-        table_code=profile.table_code,
-        table_title=profile.table_title,
-        structure_signature=profile.structure_signature,
-        table_type=profile.table_type,
-        status=profile.status,
-        source=profile.source,
-        rules_count=len(profile.check_specs),
-        requires_llm_review=bool(profile.rules.get("requires_llm_review")),
-        notes=profile.notes,
-        created_at=profile.created_at,
-        updated_at=profile.updated_at,
-        approved_at=profile.approved_at,
-        approved_by=profile.approved_by,
-    )
+    return profile

@@ -1,12 +1,12 @@
 import { useLayoutEffect, useRef } from "react";
 import { Search, SlidersHorizontal } from "lucide-react";
 
-import type { StatTable, TableStatus } from "../types";
+import type { StatTableSummary, TableStatus } from "../types";
 import { groupedValidationIssueCount } from "../utils/validationGrouping";
 import { StatusBadge } from "./StatusBadge";
 
 interface TableListProps {
-  tables: StatTable[];
+  tables: StatTableSummary[];
   activeTableId: string;
   query: string;
   filter: TableStatus | "all" | "has_issues";
@@ -106,7 +106,7 @@ export function TableList({
                   <span className="list-row__name">
                     <small>{table.code}</small>
                     <strong>{table.title}</strong>
-                    {table.parts.length > 0 ? <em>하위 표 {table.parts.length}개</em> : null}
+                    {table.part_count > 0 ? <em>하위 표 {table.part_count}개</em> : null}
                   </span>
                 </span>
                 <span className="count-cell">{reviewCount}</span>

@@ -1,10 +1,13 @@
 import type {
   ReportSummary,
   StatTable,
+  StatTableSummary,
   StatTablePart,
   TableStatus,
   ValidationIssue,
 } from "../types";
+
+type ValidationTableLike = StatTable | StatTableSummary;
 
 export const VALIDATION_CHECK_TYPES = [
   "합계 검수",
@@ -18,8 +21,11 @@ export const VALIDATION_CHECK_TYPES = [
 
 export const DEFAULT_HIDDEN_VALIDATION_TYPES = new Set<string>(["이상치 검수"]);
 
-export function validationTypesForTables(tables: StatTable[]) {
-  const discovered = new Set(VALIDATION_CHECK_TYPES);
+export function validationTypesForTables(
+  tables: ValidationTableLike[],
+  preferredOrder: readonly string[] = VALIDATION_CHECK_TYPES,
+) {
+  const discovered = new Set(preferredOrder);
   for (const table of tables) {
     for (const check of table.checks) {
       discovered.add(check.type as (typeof VALIDATION_CHECK_TYPES)[number]);
@@ -61,31 +67,32 @@ function partWithVisibleChecks(part: StatTablePart, hiddenTypes: ReadonlySet<str
   };
 }
 
-export function tablesWithValidationVisibility(
-  tables: StatTable[],
+export function tablesWithValidationVisibility<T extends ValidationTableLike>(
+  tables: T[],
   hiddenTypes: ReadonlySet<string>,
-): StatTable[] {
+): T[] {
   if (hiddenTypes.size === 0) {
     return tables;
   }
 
   return tables.map((table) => {
     const checks = visibleChecks(table.checks, hiddenTypes);
-    const parts = table.parts.map((part) => partWithVisibleChecks(part, hiddenTypes));
     const status = statusFromChecks(checks);
 
     return {
       ...table,
       checks,
-      parts,
+      ...("parts" in table
+        ? { parts: table.parts.map((part) => partWithVisibleChecks(part, hiddenTypes)) }
+        : {}),
       ...status,
-    };
+    } as T;
   });
 }
 
 export function summaryWithValidationVisibility(
   summary: ReportSummary,
-  tables: StatTable[],
+  tables: ValidationTableLike[],
 ): ReportSummary {
   const issueCounts: Record<string, number> = {};
   let normalCount = 0;

@@ -24,6 +24,10 @@ from app.export.validation_workbooks import (
     write_header_row,
     write_highlighted_workbook,
 )
+from app.export.validation_presentation import (
+    PresentedValidationCheck,
+    build_validation_presentations,
+)
 
 
 CORE_CHECK_TYPES = (
@@ -71,6 +75,12 @@ def export_core_validation_workbooks(
             int(table["id"]): parse_contact_metadata(table["source"] or "")
             for table in tables
         }
+        validation_tables = validation_table_map(db_path, resolved_report_id)
+        presentations = build_validation_presentations(
+            connection,
+            checks,
+            validation_tables,
+        )
 
         year_label = str(report["year"])
         highlighted_path = output_dir / f"{year_label}_통계연보_4대검수_하이라이트.xlsx"
@@ -83,6 +93,7 @@ def export_core_validation_workbooks(
             tables=tables,
             checks=checks,
             contacts=contacts,
+            presentations=presentations,
         )
         write_core_validation_index(
             validation_index_path,
@@ -90,7 +101,8 @@ def export_core_validation_workbooks(
             contacts=contacts,
             highlighted_filename=highlighted_path.name,
             sheet_names=sheet_names,
-            validation_tables=validation_table_map(db_path, resolved_report_id),
+            validation_tables=validation_tables,
+            presentations=presentations,
         )
 
     validate_core_workbooks(
@@ -145,6 +157,7 @@ def write_core_validation_index(
     highlighted_filename: str,
     sheet_names: dict[str, str],
     validation_tables: dict[int, Any],
+    presentations: dict[int, PresentedValidationCheck] | None = None,
 ) -> None:
     workbook = Workbook()
     sheet = workbook.active
@@ -169,6 +182,8 @@ def write_core_validation_index(
     ]
     write_header_row(sheet, 1, headers)
     for row_index, check in enumerate(checks, start=2):
+        presentation = (presentations or {}).get(int(check["id"]))
+        issue = presentation.issue if presentation is not None else None
         table_id = int(check["table_id"])
         contact = contacts[table_id]
         table = validation_tables[table_id]
@@ -177,15 +192,15 @@ def write_core_validation_index(
             base_table_code(check["code"]),
             check["title"],
             check["code"],
-            check["status"],
-            check["check_type"],
+            issue.status if issue else check["status"],
+            issue.type if issue else check["check_type"],
             row_label,
             column_label,
-            check["current_value"],
-            check["expected_value"] or "",
-            check["difference"] or "",
-            check["formula"] or "",
-            check["detail"] or "",
+            issue.current_value if issue else check["current_value"],
+            (issue.expected_value if issue else check["expected_value"]) or "",
+            (issue.difference if issue else check["difference"]) or "",
+            (issue.formula if issue else check["formula"]) or "",
+            (issue.detail if issue else check["detail"]) or "",
             contact.department,
             contact.officer,
             contact.extension,

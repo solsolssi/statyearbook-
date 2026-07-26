@@ -1,13 +1,19 @@
 import { useEffect, useMemo } from "react";
 
-import type { ReportOption, ReportSummary, StatTable, TableStatus } from "../types";
+import type {
+  ReportOption,
+  ReportSummary,
+  StatTable,
+  StatTableSummary,
+  TableStatus,
+} from "../types";
 import { ReportSummaryPanel } from "./ReportSummaryPanel";
 import { TableList } from "./TableList";
 import { TablePreview } from "./TablePreview";
 
 type FilterValue = TableStatus | "all" | "has_issues";
 
-function matchesWorkspaceFilter(table: StatTable, query: string, filter: FilterValue) {
+function matchesWorkspaceFilter(table: StatTableSummary, query: string, filter: FilterValue) {
   const normalizedQuery = query.trim().toLowerCase();
   const hasQueryMatch =
     !normalizedQuery ||
@@ -27,7 +33,7 @@ interface ReportWorkspaceProps {
   datasetLabel: string;
   summary: ReportSummary;
   availableReports: ReportOption[];
-  tables: StatTable[];
+  tables: StatTableSummary[];
   selectedTableId: string;
   selectedReportId: string;
   selectedTableDetail?: StatTable | null;
@@ -77,10 +83,7 @@ export function ReportWorkspace({
   const activeId = filteredTables.some((table) => table.id === selectedTableId)
     ? selectedTableId
     : filteredTables[0]?.id ?? "";
-  const selectedTable =
-    selectedTableDetail?.id === activeId
-      ? selectedTableDetail
-      : tables.find((table) => table.id === activeId);
+  const selectedTable = selectedTableDetail?.id === activeId ? selectedTableDetail : null;
 
   useEffect(() => {
     if (activeId && selectedTableId !== activeId) {

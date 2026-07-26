@@ -1,10 +1,10 @@
 import { ArrowRight, BarChart3, FileText, Newspaper } from "lucide-react";
 
-import type { PressInsight, StatTable } from "../types";
+import type { PressInsight, StatTableSummary } from "../types";
 
 interface PressPageProps {
   insights: PressInsight[];
-  tables: StatTable[];
+  tables: StatTableSummary[];
   onOpenTable: (tableId: string) => void;
 }
 

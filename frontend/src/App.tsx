@@ -6,6 +6,7 @@ import { PressPage } from "./components/PressPage";
 import { ReportWorkspace } from "./components/ReportWorkspace";
 import { useReport } from "./hooks/useReport";
 import { useReportImport } from "./hooks/useReportImport";
+import { useValidationCatalog } from "./hooks/useValidationCatalog";
 import { fetchTable } from "./api/reportApi";
 import type { StatTable, TableStatus } from "./types";
 import {
@@ -35,6 +36,11 @@ export default function App() {
   );
   const [reportRefreshKey, setReportRefreshKey] = useState(0);
   const report = useReport(selectedReportId || undefined, reportRefreshKey);
+  const validationCatalog = useValidationCatalog();
+  const catalogTypes = useMemo(
+    () => validationCatalog.map((item) => item.label),
+    [validationCatalog],
+  );
 
   const handleImportCompleted = useCallback((completed: { report_id: number | null }) => {
     setSelectedReportId(completed.report_id ? String(completed.report_id) : "");
@@ -55,8 +61,8 @@ export default function App() {
         ...rawTables,
         ...(selectedTableDetail ? [selectedTableDetail] : []),
         ...(detailTable ? [detailTable] : []),
-      ]),
-    [detailTable, rawTables, selectedTableDetail],
+      ], catalogTypes),
+    [catalogTypes, detailTable, rawTables, selectedTableDetail],
   );
   const tables = useMemo(
     () => tablesWithValidationVisibility(rawTables, hiddenValidationTypes),

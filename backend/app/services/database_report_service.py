@@ -14,10 +14,12 @@ from app.models.report import (
     ColumnDefinition,
     Metric,
     PressInsight,
+    ReportOverviewPayload,
     ReportPayload,
     ReportSummary,
     StatTable,
     StatTablePart,
+    StatTableSummary,
     TableMetadata,
     TableHierarchyItem,
     ValidationIssue,
@@ -43,6 +45,26 @@ class DatabaseReportService:
         return ReportPayload(
             summary=self._summary_from_tables(report, tables),
             tables=tables,
+            press_insights=self._press_insights_from_tables(tables),
+            available_reports=self.list_reports(),
+        )
+
+    def get_overview_for_report(self, report_id: int | None = None) -> ReportOverviewPayload:
+        """Return list data without serializing every source cell.
+
+        The existing report endpoint remains available for compatibility. New
+        clients use this projection and request one table detail on demand.
+        """
+
+        report = self._resolve_report(report_id)
+        tables = self.list_tables(
+            report_id,
+            include_highlights=False,
+            include_passing_checks=False,
+        )
+        return ReportOverviewPayload(
+            summary=self._summary_from_tables(report, tables),
+            tables=[table_summary(table) for table in tables],
             press_insights=self._press_insights_from_tables(tables),
             available_reports=self.list_reports(),
         )
@@ -380,6 +402,24 @@ class DatabaseReportService:
             (report_id,),
         ).fetchone()
         return int(row["id"]) if row else None
+
+
+def table_summary(table: StatTable) -> StatTableSummary:
+    return StatTableSummary(
+        id=table.id,
+        code=table.code,
+        title=table.title,
+        title_en=table.title_en,
+        section_title=table.section_title,
+        domain=table.domain,
+        status=table.status,
+        status_label=table.status_label,
+        theme=table.theme,
+        part_count=len(table.parts),
+        summary=table.summary,
+        key_figures=table.key_figures,
+        checks=table.checks,
+    )
 
 
 def chunks(values: list[int], size: int = 800) -> list[list[int]]:

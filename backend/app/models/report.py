@@ -154,6 +154,24 @@ class StatTable(BaseModel):
     metadata: TableMetadata
 
 
+class StatTableSummary(BaseModel):
+    """List-view projection that deliberately excludes table cells."""
+
+    id: str
+    code: str
+    title: str
+    title_en: str
+    section_title: str
+    domain: str
+    status: TableStatus
+    status_label: str
+    theme: Literal["blue", "red", "green"]
+    part_count: int = 0
+    summary: list[str] = Field(default_factory=list)
+    key_figures: list[Metric] = Field(default_factory=list)
+    checks: list[ValidationIssue] = Field(default_factory=list)
+
+
 class ReportSummary(BaseModel):
     report_id: int | None = None
     file_name: str
@@ -187,6 +205,23 @@ class ReportPayload(BaseModel):
     tables: list[StatTable]
     press_insights: list[PressInsight]
     available_reports: list[ReportOption] = Field(default_factory=list)
+
+
+class ReportOverviewPayload(BaseModel):
+    summary: ReportSummary
+    tables: list[StatTableSummary]
+    press_insights: list[PressInsight]
+    available_reports: list[ReportOption] = Field(default_factory=list)
+
+
+class ValidationCatalogItem(BaseModel):
+    key: str
+    label: str
+    order: int
+    default_visible: bool = True
+    default_status: str
+    default_severity: str
+    description: str
 
 
 class ValidationProfileSummary(BaseModel):

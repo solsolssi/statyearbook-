@@ -15,8 +15,10 @@ from openpyxl.utils import get_column_letter
 from app.core.contact_metadata import ContactMetadata, parse_contact_metadata
 from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
 from app.db.schema import init_db
-from app.validation.highlights import highlight_cells_for
-from app.validation.spec_repository import load_rule_specs_by_id
+from app.export.validation_presentation import (
+    PresentedValidationCheck,
+    build_validation_presentations,
+)
 from app.validation.models import ValidationTable, restore_hyphenated_line_breaks
 from app.validation.rules import combined_row_label
 from app.validation.repository import ValidationRepository
@@ -84,6 +86,12 @@ def export_validation_workbooks(
         ).fetchall()
 
         contacts = {int(table["id"]): parse_contact_metadata(table["source"] or "") for table in tables}
+        validation_tables = validation_table_map(db_path, int(report["id"]))
+        presentations = build_validation_presentations(
+            connection,
+            failing_checks,
+            validation_tables,
+        )
         year_label = str(report["year"])
         metadata_path = output_dir / f"{year_label}_통계연보_메타데이터.xlsx"
         highlighted_path = output_dir / f"{year_label}_통계연보_검수표_하이라이트.xlsx"
@@ -99,6 +107,7 @@ def export_validation_workbooks(
             tables=tables,
             checks=failing_checks,
             contacts=contacts,
+            presentations=presentations,
         )
         write_validation_index_workbook(
             validation_index_path,
@@ -106,7 +115,8 @@ def export_validation_workbooks(
             contacts=contacts,
             highlighted_filename=highlighted_path.name,
             sheet_names=validation_sheet_names,
-            validation_tables=validation_table_map(db_path, int(report["id"])),
+            validation_tables=validation_tables,
+            presentations=presentations,
         )
 
     validate_generated_workbooks(
@@ -218,6 +228,7 @@ def write_highlighted_workbook(
     tables: list[DatabaseRow],
     checks: list[DatabaseRow],
     contacts: dict[int, ContactMetadata],
+    presentations: dict[int, PresentedValidationCheck] | None = None,
 ) -> dict[str, str]:
     del run_id
     workbook = Workbook()
@@ -244,6 +255,7 @@ def write_highlighted_workbook(
             tables=tables_by_base[base_code],
             checks_by_table=checks_by_table,
             contacts=contacts,
+            presentations=presentations or {},
         )
 
     if not workbook.worksheets:
@@ -259,6 +271,7 @@ def write_statistic_sheet(
     tables: list[DatabaseRow],
     checks_by_table: dict[int, list[DatabaseRow]],
     contacts: dict[int, ContactMetadata],
+    presentations: dict[int, PresentedValidationCheck],
 ) -> None:
     first = tables[0]
     base_code = base_table_code(first["code"])
@@ -313,6 +326,7 @@ def write_statistic_sheet(
             connection=connection,
             table=table,
             checks=table_checks,
+            presentations=presentations,
             start_row=current_row,
             display_columns=display_columns,
         )
@@ -334,6 +348,7 @@ def write_table_section(
     connection: DatabaseConnection,
     table: DatabaseRow,
     checks: list[DatabaseRow],
+    presentations: dict[int, PresentedValidationCheck],
     start_row: int,
     display_columns: int,
 ) -> int:
@@ -368,12 +383,11 @@ def write_table_section(
         if cell["is_header"]:
             excel_cell.fill = PatternFill("solid", fgColor=BLUE)
 
-    validation_table = validation_table_from_cells(table, cells)
-    specs = load_rule_specs_by_id(connection, checks) if checks else {}
     applied_roles: dict[tuple[int, int], str] = {}
     for check in checks:
-        spec = specs.get(check["rule_id"])
-        for highlight in highlight_cells_for(check, spec, validation_table.matrix):
+        presentation = presentations.get(int(check["id"]))
+        highlights = presentation.issue.highlight_cells if presentation is not None else []
+        for highlight in highlights:
             if highlight.row_index > max_row or highlight.col_index > max_col:
                 continue
             key = (highlight.row_index, highlight.col_index)
@@ -382,7 +396,7 @@ def write_table_section(
                 continue
             applied_roles[key] = highlight.role
             excel_cell = sheet.cell(table_start_row + highlight.row_index, highlight.col_index + 1)
-            apply_highlight(excel_cell, status=check["status"], role=highlight.role)
+            apply_highlight(excel_cell, status=check["status"], role=str(highlight.role))
             if highlight.role == "target":
                 append_issue_comment(excel_cell, check)
 
@@ -416,34 +430,6 @@ def write_table_section(
         sheet.cell(detail_start + 2, 1).font = Font(name="Arial", size=9, color=MUTED)
         return detail_start + 3
     return detail_start + 2 + len(checks)
-
-
-def validation_table_from_cells(
-    table: DatabaseRow,
-    cells: list[DatabaseRow],
-) -> ValidationTable:
-    from app.validation.models import ValidationCell
-
-    return ValidationTable(
-        id=int(table["id"]),
-        report_id=int(table["report_id"]),
-        code=table["code"],
-        title=table["title"],
-        unit=table["unit"],
-        base_date=table["base_date"],
-        source=table["source"],
-        note=table["note"],
-        cells=[
-            ValidationCell(
-                row_index=int(cell["row_index"]),
-                col_index=int(cell["col_index"]),
-                text_value=cell["text_value"],
-                numeric_value=None,
-                is_header=bool(cell["is_header"]),
-            )
-            for cell in cells
-        ],
-    )
 
 
 def check_axis_labels(
@@ -499,6 +485,7 @@ def write_validation_index_workbook(
     highlighted_filename: str,
     sheet_names: dict[str, str],
     validation_tables: dict[int, ValidationTable],
+    presentations: dict[int, PresentedValidationCheck] | None = None,
 ) -> None:
     workbook = Workbook()
     sheet = workbook.active
@@ -506,17 +493,19 @@ def write_validation_index_workbook(
     headers = ["번호", "통계명", "검수내용", "소속", "주무관", "내선번호", "출처"]
     write_header_row(sheet, 1, headers)
     for row_index, check in enumerate(checks, start=2):
+        issue = (presentations or {}).get(int(check["id"]))
+        presented = issue.issue if issue is not None else None
         contact = contacts[int(check["table_id"])]
         table = validation_tables[int(check["table_id"])]
         row_label, column_label = check_axis_labels(table, check)
         detail = (
-            f"{check['check_type']}\n"
+            f"{presented.type if presented else check['check_type']}\n"
             f"표 구분: {check['code']}\n"
             f"행: {row_label}\n"
             f"열: {column_label}\n"
-            f"현재값: {check['current_value']}\n"
-            f"검수값: {check['expected_value'] or ''}\n"
-            f"차이: {check['difference'] or ''}"
+            f"현재값: {presented.current_value if presented else check['current_value']}\n"
+            f"검수값: {(presented.expected_value if presented else check['expected_value']) or ''}\n"
+            f"차이: {(presented.difference if presented else check['difference']) or ''}"
         )
         values = [
             base_table_code(check["code"]),

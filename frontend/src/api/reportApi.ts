@@ -1,4 +1,4 @@
-import type { ReportPayload, StatTable } from "../types";
+import type { ReportPayload, StatTable, ValidationCatalogItem } from "../types";
 
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
 const API_BASE_URL = normalizeApiBaseUrl(
@@ -19,9 +19,17 @@ export interface ReportImportJob {
 
 export async function fetchReport(reportId?: string): Promise<ReportPayload> {
   return requestJson<ReportPayload>(
-    apiPath("/api/report", { report_id: reportId }),
+    apiPath("/api/report/overview", { report_id: reportId }),
     undefined,
     "통계연보 데이터를 불러오지 못했습니다.",
+  );
+}
+
+export async function fetchValidationCatalog(): Promise<ValidationCatalogItem[]> {
+  return requestJson<ValidationCatalogItem[]>(
+    "/api/validation/catalog",
+    undefined,
+    "검수 항목 정보를 불러오지 못했습니다.",
   );
 }
 

@@ -143,6 +143,22 @@ export interface StatTable {
   metadata: TableMetadata;
 }
 
+export interface StatTableSummary {
+  id: string;
+  code: string;
+  title: string;
+  title_en: string;
+  section_title: string;
+  domain: string;
+  status: TableStatus;
+  status_label: string;
+  theme: "blue" | "red" | "green";
+  part_count: number;
+  summary: string[];
+  key_figures: Metric[];
+  checks: ValidationIssue[];
+}
+
 export interface ReportSummary {
   report_id: number | null;
   file_name: string;
@@ -173,7 +189,17 @@ export interface PressInsight {
 
 export interface ReportPayload {
   summary: ReportSummary;
-  tables: StatTable[];
+  tables: StatTableSummary[];
   press_insights: PressInsight[];
   available_reports: ReportOption[];
+}
+
+export interface ValidationCatalogItem {
+  key: string;
+  label: string;
+  order: number;
+  default_visible: boolean;
+  default_status: string;
+  default_severity: string;
+  description: string;
 }

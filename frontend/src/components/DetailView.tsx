@@ -1,8 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
-  ChevronLeft,
-  ChevronRight,
   Download,
   FileCode2,
 } from "lucide-react";
@@ -24,13 +22,14 @@ import {
   validationDisplayGroupKey,
 } from "../utils/validationGrouping";
 import { firstFocusableCheck, resolveIssueLocation } from "../utils/validationLocation";
+import { useValidationSelection } from "../hooks/useValidationSelection";
 import { DataGrid } from "./DataGrid";
 import { StatusBadge } from "./StatusBadge";
 import { VisualPanel } from "./VisualPanel";
 import { ValidationTypeFilter } from "./ValidationTypeFilter";
-
-type DetailTab = "checks" | "changes" | "visuals" | "metadata";
-type CheckFilter = "all" | "passed" | "review" | "error";
+import { DetailTabs, type DetailTab } from "./detail/DetailTabs";
+import { MetadataGrid } from "./detail/MetadataGrid";
+import { ValidationResultPanel } from "./detail/ValidationResultPanel";
 
 interface CheckTargetLocation {
   row: string;
@@ -38,7 +37,7 @@ interface CheckTargetLocation {
   isHeader: boolean;
 }
 
-interface DisplayCheck extends ValidationIssue {
+export interface DisplayCheck extends ValidationIssue {
   checks: ValidationIssue[];
   targetLocations: CheckTargetLocation[];
   targetCount: number;
@@ -62,39 +61,6 @@ interface DetailViewProps {
   onShowAllValidationTypes: () => void;
   onHideAllValidationTypes: () => void;
   onBack: () => void;
-}
-
-const checkFilters: Array<{ id: CheckFilter; label: string }> = [
-  { id: "all", label: "전체" },
-  { id: "passed", label: "통과" },
-  { id: "review", label: "확인 필요" },
-  { id: "error", label: "오류 의심" },
-];
-
-const tabs: Array<{ id: DetailTab; label: string }> = [
-  { id: "checks", label: "검수 결과" },
-  { id: "changes", label: "전년도 비교" },
-  { id: "visuals", label: "시각화" },
-  { id: "metadata", label: "출처·메타정보" },
-];
-
-function checksForFilter<T extends { status: string }>(
-  filter: CheckFilter,
-  allChecks: T[],
-  passedChecks: T[],
-  reviewChecks: T[],
-  errorChecks: T[],
-) {
-  if (filter === "passed") {
-    return passedChecks;
-  }
-  if (filter === "review") {
-    return reviewChecks;
-  }
-  if (filter === "error") {
-    return errorChecks;
-  }
-  return allChecks;
 }
 
 function shouldExpandCalculationFamily(check: ValidationIssue) {
@@ -626,53 +592,6 @@ function CalculationUsageList({ part, check }: { part: StatTablePart; check: Dis
   );
 }
 
-function MetadataGrid({
-  part,
-  difference,
-}: {
-  part: StatTablePart;
-  difference?: string;
-}) {
-  const hasProblem = (label: string) => difference?.includes(label) ?? false;
-
-  return (
-    <dl className="metadata-grid">
-      <div className={hasProblem("기준일") ? "is-problem" : ""}>
-        <dt>기준일</dt>
-        <dd>{part.metadata.base_date_display || "-"}</dd>
-      </div>
-      <div className={hasProblem("단위") ? "is-problem" : ""}>
-        <dt>단위</dt>
-        <dd>{part.metadata.unit_display || "-"}</dd>
-      </div>
-      <div>
-        <dt>최종 수정 일자</dt>
-        <dd>{part.updated_at}</dd>
-      </div>
-      <div className={hasProblem("출처") ? "is-problem" : ""}>
-        <dt>소속</dt>
-        <dd>{part.metadata.source_department || "-"}</dd>
-      </div>
-      <div className={hasProblem("출처") ? "is-problem" : ""}>
-        <dt>이름</dt>
-        <dd>{part.metadata.source_officer || "-"}</dd>
-      </div>
-      <div className={hasProblem("출처") ? "is-problem" : ""}>
-        <dt>내선번호</dt>
-        <dd>{part.metadata.source_extension || "-"}</dd>
-      </div>
-      <div className={`metadata-grid__wide ${hasProblem("출처") ? "is-problem" : ""}`}>
-        <dt>출처</dt>
-        <dd>{part.metadata.source_reference || part.metadata.source || "-"}</dd>
-      </div>
-      <div className="metadata-grid__wide">
-        <dt>주석</dt>
-        <dd>{part.metadata.note || "-"}</dd>
-      </div>
-    </dl>
-  );
-}
-
 export function DetailView({
   table,
   validationTypes,
@@ -686,9 +605,6 @@ export function DetailView({
   const tableParts = useMemo(() => (table.parts.length > 0 ? table.parts : [rootTableAsPart(table)]), [table]);
   const [activePartId, setActivePartId] = useState<string>(tableParts[0]?.id ?? table.id);
   const activePart = tableParts.find((part) => part.id === activePartId) ?? tableParts[0];
-  const [checkFilter, setCheckFilter] = useState<CheckFilter>("error");
-  const [selectedCheckId, setSelectedCheckId] = useState<string | undefined>(activePart?.checks[0]?.id);
-  const [tableScrollSignal, setTableScrollSignal] = useState(0);
   const [isTableHeaderSticky, setIsTableHeaderSticky] = useState(true);
   const allRawChecks = useMemo(
     () => activePart.checks.filter((check) => !hiddenValidationTypes.has(check.type)),
@@ -707,52 +623,37 @@ export function DetailView({
     () => groupChecksForDisplay(activePart, errorRawChecks),
     [activePart, errorRawChecks],
   );
-  const filteredChecks = checksForFilter(checkFilter, displayChecks, passedChecks, reviewChecks, errorChecks);
-  const selectedIssueBase =
-    filteredChecks.find((check) => check.id === selectedCheckId) ??
-    filteredChecks[0];
+  const selectionBuckets = useMemo(
+    () => ({
+      all: displayChecks,
+      passed: passedChecks,
+      review: reviewChecks,
+      error: errorChecks,
+    }),
+    [displayChecks, errorChecks, passedChecks, reviewChecks],
+  );
+  const firstFocusableDisplayCheck = useCallback(
+    (checks: DisplayCheck[]) => {
+      const focused = firstFocusableCheck(activePart, checks);
+      return checks.find((check) => check.id === focused?.id) ?? checks[0];
+    },
+    [activePart],
+  );
+  const selection = useValidationSelection({
+    buckets: selectionBuckets,
+    resetKey: activePart.id,
+    firstFocusable: firstFocusableDisplayCheck,
+  });
+  const selectedIssueBase = selection.selected;
   const selectedIssue = expandCalculationFamilyForHighlight(activePart, selectedIssueBase, allRawChecks);
   const isMetadataIssue = selectedIssue?.highlight_scope === "metadata";
-  const activeIssueIndex = Math.max(filteredChecks.findIndex((check) => check.id === selectedIssue?.id), 0);
   const selectedIssueHighlight = highlightForCheck(activePart, selectedIssue);
   const parentHierarchy = table.hierarchy.slice(0, -1);
 
-  function selectIssue(issueId: string) {
-    setSelectedCheckId(issueId);
-    setTableScrollSignal((value) => value + 1);
-  }
-
-  function selectFilter(filter: CheckFilter) {
-    const nextChecks = checksForFilter(filter, displayChecks, passedChecks, reviewChecks, errorChecks);
-    const nextIssue = firstFocusableCheck(activePart, nextChecks);
-
-    setCheckFilter(filter);
-    setSelectedCheckId(nextIssue?.id);
-    if (nextIssue) {
-      setTableScrollSignal((value) => value + 1);
-    }
-  }
-
   function selectPart(partId: string) {
     setActivePartId(partId);
-    setTableScrollSignal(0);
+    selection.resetScrollSignal();
   }
-
-  function moveIssue(direction: -1 | 1) {
-    if (filteredChecks.length === 0) {
-      return;
-    }
-
-    const nextIndex = (activeIssueIndex + direction + filteredChecks.length) % filteredChecks.length;
-    selectIssue(filteredChecks[nextIndex].id);
-  }
-
-  useEffect(() => {
-    const initialFilter: CheckFilter = errorChecks.length > 0 ? "error" : reviewChecks.length > 0 ? "review" : "all";
-    const initialChecks = checksForFilter(initialFilter, displayChecks, passedChecks, reviewChecks, errorChecks);
-    setCheckFilter(initialFilter);
-    setSelectedCheckId(initialChecks[0]?.id);
-  }, [activePart.id, displayChecks, errorChecks, passedChecks, reviewChecks]);
 
   useEffect(() => {
     setActivePartId(tableParts[0]?.id ?? table.id);
@@ -852,7 +753,7 @@ export function DetailView({
               rows={activePart.rows}
               theme={table.theme}
               highlight={selectedIssueHighlight}
-              scrollSignal={tableScrollSignal}
+              scrollSignal={selection.scrollSignal}
               stickyHeader={isTableHeaderSticky}
               headerCount={activePart.metadata.header_count ?? 0}
             />
@@ -860,147 +761,37 @@ export function DetailView({
         </aside>
 
         <section className="detail-analysis-panel" aria-label="상세 분석">
-          <nav className="detail-tabs" aria-label="상세 탭">
-            {tabs.map((tab) => (
-              <button
-                className={activeTab === tab.id ? "is-active" : ""}
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-              >
-                <span>{tab.label}</span>
-              </button>
-            ))}
-          </nav>
+          <DetailTabs activeTab={activeTab} onChange={setActiveTab} />
 
           <section className="detail-content">
             {activeTab === "checks" ? (
-            <div className="detail-section check-review-panel">
-              <div className="content-title-row">
-                <div>
-                  <h2>검수 결과</h2>
-                </div>
-              </div>
-
-              <div className="check-filter-tabs" aria-label="검수 결과 필터">
-                {checkFilters.map((filter) => {
-                  const count = checksForFilter(
-                    filter.id,
-                    displayChecks,
-                    passedChecks,
-                    reviewChecks,
-                    errorChecks,
-                  ).length;
-
-                  return (
-                    <button
-                      className={checkFilter === filter.id ? "is-active" : ""}
-                      key={filter.id}
-                      type="button"
-                      onClick={() => selectFilter(filter.id)}
-                    >
-                      <span>{filter.label}</span>
-                      <strong>{count}</strong>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {filteredChecks.length > 0 ? (
-                <div className="check-result-list" aria-label="검수 목록">
-                  {filteredChecks.map((check, index) => (
-                    <button
-                      className={selectedIssue?.id === check.id ? "is-active" : ""}
-                      key={check.id}
-                      type="button"
-                      onClick={() => selectIssue(check.id)}
-                    >
-                      <span>{index + 1}</span>
-                      <strong>{checkDisplayTitle(check)}</strong>
-                      <em>{check.status}</em>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-
-              {selectedIssue ? (
-                <article className={`check-card check-card--${selectedIssue.severity}`}>
-                  <div className="check-card__headline">
-                    <div>
-                      <span>{checkDisplayEyebrow(selectedIssue)}</span>
-                      <h3>{checkDisplayTitle(selectedIssue)}</h3>
-                    </div>
-                    <strong>{selectedIssue.status}</strong>
-                  </div>
-                  {isMetadataIssue ? (
+              <ValidationResultPanel
+                filter={selection.filter}
+                counts={{
+                  all: displayChecks.length,
+                  passed: passedChecks.length,
+                  review: reviewChecks.length,
+                  error: errorChecks.length,
+                }}
+                checks={selection.filteredChecks}
+                selected={selectedIssue}
+                selectedIndex={selection.selectedIndex}
+                metadataContent={
+                  isMetadataIssue && selectedIssue ? (
                     <MetadataGrid part={activePart} difference={selectedIssue.difference} />
-                  ) : (
-                    <>
-                      <dl className="check-card__location">
-                        <div>
-                          <dt>행</dt>
-                          <dd>{selectedIssue.rowSummary}</dd>
-                        </div>
-                        <div>
-                          <dt>열</dt>
-                          <dd>{selectedIssue.columnSummary}</dd>
-                        </div>
-                      </dl>
-                      <dl className="check-card__values">
-                        <div>
-                          <dt>현재값</dt>
-                          <dd>{selectedIssue.current_value}</dd>
-                        </div>
-                        <div>
-                          <dt>검수값</dt>
-                          <dd>{selectedIssue.expected_value ?? "-"}</dd>
-                        </div>
-                        <div>
-                          <dt>차이</dt>
-                          <dd>{selectedIssue.difference ?? "-"}</dd>
-                        </div>
-                      </dl>
-                    </>
-                  )}
-                  <p>{selectedIssue.detail}</p>
-                  {selectedIssue.formula && selectedIssue.formula !== checkDisplayTitle(selectedIssue) ? (
-                    <div className="formula-box">
-                      <FileCode2 aria-hidden="true" size={16} />
-                      <span>{selectedIssue.formula}</span>
-                    </div>
-                  ) : null}
-                  {!isMetadataIssue && shouldShowCalculationUsage(selectedIssue) ? (
+                  ) : undefined
+                }
+                calculationUsage={
+                  selectedIssue &&
+                  !isMetadataIssue &&
+                  shouldShowCalculationUsage(selectedIssue) ? (
                     <CalculationUsageList part={activePart} check={selectedIssue} />
-                  ) : null}
-                </article>
-              ) : (
-                <p className="empty-copy">해당 내용이 없습니다.</p>
-              )}
-
-              {filteredChecks.length > 0 ? (
-                <div className="check-card-nav">
-                  <button
-                    className="icon-button"
-                    type="button"
-                    onClick={() => moveIssue(-1)}
-                    disabled={filteredChecks.length <= 1}
-                    aria-label="이전 검수"
-                  >
-                    <ChevronLeft aria-hidden="true" size={18} />
-                  </button>
-                  <span>{`${activeIssueIndex + 1} / ${filteredChecks.length}`}</span>
-                  <button
-                    className="icon-button"
-                    type="button"
-                    onClick={() => moveIssue(1)}
-                    disabled={filteredChecks.length <= 1}
-                    aria-label="다음 검수"
-                  >
-                    <ChevronRight aria-hidden="true" size={18} />
-                  </button>
-                </div>
-              ) : null}
-            </div>
+                  ) : undefined
+                }
+                onFilterChange={selection.selectFilter}
+                onSelect={selection.select}
+                onMove={selection.move}
+              />
             ) : null}
 
             {activeTab === "changes" ? (
