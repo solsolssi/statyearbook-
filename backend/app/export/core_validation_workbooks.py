@@ -3,14 +3,13 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-import sqlite3
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 
 from app.core.contact_metadata import ContactMetadata, parse_contact_metadata
-from app.db.connection import DB_PATH, connect
+from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
 from app.db.schema import init_db
 from app.export.validation_workbooks import (
     ERROR_RELATED,
@@ -111,9 +110,9 @@ def export_core_validation_workbooks(
 
 
 def load_core_failing_checks(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
-) -> list[sqlite3.Row]:
+) -> list[DatabaseRow]:
     placeholders = ", ".join("?" for _ in CORE_CHECK_TYPES)
     return connection.execute(
         f"""
@@ -141,7 +140,7 @@ def load_core_failing_checks(
 def write_core_validation_index(
     path: Path,
     *,
-    checks: list[sqlite3.Row],
+    checks: list[DatabaseRow],
     contacts: dict[int, ContactMetadata],
     highlighted_filename: str,
     sheet_names: dict[str, str],

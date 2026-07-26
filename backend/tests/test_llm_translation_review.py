@@ -637,23 +637,14 @@ class LLMTranslationReviewTest(unittest.TestCase):
                         """,
                         (run_id, table_id, rule_id, check_type, check_type),
                     )
-                    connection.execute(
-                        """
-                        INSERT INTO validation_issues (
-                            run_id, table_id, rule_id, issue_type, location,
-                            current_value, expected_value, status, severity, detail
-                        ) VALUES (?, ?, ?, ?, '표 제목', '구분', 'Classification',
-                                  '확인 필요', 'warning', '잘못 연결된 결과')
-                        """,
-                        (run_id, table_id, rule_id, check_type),
-                    )
                 connection.execute(
                     """
-                    INSERT INTO validation_issues (
-                        run_id, table_id, rule_id, issue_type, location,
+                    INSERT INTO validation_checks (
+                        run_id, table_id, rule_id, check_type, check_label, location,
                         current_value, expected_value, status, severity, detail
-                    ) VALUES (?, ?, 'metadata.required', '메타정보 검수', '출처·메타정보',
-                              '단위: 없음', '단위 입력', '확인 필요', 'warning', '단위 누락')
+                    ) VALUES (?, ?, 'metadata.required', '메타정보 검수', '메타정보 검수',
+                              '출처·메타정보', '단위: 없음', '단위 입력',
+                              '확인 필요', 'warning', '단위 누락')
                     """,
                     (run_id, table_id),
                 )
@@ -1301,18 +1292,6 @@ class LLMTranslationReviewTest(unittest.TestCase):
                     """,
                     (run_id, table_id, current, expected),
                 )
-                connection.execute(
-                    """
-                    INSERT INTO validation_issues (
-                        run_id, table_id, rule_id, issue_type, location,
-                        current_value, expected_value, difference, status, severity, detail
-                    ) VALUES (?, ?, 'llm.translation_review', '번역 검수', '1행 1열',
-                              ?, ?, '승인 사전 영문명 적용', '확인 필요', 'warning',
-                              '공식 사전 표기를 적용했습니다.')
-                    """,
-                    (run_id, table_id, current, expected),
-                )
-
                 counts = reconcile_non_actionable_bilingual_reviews(connection, run_id)
                 candidate = connection.execute(
                     "SELECT review_result_json FROM linguistic_review_candidates WHERE run_id = ?",

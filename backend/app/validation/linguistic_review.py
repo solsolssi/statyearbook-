@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-import sqlite3
 
+from app.db.connection import DatabaseConnection, DatabaseRow
 from app.validation.blue_review import normalize_review_text
 from app.validation.linguistic_policy import (
     SPELLING_CHECK_TYPE,
@@ -17,6 +17,10 @@ from app.validation.translation_glossary import (
     refresh_translation_glossary,
 )
 from app.validation.models import restore_hyphenated_line_breaks
+from app.validation.result_repository import (
+    delete_validation_results,
+    refresh_run_issue_count,
+)
 
 
 LINGUISTIC_CANDIDATE_RULE_ID = "source.linguistic_review"
@@ -50,7 +54,7 @@ class LinguisticReviewSummary:
 
 
 def clear_linguistic_review_run(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     *,
     report_id: int,
     run_id: int,
@@ -62,14 +66,10 @@ def clear_linguistic_review_run(
         "llm.terminology_review",
         "llm.translation_review",
     )
-    placeholders = ", ".join("?" for _ in language_rule_ids)
-    connection.execute(
-        f"DELETE FROM validation_issues WHERE run_id = ? AND rule_id IN ({placeholders})",
-        (run_id, *language_rule_ids),
-    )
-    connection.execute(
-        f"DELETE FROM validation_checks WHERE run_id = ? AND rule_id IN ({placeholders})",
-        (run_id, *language_rule_ids),
+    delete_validation_results(
+        connection,
+        run_id=run_id,
+        rule_ids=language_rule_ids,
     )
     connection.execute(
         """
@@ -90,20 +90,11 @@ def clear_linguistic_review_run(
         "DELETE FROM linguistic_review_cache WHERE prompt_version LIKE 'language-review-%'",
     )
     restore_report_hyphenated_line_breaks(connection, report_id)
-    connection.execute(
-        """
-        UPDATE validation_runs
-        SET issue_count = (
-            SELECT COUNT(*) FROM validation_issues WHERE validation_issues.run_id = validation_runs.id
-        )
-        WHERE id = ?
-        """,
-        (run_id,),
-    )
+    refresh_run_issue_count(connection, run_id=run_id)
 
 
 def restore_report_hyphenated_line_breaks(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     report_id: int,
 ) -> None:
     for row in connection.execute(
@@ -143,7 +134,7 @@ def restore_report_hyphenated_line_breaks(
 
 
 def prepare_linguistic_reviews(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     *,
     report_id: int,
     run_id: int,
@@ -247,7 +238,7 @@ def prepare_linguistic_reviews(
 
 
 def hydrate_pending_glossary_context(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     *,
     run_id: int,
     report_id: int,
@@ -291,7 +282,7 @@ def hydrate_pending_glossary_context(
 
 
 def review_text_value(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     *,
     run_id: int,
     report_id: int,
@@ -376,7 +367,7 @@ def review_text_value(
 
 
 def blue_review_candidate_keys(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
 ) -> set[tuple[int, str, int | None, int | None, str]]:
     rows = connection.execute(
@@ -416,7 +407,7 @@ def review_location_key(
 
 
 def insert_candidate_once(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     *,
     run_id: int,
     table_id: int,
@@ -433,12 +424,13 @@ def insert_candidate_once(
 ) -> int:
     cursor = connection.execute(
         """
-        INSERT OR IGNORE INTO linguistic_review_candidates (
+        INSERT INTO linguistic_review_candidates (
             run_id, table_id, review_type, candidate_kind, location,
             row_index, col_index, current_value, korean_text, english_text,
             glossary_json, reason, prompt_version
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT DO NOTHING
         """,
         (
             run_id,

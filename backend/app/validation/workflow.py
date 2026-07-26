@@ -5,9 +5,11 @@ from pathlib import Path
 
 from app.db.connection import DB_PATH, connect
 from app.db.schema import init_db
+from app.domain.enums import LanguageReviewStatus
 from app.validation.calculation_workflow import CalculationValidationWorkflow
 from app.validation.language_workflow import LanguageValidationWorkflow
 from app.validation.repository import ValidationRepository
+from app.validation.result_repository import validation_problem_count
 
 
 @dataclass(frozen=True)
@@ -25,7 +27,7 @@ class ValidationWorkflowResult:
     language_candidates: int
     language_pending: int
     language_reused: int
-    language_status: str
+    language_status: LanguageReviewStatus | str
 
     def to_dict(self) -> dict[str, int | str]:
         return asdict(self)
@@ -81,8 +83,4 @@ class ValidationWorkflow:
 def validation_issue_count(db_path: Path, run_id: int) -> int:
     with connect(db_path) as connection:
         init_db(connection)
-        row = connection.execute(
-            "SELECT COUNT(*) AS issue_count FROM validation_issues WHERE run_id = ?",
-            (run_id,),
-        ).fetchone()
-        return int(row["issue_count"] if row else 0)
+        return validation_problem_count(connection, run_id=run_id)

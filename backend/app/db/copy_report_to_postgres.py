@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import argparse
-import sqlite3
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any, TypeVar
 
 from app.core.env import env_value, load_local_env_file
 from app.db.postgres import PostgresConnection
-from app.db.connection import DB_PATH
+from app.db.connection import (
+    DB_PATH,
+    DatabaseConnection,
+    DatabaseRow,
+    connect_sqlite,
+)
 from app.db.schema import init_db
 
 
@@ -19,7 +23,6 @@ COPY_TABLES = (
     "stat_table_cells",
     "validation_runs",
     "validation_checks",
-    "validation_issues",
 )
 
 SEQUENCE_TABLES = (
@@ -29,7 +32,6 @@ SEQUENCE_TABLES = (
     "validation_profiles",
     "validation_runs",
     "validation_checks",
-    "validation_issues",
 )
 
 T = TypeVar("T")
@@ -82,14 +84,12 @@ def main() -> None:
     print("PostgreSQL 업로드가 완료되었습니다.")
 
 
-def source_connection(db_path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(db_path)
-    connection.row_factory = sqlite3.Row
-    return connection
+def source_connection(db_path: Path) -> DatabaseConnection:
+    return connect_sqlite(db_path)
 
 
 def build_copy_package(
-    source: sqlite3.Connection,
+    source: DatabaseConnection,
     *,
     report_id: int,
     run_id: int | None,
@@ -132,7 +132,6 @@ def build_copy_package(
         "stat_tables": select_in(source, "stat_tables", "id", table_ids),
         "stat_table_cells": select_in(source, "stat_table_cells", "table_id", table_ids),
         "validation_checks": select_where(source, "validation_checks", "run_id = ?", (resolved_run_id,)),
-        "validation_issues": select_where(source, "validation_issues", "run_id = ?", (resolved_run_id,)),
         "validation_profiles": select_in(source, "validation_profiles", "id", profile_ids),
     }
     columns_by_table = {table: source_columns(source, table) for table in COPY_TABLES}
@@ -147,7 +146,7 @@ def build_copy_package(
     }
 
 
-def latest_run_id(source: sqlite3.Connection, report_id: int) -> int | None:
+def latest_run_id(source: DatabaseConnection, report_id: int) -> int | None:
     row = fetch_one(
         source,
         """
@@ -163,15 +162,15 @@ def latest_run_id(source: sqlite3.Connection, report_id: int) -> int | None:
 
 
 def fetch_one(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     sql: str,
     params: Sequence[Any] = (),
-) -> sqlite3.Row | None:
+) -> DatabaseRow | None:
     return connection.execute(sql, params).fetchone()
 
 
 def select_where(
-    source: sqlite3.Connection,
+    source: DatabaseConnection,
     table: str,
     where_sql: str,
     params: Sequence[Any],
@@ -183,7 +182,7 @@ def select_where(
 
 
 def select_in(
-    source: sqlite3.Connection,
+    source: DatabaseConnection,
     table: str,
     column: str,
     values: Sequence[int],
@@ -203,7 +202,7 @@ def select_in(
     return output
 
 
-def source_columns(source: sqlite3.Connection, table: str) -> list[str]:
+def source_columns(source: DatabaseConnection, table: str) -> list[str]:
     return [str(row["name"]) for row in source.execute(f"PRAGMA table_info({table})").fetchall()]
 
 
@@ -220,7 +219,6 @@ def replace_report_package(target: PostgresConnection, package: dict[str, Any]) 
     insert_rows(target, package, "stat_table_cells")
     insert_rows(target, package, "validation_runs")
     insert_rows(target, package, "validation_checks")
-    insert_rows(target, package, "validation_issues")
     reset_postgres_sequences(target)
 
 
@@ -233,7 +231,6 @@ def delete_existing_target_rows(
     report_id = int(report["id"])
     run_id = int(run["id"])
 
-    target.execute("DELETE FROM validation_issues WHERE run_id = ?", (run_id,))
     target.execute("DELETE FROM validation_checks WHERE run_id = ?", (run_id,))
     target.execute("DELETE FROM linguistic_review_candidates WHERE run_id = ?", (run_id,))
     target.execute("DELETE FROM validation_runs WHERE id = ?", (run_id,))

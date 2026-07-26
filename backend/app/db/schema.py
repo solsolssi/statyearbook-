@@ -1,12 +1,9 @@
 import json
 import re
-from typing import Any, Callable
+from typing import Any
 
 from app.db.connection import DB_PATH, DatabaseConnection
 from app.validation.catalog import REQUIRED_RULE_DEFINITIONS
-
-
-INITIALIZED_POSTGRES_URLS: set[str] = set()
 
 
 SCHEMA_SQL = """
@@ -115,26 +112,6 @@ CREATE TABLE IF NOT EXISTS validation_runs (
     FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS validation_issues (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id INTEGER NOT NULL,
-    table_id INTEGER NOT NULL,
-    rule_id TEXT NOT NULL,
-    issue_type TEXT NOT NULL,
-    location TEXT NOT NULL,
-    row_index INTEGER,
-    col_index INTEGER,
-    current_value TEXT NOT NULL DEFAULT '',
-    expected_value TEXT,
-    difference TEXT,
-    status TEXT NOT NULL DEFAULT '확인 필요',
-    severity TEXT NOT NULL DEFAULT 'warning',
-    detail TEXT NOT NULL,
-    formula TEXT,
-    FOREIGN KEY (run_id) REFERENCES validation_runs(id) ON DELETE CASCADE,
-    FOREIGN KEY (table_id) REFERENCES stat_tables(id) ON DELETE CASCADE
-);
-
 CREATE INDEX IF NOT EXISTS idx_validation_runs_report_latest
 ON validation_runs(report_id, completed_at DESC, id DESC);
 
@@ -182,9 +159,6 @@ CREATE TABLE IF NOT EXISTS report_processing_stages (
 
 CREATE INDEX IF NOT EXISTS idx_report_processing_stages_job
 ON report_processing_stages(job_id, id);
-
-CREATE INDEX IF NOT EXISTS idx_validation_issues_run_table
-ON validation_issues(run_id, table_id);
 
 CREATE TABLE IF NOT EXISTS validation_checks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -327,12 +301,11 @@ ON linguistic_review_cache(review_type, prompt_version, reviewed_model);
 """
 
 
-def init_db(connection: DatabaseConnection) -> None:
-    postgres_key = postgres_connection_key(connection)
-    if postgres_key and postgres_key in INITIALIZED_POSTGRES_URLS:
-        return
-
+def create_schema(connection: DatabaseConnection) -> None:
     connection.executescript(SCHEMA_SQL)
+
+
+def ensure_schema_columns(connection: DatabaseConnection) -> None:
     ensure_column(connection, "stat_table_cells", "footnote_marker", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "annual_reports", "is_archived", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(connection, "translation_glossary", "subcategory", "TEXT NOT NULL DEFAULT ''")
@@ -347,35 +320,14 @@ def init_db(connection: DatabaseConnection) -> None:
     ensure_column(connection, "linguistic_review_candidates", "review_result_json", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "linguistic_review_candidates", "review_fingerprint", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "linguistic_review_candidates", "resolution_source", "TEXT NOT NULL DEFAULT ''")
-    apply_data_migration(
-        connection,
-        "retire_metadata_validation_v2",
-        retire_metadata_validation,
-    )
-    apply_data_migration(
-        connection,
-        "restore_metadata_presence_validation_v1",
-        restore_metadata_validation,
-    )
-    apply_data_migration(
-        connection,
-        "repair_misaligned_linguistic_reviews_v1",
-        repair_misaligned_linguistic_reviews,
-    )
-    apply_data_migration(
-        connection,
-        "restore_semantic_type_qualifiers_v1",
-        restore_semantic_type_qualifiers,
-    )
-    apply_data_migration(
-        connection,
-        "retire_terminology_validation_v1",
-        retire_terminology_validation,
-    )
-    seed_validation_rule_definitions(connection)
-    connection.commit()
-    if postgres_key:
-        INITIALIZED_POSTGRES_URLS.add(postgres_key)
+
+
+def init_db(connection: DatabaseConnection) -> None:
+    """Compatibility entry point; migrations are coordinated in db.migrations."""
+
+    from app.db.migrations import ensure_database_ready
+
+    ensure_database_ready(connection)
 
 
 def ensure_column(
@@ -407,21 +359,83 @@ def is_postgres_connection(connection: object) -> bool:
     return bool(getattr(connection, "is_postgres", False))
 
 
-def postgres_connection_key(connection: object) -> str | None:
-    if not is_postgres_connection(connection):
-        return None
-    return str(getattr(connection, "database_url", "postgres"))
+def canonicalize_validation_results(connection: DatabaseConnection) -> None:
+    """Archive the former write table and expose a read-only compatibility view."""
 
+    if getattr(connection, "is_postgres", False):
+        table_rows = connection.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = current_schema()
+              AND table_name IN ('validation_issues', 'validation_issues_legacy')
+            """
+        ).fetchall()
+        table_names = {str(row["table_name"]) for row in table_rows}
+        view_row = connection.execute(
+            """
+            SELECT 1
+            FROM information_schema.views
+            WHERE table_schema = current_schema() AND table_name = 'validation_issues'
+            """
+        ).fetchone()
+    else:
+        table_rows = connection.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN ('validation_issues', 'validation_issues_legacy')
+            """
+        ).fetchall()
+        table_names = {str(row["name"]) for row in table_rows}
+        view_row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = 'validation_issues'"
+        ).fetchone()
 
-def apply_data_migration(
-    connection: DatabaseConnection,
-    key: str,
-    migration: Callable[[DatabaseConnection], None],
-) -> None:
-    if connection.execute("SELECT 1 FROM schema_migrations WHERE key = ?", (key,)).fetchone():
-        return
-    migration(connection)
-    connection.execute("INSERT INTO schema_migrations (key) VALUES (?)", (key,))
+    if "validation_issues" in table_names and "validation_issues_legacy" not in table_names:
+        connection.execute(
+            "ALTER TABLE validation_issues RENAME TO validation_issues_legacy"
+        )
+        table_names.remove("validation_issues")
+        table_names.add("validation_issues_legacy")
+
+    if "validation_issues" not in table_names and view_row is None:
+        connection.execute(
+            """
+            CREATE VIEW validation_issues AS
+            SELECT
+                id,
+                run_id,
+                table_id,
+                rule_id,
+                check_type AS issue_type,
+                location,
+                row_index,
+                col_index,
+                current_value,
+                expected_value,
+                difference,
+                status,
+                severity,
+                detail,
+                formula
+            FROM validation_checks
+            WHERE status <> '정상'
+            """
+        )
+
+    connection.execute(
+        """
+        UPDATE validation_runs
+        SET issue_count = (
+            SELECT COUNT(*)
+            FROM validation_checks
+            WHERE validation_checks.run_id = validation_runs.id
+              AND validation_checks.status <> '정상'
+        )
+        """
+    )
 
 
 def restore_semantic_type_qualifiers(connection: DatabaseConnection) -> None:
@@ -456,9 +470,6 @@ def retire_terminology_validation(connection: DatabaseConnection) -> None:
 
     connection.execute("DELETE FROM linguistic_review_cache WHERE review_type = '용어 제안'")
     connection.execute("DELETE FROM linguistic_review_candidates WHERE review_type = '용어 제안'")
-    connection.execute(
-        "DELETE FROM validation_issues WHERE issue_type = '용어 제안' OR rule_id = 'llm.terminology_review'"
-    )
     connection.execute(
         "DELETE FROM validation_checks WHERE check_type = '용어 제안' OR rule_id = 'llm.terminology_review'"
     )
@@ -505,8 +516,9 @@ def retire_terminology_validation(connection: DatabaseConnection) -> None:
         UPDATE validation_runs
         SET issue_count = (
             SELECT COUNT(*)
-            FROM validation_issues
-            WHERE validation_issues.run_id = validation_runs.id
+            FROM validation_checks
+            WHERE validation_checks.run_id = validation_runs.id
+              AND validation_checks.status <> '정상'
         )
         """
     )
@@ -517,9 +529,6 @@ def retire_metadata_validation(connection: DatabaseConnection) -> None:
 
     retired_rule_filter = "rule_id = 'metadata.required' OR rule_id LIKE '%.metadata_required'"
     connection.execute(
-        f"DELETE FROM validation_issues WHERE issue_type = '메타정보 검수' OR {retired_rule_filter}"
-    )
-    connection.execute(
         f"DELETE FROM validation_checks WHERE check_type = '메타정보 검수' OR {retired_rule_filter}"
     )
     retire_metadata_linguistic_reviews(connection)
@@ -527,7 +536,9 @@ def retire_metadata_validation(connection: DatabaseConnection) -> None:
         """
         UPDATE validation_runs
         SET issue_count = (
-            SELECT COUNT(*) FROM validation_issues WHERE validation_issues.run_id = validation_runs.id
+            SELECT COUNT(*) FROM validation_checks
+            WHERE validation_checks.run_id = validation_runs.id
+              AND validation_checks.status <> '정상'
         )
         """
     )
@@ -671,10 +682,6 @@ def restore_latest_run_metadata_checks(connection: DatabaseConnection) -> None:
         run_id = int(run["id"])
         report_id = int(run["report_id"])
         connection.execute(
-            "DELETE FROM validation_issues WHERE run_id = ? AND issue_type = '메타정보 검수'",
-            (run_id,),
-        )
-        connection.execute(
             "DELETE FROM validation_checks WHERE run_id = ? AND check_type = '메타정보 검수'",
             (run_id,),
         )
@@ -729,31 +736,13 @@ def restore_latest_run_metadata_checks(connection: DatabaseConnection) -> None:
                     detail,
                 ),
             )
-            if not missing:
-                continue
-            connection.execute(
-                """
-                INSERT INTO validation_issues (
-                    run_id, table_id, rule_id, issue_type, location, current_value,
-                    expected_value, difference, status, severity, detail
-                ) VALUES (?, ?, ?, '메타정보 검수', '출처·메타정보', ?,
-                          '단위·기준일·출처 입력', ?, '확인 필요', 'warning', ?)
-                """,
-                (
-                    run_id,
-                    int(table["id"]),
-                    rule_id,
-                    current_value,
-                    difference,
-                    detail,
-                ),
-            )
-
     connection.execute(
         """
         UPDATE validation_runs
         SET issue_count = (
-            SELECT COUNT(*) FROM validation_issues WHERE validation_issues.run_id = validation_runs.id
+            SELECT COUNT(*) FROM validation_checks
+            WHERE validation_checks.run_id = validation_runs.id
+              AND validation_checks.status <> '정상'
         )
         """
     )
@@ -778,13 +767,6 @@ def repair_misaligned_linguistic_reviews(connection: DatabaseConnection) -> None
         """
         SELECT run_id, table_id, rule_id, location, row_index, col_index, current_value
         FROM validation_checks
-        WHERE rule_id IN (
-            'llm.spelling_review', 'llm.terminology_review',
-            'llm.translation_review', 'source.blue_text_review'
-        )
-        UNION ALL
-        SELECT run_id, table_id, rule_id, location, row_index, col_index, current_value
-        FROM validation_issues
         WHERE rule_id IN (
             'llm.spelling_review', 'llm.terminology_review',
             'llm.translation_review', 'source.blue_text_review'
@@ -871,13 +853,13 @@ def repair_misaligned_linguistic_reviews(connection: DatabaseConnection) -> None
         delete_sql = """
             DELETE FROM {table_name}
             WHERE run_id = ? AND table_id = ? AND rule_id = ? AND location = ?
-              AND row_index IS ? AND col_index IS ?
+              AND row_index IS NOT DISTINCT FROM ?
+              AND col_index IS NOT DISTINCT FROM ?
         """
-        for table_name in ("validation_issues", "validation_checks"):
-            connection.executemany(
-                delete_sql.format(table_name=table_name),
-                list(record_keys),
-            )
+        connection.executemany(
+            delete_sql.format(table_name="validation_checks"),
+            list(record_keys),
+        )
 
     if invalid_rows:
         connection.executemany(
@@ -922,7 +904,9 @@ def repair_misaligned_linguistic_reviews(connection: DatabaseConnection) -> None
         """
         UPDATE validation_runs
         SET issue_count = (
-            SELECT COUNT(*) FROM validation_issues WHERE validation_issues.run_id = validation_runs.id
+            SELECT COUNT(*) FROM validation_checks
+            WHERE validation_checks.run_id = validation_runs.id
+              AND validation_checks.status <> '정상'
         )
         """
     )
@@ -967,13 +951,6 @@ def retire_metadata_linguistic_reviews(connection: DatabaseConnection) -> None:
     connection.execute(
         f"DELETE FROM linguistic_review_candidates WHERE {location_filter}",
         location_params,
-    )
-    connection.execute(
-        f"""
-        DELETE FROM validation_issues
-        WHERE rule_id IN ({rule_placeholders}) AND ({location_filter})
-        """,
-        (*language_rule_ids, *location_params),
     )
     connection.execute(
         f"""
@@ -1036,32 +1013,31 @@ def retire_mislinked_metadata_payload_reviews(
         )
 
     rule_placeholders = ", ".join("?" for _ in language_rule_ids)
-    for table_name in ("validation_issues", "validation_checks"):
-        rows = connection.execute(
-            f"""
-            SELECT record.id, record.current_value, record.expected_value, st.note, st.source
-            FROM {table_name} record
-            JOIN stat_tables st ON st.id = record.table_id
-            WHERE record.rule_id IN ({rule_placeholders})
-            """,
-            language_rule_ids,
-        ).fetchall()
-        record_ids = [
-            (int(row["id"]),)
-            for row in rows
-            if matches_long_metadata_payload(
-                str(row["current_value"] or ""),
-                str(row["note"] or ""),
-                str(row["source"] or ""),
-            )
-            or matches_long_metadata_payload(
-                str(row["expected_value"] or ""),
-                str(row["note"] or ""),
-                str(row["source"] or ""),
-            )
-        ]
-        if record_ids:
-            connection.executemany(f"DELETE FROM {table_name} WHERE id = ?", record_ids)
+    rows = connection.execute(
+        f"""
+        SELECT record.id, record.current_value, record.expected_value, st.note, st.source
+        FROM validation_checks record
+        JOIN stat_tables st ON st.id = record.table_id
+        WHERE record.rule_id IN ({rule_placeholders})
+        """,
+        language_rule_ids,
+    ).fetchall()
+    record_ids = [
+        (int(row["id"]),)
+        for row in rows
+        if matches_long_metadata_payload(
+            str(row["current_value"] or ""),
+            str(row["note"] or ""),
+            str(row["source"] or ""),
+        )
+        or matches_long_metadata_payload(
+            str(row["expected_value"] or ""),
+            str(row["note"] or ""),
+            str(row["source"] or ""),
+        )
+    ]
+    if record_ids:
+        connection.executemany("DELETE FROM validation_checks WHERE id = ?", record_ids)
 
 
 def retire_stale_linguistic_review_records(connection: DatabaseConnection) -> None:
@@ -1073,34 +1049,33 @@ def retire_stale_linguistic_review_records(connection: DatabaseConnection) -> No
         "llm.translation_review",
     )
     placeholders = ", ".join("?" for _ in language_rule_ids)
-    for table_name in ("validation_issues", "validation_checks"):
-        rows = connection.execute(
-            f"""
-            SELECT record.id, record.current_value, record.expected_value,
-                   st.note, st.source
-            FROM {table_name} record
-            JOIN stat_tables st ON st.id = record.table_id
-            WHERE record.rule_id IN ({placeholders})
-            """,
-            language_rule_ids,
-        ).fetchall()
-        stale_ids: list[tuple[int]] = []
-        for row in rows:
-            current_value = str(row["current_value"] or "")
-            expected_value = str(row["expected_value"] or "")
-            if matches_long_metadata_payload(
-                current_value,
-                str(row["note"] or ""),
-                str(row["source"] or ""),
-            ) or matches_long_metadata_payload(
-                expected_value,
-                str(row["note"] or ""),
-                str(row["source"] or ""),
-            ) or looks_like_note_payload(current_value):
-                stale_ids.append((int(row["id"]),))
+    rows = connection.execute(
+        f"""
+        SELECT record.id, record.current_value, record.expected_value,
+               st.note, st.source
+        FROM validation_checks record
+        JOIN stat_tables st ON st.id = record.table_id
+        WHERE record.rule_id IN ({placeholders})
+        """,
+        language_rule_ids,
+    ).fetchall()
+    stale_ids: list[tuple[int]] = []
+    for row in rows:
+        current_value = str(row["current_value"] or "")
+        expected_value = str(row["expected_value"] or "")
+        if matches_long_metadata_payload(
+            current_value,
+            str(row["note"] or ""),
+            str(row["source"] or ""),
+        ) or matches_long_metadata_payload(
+            expected_value,
+            str(row["note"] or ""),
+            str(row["source"] or ""),
+        ) or looks_like_note_payload(current_value):
+            stale_ids.append((int(row["id"]),))
 
-        if stale_ids:
-            connection.executemany(f"DELETE FROM {table_name} WHERE id = ?", stale_ids)
+    if stale_ids:
+        connection.executemany("DELETE FROM validation_checks WHERE id = ?", stale_ids)
 
 
 def looks_like_note_payload(value: str) -> bool:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+import re
 import unittest
 
 from app.validation.profile_rules import ProfileSpecRule
@@ -26,6 +28,31 @@ class ValidationArchitectureTests(unittest.TestCase):
         self.assertEqual(check_group_for_rule_type("row_sum"), "sum")
         self.assertEqual(check_group_for_rule_type("row_ratio"), "ratio")
         self.assertEqual(check_group_for_rule_type("row_growth_rate"), "growth_rate")
+
+    def test_sqlite_driver_is_confined_to_the_database_adapter(self) -> None:
+        app_root = Path(__file__).parents[1] / "app"
+        offenders: list[str] = []
+        for path in app_root.rglob("*.py"):
+            if path == app_root / "db" / "connection.py":
+                continue
+            text = path.read_text(encoding="utf-8")
+            if re.search(r"\b(?:import|from)\s+sqlite3\b|\bsqlite3\.(?:Connection|Row)\b", text):
+                offenders.append(str(path.relative_to(app_root)))
+        self.assertEqual(offenders, [])
+
+    def test_runtime_validation_modules_use_the_canonical_result_repository(self) -> None:
+        validation_root = Path(__file__).parents[1] / "app" / "validation"
+        offenders: list[str] = []
+        write_pattern = re.compile(
+            r"(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+validation_checks",
+            re.IGNORECASE,
+        )
+        for path in validation_root.glob("*.py"):
+            if path.name == "result_repository.py":
+                continue
+            if write_pattern.search(path.read_text(encoding="utf-8")):
+                offenders.append(path.name)
+        self.assertEqual(offenders, [])
 
 
 if __name__ == "__main__":

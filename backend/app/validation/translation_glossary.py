@@ -5,8 +5,8 @@ from functools import cache
 import json
 from pathlib import Path
 import re
-import sqlite3
 
+from app.db.connection import DatabaseConnection, DatabaseRow
 from app.validation.linguistic_policy import BASE_TRANSLATIONS
 
 
@@ -261,7 +261,7 @@ def official_public_institution_names() -> frozenset[str]:
     return frozenset(names)
 
 
-def refresh_translation_glossary(connection: sqlite3.Connection) -> int:
+def refresh_translation_glossary(connection: DatabaseConnection) -> int:
     """Rebuild reusable glossary evidence from curated terms and all imported yearbooks."""
 
     connection.execute(
@@ -390,7 +390,7 @@ def collect_pair(
     current["count"] = int(current["count"]) + 1
 
 
-def seed_base_glossary(connection: sqlite3.Connection) -> int:
+def seed_base_glossary(connection: DatabaseConnection) -> int:
     """Seed low-trust project hints; these never bypass an LLM review."""
 
     curated = [
@@ -436,7 +436,7 @@ def seed_base_glossary(connection: sqlite3.Connection) -> int:
     return changed
 
 
-def seed_official_glossary(connection: sqlite3.Connection) -> int:
+def seed_official_glossary(connection: DatabaseConnection) -> int:
     """Load source-traceable terms collected from official public websites."""
 
     payload = official_glossary_payload()
@@ -516,9 +516,10 @@ def seed_official_glossary(connection: sqlite3.Connection) -> int:
             for alias in aliases:
                 connection.execute(
                     """
-                    INSERT OR IGNORE INTO translation_glossary_aliases (
+                    INSERT INTO translation_glossary_aliases (
                         glossary_id, alias_text, alias_normalized, alias_kind
                     ) VALUES (?, ?, ?, 'official_alias')
+                    ON CONFLICT DO NOTHING
                     """,
                     (glossary_id, alias, normalize_source(alias)),
                 )
@@ -544,7 +545,7 @@ def reference_source_for(category: str, subcategory: str) -> dict[str, object]:
     return {}
 
 
-def seed_official_entity_names(connection: sqlite3.Connection) -> int:
+def seed_official_entity_names(connection: DatabaseConnection) -> int:
     """Load official Korean entity names even when no official English name is published."""
 
     if not OFFICIAL_ENTITY_NAMES_PATH.exists():
@@ -614,9 +615,10 @@ def seed_official_entity_names(connection: sqlite3.Connection) -> int:
             for alias in aliases:
                 connection.execute(
                     """
-                    INSERT OR IGNORE INTO translation_glossary_aliases (
+                    INSERT INTO translation_glossary_aliases (
                         glossary_id, alias_text, alias_normalized, alias_kind
                     ) VALUES (?, ?, ?, 'official_alias')
+                    ON CONFLICT DO NOTHING
                     """,
                     (glossary_id, alias, normalize_source(alias)),
                 )
@@ -625,7 +627,7 @@ def seed_official_entity_names(connection: sqlite3.Connection) -> int:
 
 
 def glossary_entries_for_source(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     source_text: str,
     *,
     current_report_id: int | None = None,
@@ -665,7 +667,7 @@ def glossary_entries_for_source(
 
 
 def glossary_entries_for_text(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     value: str,
     *,
     current_report_id: int | None = None,
@@ -760,7 +762,7 @@ def parse_glossary_context(value: str) -> list[dict[str, object]]:
     return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
 
 
-def row_to_glossary_entry(row: sqlite3.Row) -> GlossaryEntry:
+def row_to_glossary_entry(row: DatabaseRow) -> GlossaryEntry:
     return GlossaryEntry(
         id=int(row["id"]),
         source_text=str(row["source_text"]),

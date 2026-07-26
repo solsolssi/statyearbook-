@@ -4,14 +4,23 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
-import sqlite3
 import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
 
-from app.db.connection import connect
+from app.db.connection import DatabaseConnection, DatabaseRow, connect
 from app.db.schema import init_db
+from app.domain.enums import Severity, ValidationStatus
+from app.domain.validation import ValidationResult
 from app.validation.models import restore_hyphenated_line_breaks
+from app.validation.result_repository import (
+    delete_validation_result,
+    delete_validation_results,
+    delete_validation_results_for_candidate_kind,
+    refresh_run_issue_count,
+    save_validation_result,
+    upsert_validation_result,
+)
 from app.validation.translation_glossary import (
     extract_bilingual_pair,
     glossary_context_json,
@@ -101,36 +110,26 @@ def rebuild_blue_review_candidates(
     return inserted
 
 
-def clear_blue_review_scope(connection: sqlite3.Connection, run_id: int) -> None:
-    for table_name in ("validation_issues", "validation_checks"):
-        connection.execute(
-            f"""
-            DELETE FROM {table_name}
-            WHERE run_id = ?
-              AND (
-                    rule_id IN (?, ?, ?)
-                    OR (
-                        rule_id IN ('llm.spelling_review', 'llm.translation_review', 'llm.terminology_review')
-                        AND EXISTS (
-                            SELECT 1
-                            FROM linguistic_review_candidates candidate
-                            WHERE candidate.run_id = ?
-                              AND candidate.candidate_kind LIKE 'blue_text%'
-                              AND candidate.table_id = {table_name}.table_id
-                              AND candidate.location = {table_name}.location
-                              AND candidate.current_value = {table_name}.current_value
-                        )
-                    )
-              )
-            """,
-            (
-                run_id,
-                BLUE_REVIEW_RULE_ID,
-                BLUE_REVIEW_PREVIEW_RULE_ID,
-                BLUE_LLM_RULE_ID,
-                run_id,
-            ),
-        )
+def clear_blue_review_scope(connection: DatabaseConnection, run_id: int) -> None:
+    delete_validation_results_for_candidate_kind(
+        connection,
+        run_id=run_id,
+        candidate_kind_pattern="blue_text%",
+        rule_ids=(
+            "llm.spelling_review",
+            "llm.translation_review",
+            "llm.terminology_review",
+        ),
+    )
+    delete_validation_results(
+        connection,
+        run_id=run_id,
+        rule_ids=(
+            BLUE_REVIEW_RULE_ID,
+            BLUE_REVIEW_PREVIEW_RULE_ID,
+            BLUE_LLM_RULE_ID,
+        ),
+    )
     connection.execute(
         "DELETE FROM linguistic_review_candidates WHERE run_id = ? AND candidate_kind LIKE 'blue_text%'",
         (run_id,),
@@ -156,7 +155,7 @@ def synchronize_blue_review_checks(db_path: Path, *, run_id: int) -> int:
             (run_id,),
         ).fetchall()
 
-        grouped: dict[tuple[object, ...], list[sqlite3.Row]] = {}
+        grouped: dict[tuple[object, ...], list[DatabaseRow]] = {}
         for row in candidate_rows:
             key = (
                 int(row["table_id"]),
@@ -168,13 +167,10 @@ def synchronize_blue_review_checks(db_path: Path, *, run_id: int) -> int:
             grouped.setdefault(key, []).append(row)
 
         with connection:
-            connection.execute(
-                "DELETE FROM validation_issues WHERE run_id = ? AND rule_id IN (?, ?)",
-                (run_id, BLUE_REVIEW_RULE_ID, BLUE_REVIEW_PREVIEW_RULE_ID),
-            )
-            connection.execute(
-                "DELETE FROM validation_checks WHERE run_id = ? AND rule_id IN (?, ?)",
-                (run_id, BLUE_REVIEW_RULE_ID, BLUE_REVIEW_PREVIEW_RULE_ID),
+            delete_validation_results(
+                connection,
+                run_id=run_id,
+                rule_ids=(BLUE_REVIEW_RULE_ID, BLUE_REVIEW_PREVIEW_RULE_ID),
             )
 
             inserted_groups = 0
@@ -204,79 +200,35 @@ def synchronize_blue_review_checks(db_path: Path, *, run_id: int) -> int:
                     continue
 
                 pending_labels = "·".join(unique_nonempty(pending_types))
-                status = "확인 필요"
-                severity = "warning"
                 expected_value = "언어 검수 대기"
                 difference = f"{pending_labels} 대기"
                 detail = (
                     "HWPX 원문에서 파란색으로 표시된 검수 대상입니다. "
                     f"{pending_labels} 결과가 아직 생성되지 않았습니다."
                 )
-
-                check_values = (
-                    run_id,
-                    table_id,
-                    BLUE_REVIEW_RULE_ID,
-                    BLUE_REVIEW_TYPE,
-                    "HWPX 파란색 표기 검수",
-                    location,
-                    row_index,
-                    col_index,
-                    current_value,
-                    expected_value,
-                    difference,
-                    status,
-                    severity,
-                    detail,
-                    0.78,
-                )
-                connection.execute(
-                    """
-                    INSERT INTO validation_checks (
-                        run_id, table_id, rule_id, check_type, check_label, location,
-                        row_index, col_index, current_value, expected_value,
-                        difference, status, severity, detail, confidence
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    check_values,
+                save_validation_result(
+                    connection,
+                    run_id=run_id,
+                    result=ValidationResult(
+                        table_id=int(table_id),
+                        rule_id=BLUE_REVIEW_RULE_ID,
+                        check_type=BLUE_REVIEW_TYPE,
+                        check_label="HWPX 파란색 표기 검수",
+                        location=str(location),
+                        row_index=int(row_index) if row_index is not None else None,
+                        col_index=int(col_index) if col_index is not None else None,
+                        current_value=str(current_value),
+                        expected_value=expected_value,
+                        difference=difference,
+                        status=ValidationStatus.NEEDS_REVIEW,
+                        severity=Severity.WARNING,
+                        detail=detail,
+                        confidence=0.78,
+                    ),
                 )
                 inserted_groups += 1
-                if status != "정상":
-                    connection.execute(
-                        """
-                        INSERT INTO validation_issues (
-                            run_id, table_id, rule_id, issue_type, location,
-                            row_index, col_index, current_value, expected_value,
-                            difference, status, severity, detail
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            run_id,
-                            table_id,
-                            BLUE_REVIEW_RULE_ID,
-                            BLUE_REVIEW_TYPE,
-                            location,
-                            row_index,
-                            col_index,
-                            current_value,
-                            expected_value,
-                            difference,
-                            status,
-                            severity,
-                            detail,
-                        ),
-                    )
 
-            issue_count = connection.execute(
-                "SELECT COUNT(*) AS count FROM validation_issues WHERE run_id = ?",
-                (run_id,),
-            ).fetchone()["count"]
-            connection.execute(
-                "UPDATE validation_runs SET issue_count = ? WHERE id = ?",
-                (issue_count, run_id),
-            )
+            refresh_run_issue_count(connection, run_id=run_id)
         return inserted_groups
 
 
@@ -315,7 +267,7 @@ def parse_blue_review_result(raw_result: object) -> dict[str, str]:
 
 
 def upsert_reviewed_blue_check(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     *,
     run_id: int,
     table_id: int,
@@ -325,115 +277,30 @@ def upsert_reviewed_blue_check(
     current_value: str,
     decision: dict[str, str],
 ) -> int:
-    existing = connection.execute(
-        """
-        SELECT id
-        FROM validation_checks
-        WHERE run_id = ?
-          AND table_id = ?
-          AND rule_id = ?
-          AND location = ?
-          AND current_value = ?
-        LIMIT 1
-        """,
-        (run_id, table_id, BLUE_LLM_RULE_ID, location, current_value),
-    ).fetchone()
     expected_value = decision["expected_value"] or normalize_review_text(current_value)
     status = decision["status"]
     severity = "critical" if status == "오류 의심" else "warning" if status == "확인 필요" else "info"
-    values = (
-        BLUE_REVIEW_TYPE,
-        "HWPX 파란색 표기 LLM 검수",
-        row_index,
-        col_index,
-        expected_value,
-        decision["difference"],
-        status,
-        severity,
-        decision["detail"],
-        0.78,
+    inserted = upsert_validation_result(
+        connection,
+        run_id=run_id,
+        result=ValidationResult(
+            table_id=table_id,
+            rule_id=BLUE_LLM_RULE_ID,
+            check_type=BLUE_REVIEW_TYPE,
+            check_label="HWPX 파란색 표기 LLM 검수",
+            location=location,
+            row_index=row_index,
+            col_index=col_index,
+            current_value=current_value,
+            expected_value=expected_value,
+            difference=decision["difference"],
+            status=status,
+            severity=severity,
+            detail=decision["detail"],
+            confidence=0.78,
+        ),
     )
-    if existing is None:
-        connection.execute(
-            """
-            INSERT INTO validation_checks (
-                run_id, table_id, rule_id, check_type, check_label, location,
-                row_index, col_index, current_value, expected_value,
-                difference, status, severity, detail, confidence
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run_id,
-                table_id,
-                BLUE_LLM_RULE_ID,
-                BLUE_REVIEW_TYPE,
-                "HWPX 파란색 표기 LLM 검수",
-                location,
-                row_index,
-                col_index,
-                current_value,
-                expected_value,
-                decision["difference"],
-                status,
-                severity,
-                decision["detail"],
-                0.78,
-            ),
-        )
-        inserted = 1
-    else:
-        connection.execute(
-            """
-            UPDATE validation_checks
-            SET check_type = ?, check_label = ?, row_index = ?, col_index = ?,
-                expected_value = ?, difference = ?, status = ?, severity = ?,
-                detail = ?, confidence = ?
-            WHERE id = ?
-            """,
-            (*values, existing["id"]),
-        )
-        inserted = 0
-
-    connection.execute(
-        """
-        DELETE FROM validation_issues
-        WHERE run_id = ?
-          AND table_id = ?
-          AND rule_id = ?
-          AND location = ?
-          AND current_value = ?
-        """,
-        (run_id, table_id, BLUE_LLM_RULE_ID, location, current_value),
-    )
-    if status != "정상":
-        connection.execute(
-            """
-            INSERT INTO validation_issues (
-                run_id, table_id, rule_id, issue_type, location, row_index,
-                col_index, current_value, expected_value, difference, status,
-                severity, detail
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run_id,
-                table_id,
-                BLUE_LLM_RULE_ID,
-                BLUE_REVIEW_TYPE,
-                location,
-                row_index,
-                col_index,
-                current_value,
-                expected_value,
-                decision["difference"],
-                status,
-                severity,
-                decision["detail"],
-            ),
-        )
-
-    return inserted
+    return int(inserted)
 
 
 def materialize_blue_review_preview_placeholders(db_path: Path, *, run_id: int) -> int:
@@ -730,7 +597,7 @@ def blue_char_property_ids(archive: zipfile.ZipFile) -> set[str]:
 
 
 def append_cell_reviews(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     report_id: int,
     run_id: int,
     candidates: list[BlueReviewCandidate],
@@ -839,7 +706,7 @@ def append_cell_reviews(
 
 
 def append_unmatched_reviews(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     report_id: int,
     run_id: int,
     candidates: list[BlueReviewCandidate],
@@ -903,7 +770,7 @@ def append_unmatched_reviews(
 
 
 def append_table_field_reviews(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     report_id: int,
     run_id: int,
     candidates: list[BlueReviewCandidate],
@@ -968,7 +835,7 @@ def append_table_field_reviews(
 
 
 def insert_blue_review(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     *,
     run_id: int,
     table_id: int,
@@ -1043,7 +910,7 @@ def classify_blue_review_value(current_value: str) -> tuple[str, str, str]:
     return "blue_text_english", "", current_value
 
 
-def repair_blue_candidate_classifications(connection: sqlite3.Connection, run_id: int) -> int:
+def repair_blue_candidate_classifications(connection: DatabaseConnection, run_id: int) -> int:
     """Reset only blue results produced with a now-invalid bilingual classification."""
 
     rows = connection.execute(
@@ -1068,21 +935,14 @@ def repair_blue_candidate_classifications(connection: sqlite3.Connection, run_id
             continue
 
         if row["status"] == "reviewed":
-            for table_name in ("validation_checks", "validation_issues"):
-                connection.execute(
-                    f"""
-                    DELETE FROM {table_name}
-                    WHERE run_id = ? AND table_id = ? AND rule_id = ?
-                      AND location = ? AND current_value = ?
-                    """,
-                    (
-                        run_id,
-                        row["table_id"],
-                        BLUE_LLM_RULE_ID,
-                        row["location"],
-                        row["current_value"],
-                    ),
-                )
+            delete_validation_result(
+                connection,
+                run_id=run_id,
+                table_id=int(row["table_id"]),
+                rule_id=BLUE_LLM_RULE_ID,
+                location=str(row["location"]),
+                current_value=str(row["current_value"]),
+            )
         connection.execute(
             """
             UPDATE linguistic_review_candidates
@@ -1135,11 +995,14 @@ def blue_review_reason(*, has_korean: bool, has_english: bool) -> str:
     return "파란색 영문 원문의 오탈자, 문맥과 공식 표현을 종합 검수"
 
 
-def existing_review_values(connection: sqlite3.Connection, run_id: int) -> set[tuple[int, int | None, int | None, str]]:
+def existing_review_values(
+    connection: DatabaseConnection,
+    run_id: int,
+) -> set[tuple[int, int | None, int | None, str]]:
     rows = connection.execute(
         """
         SELECT table_id, row_index, col_index, current_value
-        FROM validation_issues
+        FROM validation_checks
         WHERE run_id = ? AND rule_id = ?
         UNION ALL
         SELECT table_id, row_index, col_index, current_value
@@ -1202,7 +1065,7 @@ def text_matches_candidate(text: str, candidate: str) -> bool:
     return bool(compact_candidate) and compact_candidate in compact_review_match_text(text)
 
 
-def table_code_for_row(row: sqlite3.Row) -> str:
+def table_code_for_row(row: DatabaseRow) -> str:
     return str(row["code"]) if "code" in row.keys() else ""
 
 

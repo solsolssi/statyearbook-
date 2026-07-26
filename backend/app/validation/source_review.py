@@ -3,12 +3,17 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 import re
-import sqlite3
 
 from app.core.numeric_text import numeric_text_anomaly
-from app.db.connection import connect
+from app.db.connection import DatabaseConnection, connect
 from app.db.schema import init_db
+from app.domain.enums import Severity, ValidationStatus
+from app.domain.validation import ValidationResult
 from app.validation.blue_review import normalize_review_text
+from app.validation.result_repository import (
+    refresh_run_issue_count,
+    save_validation_result,
+)
 
 
 SOURCE_FORMAT_RULE_ID = "source.format_review"
@@ -103,10 +108,7 @@ def append_source_format_review_checks(
                     inserted += 1
 
             if inserted:
-                connection.execute(
-                    "UPDATE validation_runs SET issue_count = issue_count + ? WHERE id = ?",
-                    (inserted, run_id),
-                )
+                refresh_run_issue_count(connection, run_id=run_id)
         return inserted
 
 
@@ -121,13 +123,13 @@ def suspicious_punctuation_reason(value: str) -> str:
 
 
 def existing_source_candidates(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
 ) -> set[tuple[int, int, int, str]]:
     rows = connection.execute(
         """
         SELECT table_id, row_index, col_index, current_value
-        FROM validation_issues
+        FROM validation_checks
         WHERE run_id = ?
           AND row_index IS NOT NULL
           AND col_index IS NOT NULL
@@ -146,7 +148,7 @@ def existing_source_candidates(
 
 
 def insert_source_candidate(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     *,
     run_id: int,
     table_id: int,
@@ -159,50 +161,23 @@ def insert_source_candidate(
 ) -> None:
     location = f"{row_index + 1}행 {col_index + 1}열"
     detail = f"규칙 엔진이 원문 표기 이상 후보를 발견했습니다. {reason} 담당자 또는 LLM이 같은 행·열 문맥을 확인해야 합니다."
-    connection.execute(
-        """
-        INSERT INTO validation_issues (
-            run_id, table_id, rule_id, issue_type, location, row_index,
-            col_index, current_value, expected_value, difference, status,
-            severity, detail, formula
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '확인 필요', 'warning', ?, NULL)
-        """,
-        (
-            run_id,
-            table_id,
-            SOURCE_FORMAT_RULE_ID,
-            SOURCE_FORMAT_TYPE,
-            location,
-            row_index,
-            col_index,
-            current_value,
-            expected_value,
-            reason,
-            detail,
-        ),
-    )
-    connection.execute(
-        """
-        INSERT INTO validation_checks (
-            run_id, table_id, profile_id, rule_id, check_type, check_label,
-            location, row_index, col_index, current_value, expected_value,
-            difference, status, severity, detail, formula, confidence
-        )
-        VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, '확인 필요', 'warning', ?, NULL, 0.75)
-        """,
-        (
-            run_id,
-            table_id,
-            SOURCE_FORMAT_RULE_ID,
-            SOURCE_FORMAT_TYPE,
-            label,
-            location,
-            row_index,
-            col_index,
-            current_value,
-            expected_value,
-            reason,
-            detail,
+    save_validation_result(
+        connection,
+        run_id=run_id,
+        result=ValidationResult(
+            table_id=table_id,
+            rule_id=SOURCE_FORMAT_RULE_ID,
+            check_type=SOURCE_FORMAT_TYPE,
+            check_label=label,
+            location=location,
+            row_index=row_index,
+            col_index=col_index,
+            current_value=current_value,
+            expected_value=expected_value,
+            difference=reason,
+            status=ValidationStatus.NEEDS_REVIEW,
+            severity=Severity.WARNING,
+            detail=detail,
+            confidence=0.75,
         ),
     )

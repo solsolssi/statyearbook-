@@ -7,7 +7,6 @@ from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 import re
-import sqlite3
 import unicodedata
 from typing import Iterable, Sequence
 
@@ -17,7 +16,7 @@ from openpyxl.utils import get_column_letter
 import xlrd
 
 from app.core.contact_metadata import parse_contact_metadata
-from app.db.connection import DB_PATH, connect
+from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
 from app.export.validation_workbooks import base_table_code
 
 
@@ -308,7 +307,7 @@ def load_onnara_users(path: Path) -> list[OnnaraUser]:
         workbook.release_resources()
 
 
-def latest_report_id(connection: sqlite3.Connection, year: int) -> int:
+def latest_report_id(connection: DatabaseConnection, year: int) -> int:
     row = connection.execute(
         """
         SELECT id FROM annual_reports
@@ -323,12 +322,15 @@ def latest_report_id(connection: sqlite3.Connection, year: int) -> int:
     return int(row["id"])
 
 
-def load_logical_tables(connection: sqlite3.Connection, report_id: int) -> list[LogicalTable]:
+def load_logical_tables(
+    connection: DatabaseConnection,
+    report_id: int,
+) -> list[LogicalTable]:
     physical_tables = connection.execute(
         "SELECT * FROM stat_tables WHERE report_id = ? ORDER BY table_order, id",
         (report_id,),
     ).fetchall()
-    grouped: dict[str, list[sqlite3.Row]] = {}
+    grouped: dict[str, list[DatabaseRow]] = {}
     for table in physical_tables:
         grouped.setdefault(base_table_code(table["code"]), []).append(table)
 

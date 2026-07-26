@@ -1,8 +1,3 @@
-from pathlib import Path
-from datetime import datetime
-import re
-from uuid import uuid4
-
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
 
 from app.models.report import (
@@ -14,13 +9,16 @@ from app.models.report import (
     ValidationRunResult,
 )
 from app.services.report_service import get_report_service
-from app.core.config import get_settings
+from app.services.report_import_service import (
+    ReportImportRequest,
+    ReportImportService,
+    ReportUploadError,
+)
 from app.validation.profile_repository import ValidationProfileRepository
 from app.validation.profiles import ValidationProfile
 from app.validation.run_validations import run_validations
 from app.workflows.report_processing import (
     ReportProcessingError,
-    ReportProcessingOptions,
     ReportProcessingWorkflow,
 )
 
@@ -65,52 +63,25 @@ async def create_report_import(
     include_llm: bool | None = Query(default=None),
     refresh_profiles: bool = Query(default=False),
 ) -> ReportProcessingJob:
-    """Accept a raw workbook/document body and queue import plus validation.
+    """Stream one workbook/document into a queued import and validation job."""
 
-    A raw request body avoids a multipart runtime dependency. Browser clients
-    can send the selected File object directly with the original filename in
-    the query string.
-    """
-
-    settings = get_settings()
-    body = await request.body()
-    if not body:
-        raise HTTPException(status_code=400, detail="업로드 파일이 비어 있습니다.")
-    if len(body) > settings.max_upload_bytes:
-        raise HTTPException(status_code=413, detail="업로드 가능한 파일 크기를 초과했습니다.")
-
-    safe_name = Path(filename).name
-    suffix = Path(safe_name).suffix.lower()
-    if suffix not in {".xlsx", ".hwpx", ".md"}:
-        raise HTTPException(status_code=415, detail="xlsx, hwpx, md 파일만 업로드할 수 있습니다.")
-    settings.upload_dir.mkdir(parents=True, exist_ok=True)
-    source_path = settings.upload_dir / f"{uuid4().hex}_{safe_name}"
-    source_path.write_bytes(body)
-
-    workflow = ReportProcessingWorkflow()
-    inferred_year_match = re.search(r"(?:19|20)\d{2}", safe_name)
-    report_year = year or (
-        int(inferred_year_match.group(0)) if inferred_year_match else datetime.now().year
-    )
+    import_service = ReportImportService()
     try:
-        job_id = workflow.create_job(
-            source_path=source_path,
-            year=report_year,
-            title=title or f"{report_year} 행정안전통계연보",
-            options=ReportProcessingOptions(
-                include_llm=(
-                    settings.auto_import_include_llm
-                    if include_llm is None
-                    else include_llm
-                ),
+        job = await import_service.create_job(
+            ReportImportRequest(
+                filename=filename,
+                year=year,
+                title=title,
+                include_llm=include_llm,
                 refresh_profiles=refresh_profiles,
             ),
+            request.stream(),
         )
-    except ValueError as error:
-        source_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=415, detail=str(error)) from error
+    except ReportUploadError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+    job_id = int(job["id"])
     background_tasks.add_task(run_processing_job, job_id)
-    return ReportProcessingJob(**(workflow.get_job(job_id) or {}))
+    return ReportProcessingJob(**job)
 
 
 @router.get("/imports/{job_id}", response_model=ReportProcessingJob)

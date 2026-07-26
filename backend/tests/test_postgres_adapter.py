@@ -22,9 +22,10 @@ class PostgresAdapterTest(unittest.TestCase):
             ("INSERT INTO annual_reports (year) VALUES (%s) RETURNING id", True),
         )
 
-    def test_translates_sqlite_ignore_insert(self) -> None:
+    def test_keeps_portable_conflict_clause(self) -> None:
         translated = translate_sql(
-            "INSERT OR IGNORE INTO linguistic_review_candidates (run_id) VALUES (?)"
+            "INSERT INTO linguistic_review_candidates (run_id) VALUES (?) "
+            "ON CONFLICT DO NOTHING"
         )
         self.assertEqual(
             translated,
@@ -35,9 +36,10 @@ class PostgresAdapterTest(unittest.TestCase):
             ),
         )
 
-    def test_translates_sqlite_null_safe_is_placeholder(self) -> None:
+    def test_keeps_portable_null_safe_comparison(self) -> None:
         translated = translate_sql(
-            "DELETE FROM validation_checks WHERE row_index IS ? AND col_index IS ?"
+            "DELETE FROM validation_checks WHERE row_index IS NOT DISTINCT FROM ? "
+            "AND col_index IS NOT DISTINCT FROM ?"
         )
         self.assertEqual(
             translated,

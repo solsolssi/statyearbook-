@@ -5,15 +5,12 @@ from functools import cached_property
 import re
 
 from app.core.numeric_text import parse_numeric_value
+from app.domain.enums import Severity, ValidationStatus
+from app.domain.parsed import ParsedCell
+from app.domain.validation import ValidationResult
 
 
-@dataclass(frozen=True)
-class ValidationCell:
-    row_index: int
-    col_index: int
-    text_value: str
-    numeric_value: float | None
-    is_header: bool
+ValidationCell = ParsedCell
 
 
 @dataclass(frozen=True)
@@ -25,32 +22,15 @@ class ValidationIssueRecord:
     current_value: str
     expected_value: str | None
     difference: str | None
-    severity: str
+    severity: Severity | str
     detail: str
     row_index: int | None = None
     col_index: int | None = None
-    status: str = "확인 필요"
+    status: ValidationStatus | str = ValidationStatus.NEEDS_REVIEW
     formula: str | None = None
 
 
-@dataclass(frozen=True)
-class ValidationCheckRecord:
-    table_id: int
-    rule_id: str
-    check_type: str
-    check_label: str
-    location: str
-    current_value: str
-    expected_value: str | None
-    difference: str | None
-    status: str
-    severity: str
-    detail: str
-    row_index: int | None = None
-    col_index: int | None = None
-    formula: str | None = None
-    profile_id: int | None = None
-    confidence: float | None = None
+ValidationCheckRecord = ValidationResult
 
 
 @dataclass

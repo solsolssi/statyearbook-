@@ -5,12 +5,14 @@ from pathlib import Path
 
 from app.db.connection import DB_PATH, connect
 from app.db.schema import init_db
+from app.domain.enums import LanguageReviewStatus
 from app.validation.blue_review import append_blue_text_review_checks, synchronize_blue_review_checks
 from app.validation.llm_translation_review import (
     append_llm_translation_reviews,
     apply_reusable_linguistic_reviews,
 )
 from app.validation.linguistic_review import prepare_linguistic_reviews
+from app.validation.result_repository import refresh_run_issue_count
 from app.validation.source_review import append_source_format_review_checks
 
 
@@ -23,8 +25,12 @@ class LanguageValidationResult:
     source_issue_count: int
 
     @property
-    def status(self) -> str:
-        return "완료" if self.pending_count == 0 else "대기"
+    def status(self) -> LanguageReviewStatus:
+        return (
+            LanguageReviewStatus.COMPLETED
+            if self.pending_count == 0
+            else LanguageReviewStatus.PENDING
+        )
 
 
 class LanguageValidationWorkflow:
@@ -96,15 +102,7 @@ class LanguageValidationWorkflow:
 
 
 def refresh_stored_issue_count(connection, run_id: int) -> int:
-    row = connection.execute(
-        "SELECT COUNT(*) AS issue_count FROM validation_issues WHERE run_id = ?",
-        (run_id,),
-    ).fetchone()
-    issue_count = int(row["issue_count"] if row else 0)
-    connection.execute(
-        "UPDATE validation_runs SET issue_count = ? WHERE id = ?",
-        (issue_count, run_id),
-    )
+    issue_count = refresh_run_issue_count(connection, run_id=run_id)
     connection.commit()
     return issue_count
 

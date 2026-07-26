@@ -5,11 +5,10 @@ from dataclasses import dataclass
 import argparse
 import json
 from pathlib import Path
-import sqlite3
 import time
 from typing import Any
 
-from app.db.connection import DB_PATH, connect
+from app.db.connection import DB_PATH, DatabaseConnection, connect
 from app.db.schema import init_db
 from app.validation.blue_review import normalize_review_text
 from app.validation.linguistic_policy import (
@@ -30,6 +29,7 @@ from app.validation.llm_translation_review import (
     request_review_with_retries,
     rule_id_for,
 )
+from app.validation.result_repository import delete_validation_result
 from app.validation.translation_glossary import normalize_source, normalize_target
 
 
@@ -177,7 +177,7 @@ def audit_translation_glossary(
     )
 
 
-def quarantine_known_spelling_contamination(connection: sqlite3.Connection) -> int:
+def quarantine_known_spelling_contamination(connection: DatabaseConnection) -> int:
     contaminated: set[tuple[str, str]] = set()
     for row in connection.execute(
         """
@@ -231,7 +231,7 @@ def quarantine_known_spelling_contamination(connection: sqlite3.Connection) -> i
     return len(contaminated)
 
 
-def verify_authoritative_reference_pairs(connection: sqlite3.Connection) -> int:
+def verify_authoritative_reference_pairs(connection: DatabaseConnection) -> int:
     pairs = connection.execute(
         """
         SELECT DISTINCT reference.source_normalized, reference.target_normalized,
@@ -274,7 +274,7 @@ def verify_authoritative_reference_pairs(connection: sqlite3.Connection) -> int:
 
 
 def load_reference_pairs(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     *,
     limit: int | None = None,
 ) -> list[GlossaryAuditPair]:
@@ -398,7 +398,7 @@ def review_glossary_batch(
 
 
 def save_glossary_audit_batch(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     batch: list[SourceReviewItem],
     decisions: list[dict[str, Any]],
     pair_by_primary_id: dict[int, GlossaryAuditPair],
@@ -467,7 +467,7 @@ def save_glossary_audit_batch(
 
 
 def record_audit_result(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     *,
     source_normalized: str,
     target_normalized: str,
@@ -518,7 +518,7 @@ def record_audit_result(
 
 
 def update_reference_pair_status(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     source_normalized: str,
     target_normalized: str,
     status: str,
@@ -535,7 +535,7 @@ def update_reference_pair_status(
 
 
 def reset_rejected_dictionary_candidates(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
 ) -> tuple[int, list[int]]:
     rejected_pairs = {
         (str(row["source_normalized"]), str(row["target_normalized"]))
@@ -587,21 +587,13 @@ def reset_rejected_dictionary_candidates(
             (int(row["id"]),),
         )
         rule_id = rule_id_for(review_type)
-        connection.execute(
-            """
-            DELETE FROM validation_checks
-            WHERE run_id = ? AND table_id = ? AND rule_id = ?
-              AND location = ? AND current_value = ?
-            """,
-            (run_id, table_id, rule_id, location, current),
-        )
-        connection.execute(
-            """
-            DELETE FROM validation_issues
-            WHERE run_id = ? AND table_id = ? AND rule_id = ?
-              AND location = ? AND current_value = ?
-            """,
-            (run_id, table_id, rule_id, location, current),
+        delete_validation_result(
+            connection,
+            run_id=run_id,
+            table_id=table_id,
+            rule_id=rule_id,
+            location=location,
+            current_value=current,
         )
         reset += 1
         affected_runs.add(run_id)
@@ -610,7 +602,7 @@ def reset_rejected_dictionary_candidates(
     return reset, sorted(affected_runs)
 
 
-def count_distinct_reference_pairs(connection: sqlite3.Connection) -> int:
+def count_distinct_reference_pairs(connection: DatabaseConnection) -> int:
     row = connection.execute(
         """
         SELECT COUNT(*) AS pair_count

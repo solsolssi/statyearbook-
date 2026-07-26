@@ -11,6 +11,11 @@ from app.validation.models import (
     ValidationIssueRecord,
     ValidationTable,
 )
+from app.validation.result_repository import (
+    merge_legacy_issues,
+    refresh_run_issue_count,
+    save_validation_results,
+)
 
 
 class ValidationRepository:
@@ -69,7 +74,7 @@ class ValidationRepository:
     ) -> int:
         started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         completed_at = started_at
-        check_records = checks or []
+        check_records = merge_legacy_issues(checks or [], issues)
 
         with connect(self._db_path) as connection:
             init_db(connection)
@@ -81,71 +86,16 @@ class ValidationRepository:
                     )
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    (report_id, rules_version, started_at, completed_at, len(issues)),
+                    (report_id, rules_version, started_at, completed_at, 0),
                 )
                 run_id = cursor.lastrowid
 
-                connection.executemany(
-                    """
-                    INSERT INTO validation_issues (
-                        run_id, table_id, rule_id, issue_type, location, row_index,
-                        col_index, current_value, expected_value, difference, status,
-                        severity, detail, formula
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        (
-                            run_id,
-                            issue.table_id,
-                            issue.rule_id,
-                            issue.issue_type,
-                            issue.location,
-                            issue.row_index,
-                            issue.col_index,
-                            issue.current_value,
-                            issue.expected_value,
-                            issue.difference,
-                            issue.status,
-                            issue.severity,
-                            issue.detail,
-                            issue.formula,
-                        )
-                        for issue in issues
-                    ],
+                save_validation_results(
+                    connection,
+                    run_id=int(run_id),
+                    results=check_records,
                 )
-                connection.executemany(
-                    """
-                    INSERT INTO validation_checks (
-                        run_id, table_id, profile_id, rule_id, check_type, check_label,
-                        location, row_index, col_index, current_value, expected_value,
-                        difference, status, severity, detail, formula, confidence
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        (
-                            run_id,
-                            check.table_id,
-                            check.profile_id,
-                            check.rule_id,
-                            check.check_type,
-                            check.check_label,
-                            check.location,
-                            check.row_index,
-                            check.col_index,
-                            check.current_value,
-                            check.expected_value,
-                            check.difference,
-                            check.status,
-                            check.severity,
-                            check.detail,
-                            check.formula,
-                            check.confidence,
-                        )
-                        for check in check_records
-                    ],
-                )
+                refresh_run_issue_count(connection, run_id=int(run_id))
 
         return int(run_id)
 

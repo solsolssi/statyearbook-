@@ -2,12 +2,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-
-TableStatus = Literal["normal", "needs_review", "suspected_error"]
-Severity = Literal["info", "warning", "critical"]
-HighlightRole = Literal["target", "related"]
-HighlightScope = Literal["none", "metadata", "cell", "header", "row", "column"]
-
+from app.domain.enums import (
+    HighlightRole,
+    HighlightScope,
+    JobStatus,
+    LanguageReviewStatus,
+    ProfileStatus,
+    Severity,
+    TableStatus,
+    ValidationStatus,
+)
 
 class Metric(BaseModel):
     label: str
@@ -29,12 +33,12 @@ class ColumnDefinition(BaseModel):
 class ValidationHighlightCell(BaseModel):
     row_index: int
     col_index: int
-    role: HighlightRole = "related"
+    role: HighlightRole = HighlightRole.RELATED
 
 
 class ValidationHighlightRow(BaseModel):
     row_index: int
-    role: HighlightRole = "related"
+    role: HighlightRole = HighlightRole.RELATED
 
 
 class ValidationIssue(BaseModel):
@@ -47,11 +51,11 @@ class ValidationIssue(BaseModel):
     current_value: str
     expected_value: str | None = None
     difference: str | None = None
-    status: str = "확인 필요"
-    severity: Severity = "warning"
+    status: ValidationStatus = ValidationStatus.NEEDS_REVIEW
+    severity: Severity = Severity.WARNING
     detail: str
     formula: str | None = None
-    highlight_scope: HighlightScope = "none"
+    highlight_scope: HighlightScope = HighlightScope.NONE
     highlight_cells: list[ValidationHighlightCell] = Field(default_factory=list)
     highlight_rows: list[ValidationHighlightRow] = Field(default_factory=list)
     focus_cell: ValidationHighlightCell | None = None
@@ -190,7 +194,7 @@ class ValidationProfileSummary(BaseModel):
     table_title: str
     structure_signature: str
     table_type: str
-    status: str
+    status: ProfileStatus
     source: str
     rules_count: int
     requires_llm_review: bool = False
@@ -213,7 +217,7 @@ class ValidationRunResult(BaseModel):
     language_candidates: int = 0
     language_pending: int = 0
     language_reused: int = 0
-    language_status: str = "대기"
+    language_status: LanguageReviewStatus = LanguageReviewStatus.PENDING
 
 
 class ReportProcessingJob(BaseModel):
@@ -226,7 +230,7 @@ class ReportProcessingJob(BaseModel):
     report_year: int
     report_title: str
     options_json: str
-    status: str
+    status: JobStatus
     current_stage: str
     error_message: str = ""
     result_json: str = "{}"

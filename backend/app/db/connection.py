@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 import sqlite3
-from typing import Any
+from types import TracebackType
+from typing import Any, Protocol, TypeVar
 
 from app.core.env import env_value, load_local_env_file
 from app.db.postgres import PostgresConnection
@@ -10,8 +12,59 @@ from app.db.postgres import PostgresConnection
 
 DB_PATH = Path(__file__).with_name("annual_statistics.sqlite")
 SUPPORTED_DATABASE_BACKENDS = {"auto", "sqlite", "postgres"}
-DatabaseConnection = sqlite3.Connection | PostgresConnection
-DatabaseRow = sqlite3.Row | dict[str, Any]
+
+
+class DatabaseRow(Protocol):
+    def __getitem__(self, key: str | int) -> Any: ...
+
+    def keys(self) -> Iterable[str]: ...
+
+
+class DatabaseCursor(Protocol):
+    lastrowid: int | None
+
+    @property
+    def rowcount(self) -> int: ...
+
+    def fetchone(self) -> DatabaseRow | None: ...
+
+    def fetchall(self) -> list[DatabaseRow]: ...
+
+    def __iter__(self) -> Iterator[DatabaseRow]: ...
+
+
+ConnectionT = TypeVar("ConnectionT", bound="DatabaseConnection")
+
+
+class DatabaseConnection(Protocol):
+    def execute(
+        self,
+        sql: str,
+        params: Sequence[Any] | None = None,
+    ) -> DatabaseCursor: ...
+
+    def executemany(
+        self,
+        sql: str,
+        params_seq: Iterable[Sequence[Any]],
+    ) -> DatabaseCursor: ...
+
+    def executescript(self, script: str) -> None: ...
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def __enter__(self: ConnectionT) -> ConnectionT: ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
 
 
 def configured_database_backend(db_path: Path | None = None) -> str:
@@ -51,6 +104,13 @@ def connect(db_path: Path | None = None) -> DatabaseConnection:
         return PostgresConnection(database_url)
 
     resolved_path = Path(db_path) if db_path is not None else DB_PATH
+    return connect_sqlite(resolved_path)
+
+
+def connect_sqlite(db_path: Path = DB_PATH) -> DatabaseConnection:
+    """Open SQLite explicitly at adapter boundaries such as data migration tools."""
+
+    resolved_path = Path(db_path)
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(resolved_path)
     connection.row_factory = sqlite3.Row

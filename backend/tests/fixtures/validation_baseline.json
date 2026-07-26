@@ -1,0 +1,195 @@
+{
+  "snapshot_version": "2026-07-23",
+  "reports": {
+    "2025": {
+      "title": "2025 행정안전통계연보",
+      "tables": {
+        "3-2-1-2": {
+          "counts": {
+            "메타정보 검수|정상": 1,
+            "번역 검수|정상": 42,
+            "오탈자 검수|정상": 42,
+            "이상치 검수|정상": 1,
+            "합계 검수|정상": 56
+          },
+          "sample": {
+            "rule_id": "profile.3-2-1-2.column_total_r1",
+            "status": "정상",
+            "row_index": 1,
+            "col_index": 2,
+            "highlight_cells": [
+              [1, 2, "target"],
+              [2, 2, "related"],
+              [3, 2, "related"],
+              [4, 2, "related"],
+              [5, 2, "related"]
+            ]
+          }
+        },
+        "4-1-8-3": {
+          "counts": {
+            "메타정보 검수|정상": 1,
+            "번역 검수|정상": 47,
+            "오탈자 검수|정상": 47,
+            "이상치 검수|확인 필요": 1,
+            "합계 검수|오류 의심": 19,
+            "합계 검수|정상": 53
+          },
+          "sample": {
+            "rule_id": "curated.4-1-8-3.grand_total_by_service",
+            "status": "오류 의심",
+            "row_index": 2,
+            "col_index": 6,
+            "highlight_cells": [
+              [2, 6, "target"],
+              [3, 6, "related"],
+              [21, 6, "related"],
+              [22, 6, "related"],
+              [23, 6, "related"]
+            ]
+          }
+        },
+        "5-1-1-2": {
+          "counts": {
+            "메타정보 검수|정상": 1,
+            "번역 검수|정상": 34,
+            "오탈자 검수|정상": 34,
+            "이상치 검수|확인 필요": 1,
+            "합계 검수|오류 의심": 1,
+            "합계 검수|정상": 116
+          },
+          "sample": {
+            "rule_id": "profile.5-1-1-2.region_total_r2",
+            "status": "오류 의심",
+            "row_index": 2,
+            "col_index": 8,
+            "highlight_prefix": [
+              [2, 8, "target"],
+              [3, 8, "related"],
+              [4, 8, "related"],
+              [5, 8, "related"]
+            ]
+          }
+        },
+        "7-1-8-1": {
+          "counts": {
+            "메타정보 검수|정상": 1,
+            "번역 검수|정상": 25,
+            "비율 검수|오류 의심": 1,
+            "비율 검수|정상": 17,
+            "오탈자 검수|오류 의심": 1,
+            "오탈자 검수|정상": 25,
+            "이상치 검수|확인 필요": 1,
+            "합계 검수|정상": 23
+          },
+          "sample": {
+            "rule_id": "profile.7-1-8-1.d_e_ratio",
+            "status": "오류 의심",
+            "row_index": 1,
+            "col_index": 6,
+            "highlight_cells": [
+              [1, 6, "target"],
+              [1, 4, "related"],
+              [1, 5, "related"]
+            ]
+          }
+        }
+      }
+    },
+    "2026": {
+      "title": "2026 행정안전통계연보",
+      "tables": {
+        "3-2-1-2": {
+          "counts": {
+            "메타정보 검수|정상": 1,
+            "번역 검수|정상": 42,
+            "오탈자 검수|정상": 42,
+            "이상치 검수|정상": 1,
+            "합계 검수|정상": 56
+          },
+          "sample": {
+            "rule_id": "profile.3-2-1-2.column_total_r1",
+            "status": "정상",
+            "row_index": 1,
+            "col_index": 2,
+            "highlight_cells": [
+              [1, 2, "target"],
+              [2, 2, "related"],
+              [3, 2, "related"],
+              [4, 2, "related"],
+              [5, 2, "related"]
+            ]
+          }
+        },
+        "4-1-8-3": {
+          "counts": {
+            "메타정보 검수|정상": 1,
+            "번역 검수|정상": 50,
+            "오탈자 검수|정상": 50,
+            "이상치 검수|확인 필요": 1,
+            "합계 검수|오류 의심": 29,
+            "합계 검수|정상": 43
+          },
+          "sample": {
+            "rule_id": "curated.4-1-8-3.female_age_total",
+            "status": "오류 의심",
+            "row_index": 2,
+            "col_index": 2,
+            "highlight_cells": [
+              [2, 2, "target"],
+              [2, 4, "related"],
+              [2, 6, "related"],
+              [2, 8, "related"],
+              [2, 10, "related"],
+              [2, 12, "related"],
+              [2, 14, "related"]
+            ]
+          }
+        },
+        "5-1-1-2": {
+          "counts": {
+            "메타정보 검수|정상": 1,
+            "번역 검수|정상": 34,
+            "오탈자 검수|정상": 34,
+            "이상치 검수|확인 필요": 1,
+            "합계 검수|오류 의심": 2,
+            "합계 검수|정상": 115
+          },
+          "sample": {
+            "rule_id": "profile.5-1-1-2.region_total_r2",
+            "status": "오류 의심",
+            "row_index": 2,
+            "col_index": 2,
+            "highlight_prefix": [
+              [2, 2, "target"],
+              [3, 2, "related"],
+              [4, 2, "related"],
+              [5, 2, "related"]
+            ]
+          }
+        },
+        "7-1-8-1": {
+          "counts": {
+            "메타정보 검수|정상": 1,
+            "번역 검수|정상": 27,
+            "비율 검수|정상": 18,
+            "오탈자 검수|정상": 27,
+            "이상치 검수|확인 필요": 1,
+            "합계 검수|정상": 23
+          },
+          "sample": {
+            "rule_id": "profile.7-1-8-1.d_e_ratio",
+            "status": "정상",
+            "row_index": 1,
+            "col_index": 6,
+            "highlight_cells": [
+              [1, 6, "target"],
+              [1, 4, "related"],
+              [1, 5, "related"]
+            ]
+          }
+        }
+      }
+    }
+  }
+}

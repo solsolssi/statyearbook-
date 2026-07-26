@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import re
-import sqlite3
 import time
 from typing import Any
 from urllib import request
@@ -24,8 +23,9 @@ from app.core.llm_client import (
     resolve_llm_client_settings,
 )
 
-from app.db.connection import DB_PATH, connect
+from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
 from app.db.schema import init_db
+from app.domain.validation import ValidationResult
 from app.validation.blue_review import (
     BLUE_LLM_RULE_ID,
     BLUE_REVIEW_RULE_ID,
@@ -47,6 +47,14 @@ from app.validation.linguistic_review import (
 )
 from app.validation.source_review import SOURCE_FORMAT_RULE_ID, SOURCE_FORMAT_TYPE
 from app.validation.region_glossary import region_review_decision
+from app.validation.result_repository import (
+    delete_validation_result,
+    delete_validation_results,
+    refresh_run_issue_count,
+    save_validation_result,
+    update_validation_result_outcome,
+    validation_problem_count,
+)
 from app.validation.translation_glossary import (
     infer_category,
     infer_subcategory,
@@ -365,7 +373,7 @@ def append_llm_translation_reviews(
 
 
 def resolve_blue_region_candidates(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
 ) -> tuple[int, int, int]:
     """Resolve complete Korean administrative-area lists without an LLM call."""
@@ -402,7 +410,7 @@ def resolve_blue_region_candidates(
 
 
 def pending_linguistic_candidate_count(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
     *,
     blue_only: bool = False,
@@ -440,7 +448,7 @@ def is_standard_language_item(item: SourceReviewItem) -> bool:
 
 
 def reset_standard_language_review_results(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
 ) -> tuple[int, int, int]:
     """Reset spelling/translation results while preserving blue-text reviews."""
@@ -457,16 +465,6 @@ def reset_standard_language_review_results(
             (run_id, SPELLING_CHECK_TYPE, TRANSLATION_CHECK_TYPE),
         ).fetchone()["item_count"]
     )
-    issue_count = int(
-        connection.execute(
-            """
-            SELECT COUNT(*) AS item_count
-            FROM validation_issues
-            WHERE run_id = ? AND rule_id IN (?, ?)
-            """,
-            (run_id, LLM_SPELLING_RULE_ID, LLM_TRANSLATION_RULE_ID),
-        ).fetchone()["item_count"]
-    )
     check_count = int(
         connection.execute(
             """
@@ -477,13 +475,20 @@ def reset_standard_language_review_results(
             (run_id, LLM_SPELLING_RULE_ID, LLM_TRANSLATION_RULE_ID),
         ).fetchone()["item_count"]
     )
-    connection.execute(
-        "DELETE FROM validation_issues WHERE run_id = ? AND rule_id IN (?, ?)",
-        (run_id, LLM_SPELLING_RULE_ID, LLM_TRANSLATION_RULE_ID),
+    issue_count = int(
+        connection.execute(
+            """
+            SELECT COUNT(*) AS item_count
+            FROM validation_checks
+            WHERE run_id = ? AND rule_id IN (?, ?) AND status <> '정상'
+            """,
+            (run_id, LLM_SPELLING_RULE_ID, LLM_TRANSLATION_RULE_ID),
+        ).fetchone()["item_count"]
     )
-    connection.execute(
-        "DELETE FROM validation_checks WHERE run_id = ? AND rule_id IN (?, ?)",
-        (run_id, LLM_SPELLING_RULE_ID, LLM_TRANSLATION_RULE_ID),
+    delete_validation_results(
+        connection,
+        run_id=run_id,
+        rule_ids=(LLM_SPELLING_RULE_ID, LLM_TRANSLATION_RULE_ID),
     )
     connection.execute(
         """
@@ -511,7 +516,7 @@ def reset_standard_language_review_results(
 
 
 def reconcile_standard_language_findings(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
 ) -> int:
     """Remove duplicated or non-actionable findings after the full language run."""
@@ -530,7 +535,7 @@ def reconcile_standard_language_findings(
         """,
         (run_id, SPELLING_CHECK_TYPE, TRANSLATION_CHECK_TYPE),
     ).fetchall()
-    parsed_rows: list[tuple[sqlite3.Row, dict[str, Any], SourceReviewItem]] = []
+    parsed_rows: list[tuple[DatabaseRow, dict[str, Any], SourceReviewItem]] = []
     spelling_corrections: set[tuple[int, str, str, str]] = set()
     for row in rows:
         try:
@@ -591,38 +596,18 @@ def reconcile_standard_language_findings(
                 (serialized, fingerprint),
             )
         rule_id = rule_id_for(review_type)
-        connection.execute(
-            """
-            UPDATE validation_checks
-            SET status = '정상', severity = 'info', expected_value = ?,
-                difference = ?, detail = ?
-            WHERE run_id = ? AND table_id = ? AND rule_id = ?
-              AND location = ? AND current_value = ?
-            """,
-            (
-                current,
-                corrected["difference"],
-                corrected["detail"],
-                run_id,
-                int(row["table_id"]),
-                rule_id,
-                str(row["location"]),
-                current,
-            ),
-        )
-        connection.execute(
-            """
-            DELETE FROM validation_issues
-            WHERE run_id = ? AND table_id = ? AND rule_id = ?
-              AND location = ? AND current_value = ?
-            """,
-            (
-                run_id,
-                int(row["table_id"]),
-                rule_id,
-                str(row["location"]),
-                current,
-            ),
+        update_validation_result_outcome(
+            connection,
+            run_id=run_id,
+            table_id=int(row["table_id"]),
+            rule_id=rule_id,
+            location=str(row["location"]),
+            current_value=current,
+            expected_value=current,
+            difference=corrected["difference"],
+            status="정상",
+            severity="info",
+            detail=corrected["detail"],
         )
         reconciled += 1
     if reconciled:
@@ -630,7 +615,7 @@ def reconcile_standard_language_findings(
     return reconciled
 
 
-def reviewed_candidate_item(row: sqlite3.Row) -> SourceReviewItem:
+def reviewed_candidate_item(row: DatabaseRow) -> SourceReviewItem:
     try:
         glossary = json.loads(str(row["glossary_json"] or "[]"))
     except (json.JSONDecodeError, TypeError):
@@ -1267,7 +1252,7 @@ def parse_response_json(response: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_source_review_items(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
     *,
     limit: int | None = None,
@@ -1279,11 +1264,11 @@ def load_source_review_items(
     rows = connection.execute(
         f"""
         SELECT
-            vi.id AS issue_id,
-            vi.rule_id AS source_rule_id,
-            vi.difference AS candidate_reason,
-            vi.expected_value AS candidate_expected,
-            vi.table_id,
+            vc.id AS issue_id,
+            vc.rule_id AS source_rule_id,
+            vc.difference AS candidate_reason,
+            vc.expected_value AS candidate_expected,
+            vc.table_id,
             st.code,
             st.title,
             st.title_en,
@@ -1291,16 +1276,16 @@ def load_source_review_items(
             st.base_date,
             st.note,
             st.source,
-            vi.location,
-            vi.row_index,
-            vi.col_index,
-            vi.current_value
-        FROM validation_issues vi
-        JOIN stat_tables st ON st.id = vi.table_id
-        WHERE vi.run_id = ?
-          AND vi.rule_id IN (?, ?)
-          AND vi.issue_type IN (?, ?)
-        ORDER BY st.table_order, vi.id
+            vc.location,
+            vc.row_index,
+            vc.col_index,
+            vc.current_value
+        FROM validation_checks vc
+        JOIN stat_tables st ON st.id = vc.table_id
+        WHERE vc.run_id = ?
+          AND vc.rule_id IN (?, ?)
+          AND vc.check_type IN (?, ?)
+        ORDER BY st.table_order, vc.id
         {limit_sql}
         """,
         (run_id, BLUE_REVIEW_RULE_ID, SOURCE_FORMAT_RULE_ID, BLUE_REVIEW_TYPE, SOURCE_FORMAT_TYPE)
@@ -1318,7 +1303,10 @@ def load_source_review_items(
     return [build_source_review_item(connection, row) for row in rows]
 
 
-def build_source_review_item(connection: sqlite3.Connection, row: sqlite3.Row) -> SourceReviewItem:
+def build_source_review_item(
+    connection: DatabaseConnection,
+    row: DatabaseRow,
+) -> SourceReviewItem:
     row_index = row["row_index"]
     col_index = row["col_index"]
     cell_text = ""
@@ -1361,7 +1349,7 @@ def build_source_review_item(connection: sqlite3.Connection, row: sqlite3.Row) -
 
 
 def load_linguistic_review_items(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
 ) -> list[SourceReviewItem]:
     rows = connection.execute(
@@ -1456,7 +1444,7 @@ def load_linguistic_review_items(
 
 
 def linguistic_cell_context(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
 ) -> tuple[
     dict[tuple[int, int, int], str],
@@ -1510,7 +1498,7 @@ def surrounding_rows_from_context(
     return result
 
 
-def source_candidate_kind(row: sqlite3.Row) -> str:
+def source_candidate_kind(row: DatabaseRow) -> str:
     if row["source_rule_id"] == BLUE_REVIEW_RULE_ID:
         return "blue_text"
     reason = normalize_review_text(row["candidate_reason"] or "")
@@ -1796,7 +1784,7 @@ def canonical_korean_text(value: str) -> str:
     return "".join(re.findall(r"[가-힣]+", normalize_review_text(value)))
 
 
-def table_field_context(row: sqlite3.Row) -> str:
+def table_field_context(row: DatabaseRow) -> str:
     location = normalize_review_text(row["location"] or "")
     if location == "출처":
         return normalize_review_text(row["source"] or "")
@@ -1810,7 +1798,7 @@ def table_field_context(row: sqlite3.Row) -> str:
 
 
 def surrounding_row_texts(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     table_id: int,
     row_index: int | None,
 ) -> list[str]:
@@ -1833,7 +1821,12 @@ def surrounding_row_texts(
     return [f"{index + 1}행: {' | '.join(values)[:900]}" for index, values in grouped.items()]
 
 
-def cell_text_at(connection: sqlite3.Connection, table_id: int, row_index: int, col_index: int) -> str:
+def cell_text_at(
+    connection: DatabaseConnection,
+    table_id: int,
+    row_index: int,
+    col_index: int,
+) -> str:
     row = connection.execute(
         """
         SELECT text_value
@@ -1845,7 +1838,11 @@ def cell_text_at(connection: sqlite3.Connection, table_id: int, row_index: int, 
     return normalize_review_text(row["text_value"]) if row else ""
 
 
-def column_header_text(connection: sqlite3.Connection, table_id: int, col_index: int) -> str:
+def column_header_text(
+    connection: DatabaseConnection,
+    table_id: int,
+    col_index: int,
+) -> str:
     rows = connection.execute(
         """
         SELECT text_value
@@ -1864,7 +1861,7 @@ def column_header_text(connection: sqlite3.Connection, table_id: int, col_index:
 
 
 def resolve_linguistic_candidates_from_glossary(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
     *,
     standard_language_only: bool = False,
@@ -2018,7 +2015,7 @@ def normal_glossary_decision(item: SourceReviewItem, source_title: str) -> dict[
 
 
 def reuse_cached_linguistic_reviews(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
     *,
     reviewed_model: str,
@@ -2122,7 +2119,7 @@ def normalize_context_numbers(value: str) -> str:
 
 
 def save_llm_review_decisions(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
     batch: list[SourceReviewItem],
     decisions: list[dict[str, Any]],
@@ -2181,7 +2178,6 @@ def save_llm_review_decisions(
         inserted_checks += 1
         processed += 1
         if decision["status"] != "정상":
-            insert_llm_issue(connection, run_id, item, decision)
             inserted_issues += 1
         if resolution_source == "llm" and decision["issue_type"] == TRANSLATION_CHECK_TYPE:
             upsert_llm_reviewed_glossary(
@@ -2203,7 +2199,7 @@ def save_llm_review_decisions(
 
 
 def candidate_source_still_matches(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
     item: SourceReviewItem,
 ) -> bool:
@@ -2436,7 +2432,7 @@ def expected_drops_bilingual_context(
 
 
 def reconcile_non_actionable_bilingual_reviews(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
 ) -> tuple[int, int, int]:
     """Normalize stored bilingual findings without calling the language model again."""
@@ -2508,43 +2504,19 @@ def reconcile_non_actionable_bilingual_reviews(
         check_type = str(row["check_type"] or TRANSLATION_CHECK_TYPE)
         if not expected_drops_bilingual_context(current, expected, check_type):
             continue
-        connection.execute(
-            """
-            UPDATE validation_checks
-            SET expected_value = ?, difference = ?, status = '정상', severity = 'info', detail = ?
-            WHERE id = ?
-            """,
-            (
-                current,
-                f"{check_type} 통과",
-                korean_detail_for(check_type, "정상"),
-                int(row["id"]),
-            ),
+        update_validation_result_outcome(
+            connection,
+            result_id=int(row["id"]),
+            expected_value=current,
+            difference=f"{check_type} 통과",
+            status="정상",
+            severity="info",
+            detail=korean_detail_for(check_type, "정상"),
         )
         check_count += 1
 
-    issue_rows = connection.execute(
-        f"""
-        SELECT id, issue_type, current_value, expected_value
-        FROM validation_issues
-        WHERE run_id = ?
-          AND rule_id IN ({placeholders})
-        """,
-        (run_id, *language_rule_ids),
-    ).fetchall()
-    issue_ids = [
-        (int(row["id"]),)
-        for row in issue_rows
-        if expected_drops_bilingual_context(
-            str(row["current_value"] or ""),
-            str(row["expected_value"] or ""),
-            str(row["issue_type"] or ""),
-        )
-    ]
-    if issue_ids:
-        connection.executemany("DELETE FROM validation_issues WHERE id = ?", issue_ids)
     refresh_issue_count(connection, run_id)
-    return candidate_count, check_count, len(issue_ids)
+    return candidate_count, check_count, check_count
 
 
 def is_temporal_notation(value: str) -> bool:
@@ -2616,7 +2588,7 @@ def rule_id_for(issue_type: str) -> str:
 
 
 def mark_linguistic_candidate_reviewed(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     item: SourceReviewItem,
     *,
     decision: dict[str, str],
@@ -2647,7 +2619,7 @@ def mark_linguistic_candidate_reviewed(
 
 
 def store_linguistic_review_cache(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     item: SourceReviewItem,
     *,
     decision: dict[str, str],
@@ -2697,7 +2669,7 @@ def store_linguistic_review_cache(
 
 
 def upsert_llm_reviewed_glossary(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     *,
     run_id: int,
     item: SourceReviewItem,
@@ -2759,7 +2731,7 @@ def upsert_llm_reviewed_glossary(
 
 
 def duplicate_llm_check_exists(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
     item: SourceReviewItem,
     decision: dict[str, str],
@@ -2791,52 +2763,51 @@ def duplicate_llm_check_exists(
     return row is not None
 
 
-def remove_blue_review_placeholder(connection: sqlite3.Connection, run_id: int, item: SourceReviewItem) -> None:
-    connection.execute("DELETE FROM validation_issues WHERE id = ?", (item.issue_id,))
-    connection.execute(
-        """
-        DELETE FROM validation_checks
-        WHERE run_id = ?
-          AND table_id = ?
-          AND rule_id = ?
-          AND location = ?
-          AND current_value = ?
-        """,
-        (run_id, item.table_id, item.source_rule_id, item.location, item.current_value),
+def remove_blue_review_placeholder(
+    connection: DatabaseConnection,
+    run_id: int,
+    item: SourceReviewItem,
+) -> None:
+    delete_validation_result(
+        connection,
+        run_id=run_id,
+        table_id=item.table_id,
+        rule_id=item.source_rule_id,
+        location=item.location,
+        current_value=item.current_value,
     )
 
 
 def insert_llm_check(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
     item: SourceReviewItem,
     decision: dict[str, str],
 ) -> None:
-    connection.execute(
-        """
-        INSERT INTO validation_checks (
-            run_id, table_id, profile_id, rule_id, check_type, check_label,
-            location, row_index, col_index, current_value, expected_value,
-            difference, status, severity, detail, formula, confidence
-        )
-        VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
-        """,
-        (
-            run_id,
-            item.table_id,
-            decision["rule_id"],
-            decision["issue_type"],
-            llm_check_label(decision["issue_type"]),
-            item.location,
-            item.row_index,
-            item.col_index,
-            decision["current_value"],
-            decision["expected_value"],
-            decision["difference"],
-            decision["status"],
-            "critical" if decision["status"] == "오류 의심" else "warning" if decision["status"] == "확인 필요" else "info",
-            decision["detail"],
-            0.78,
+    save_validation_result(
+        connection,
+        run_id=run_id,
+        result=ValidationResult(
+            table_id=item.table_id,
+            rule_id=decision["rule_id"],
+            check_type=decision["issue_type"],
+            check_label=llm_check_label(decision["issue_type"]),
+            location=item.location,
+            row_index=item.row_index,
+            col_index=item.col_index,
+            current_value=decision["current_value"],
+            expected_value=decision["expected_value"],
+            difference=decision["difference"],
+            status=decision["status"],
+            severity=(
+                "critical"
+                if decision["status"] == "오류 의심"
+                else "warning"
+                if decision["status"] == "확인 필요"
+                else "info"
+            ),
+            detail=decision["detail"],
+            confidence=0.78,
         ),
     )
 
@@ -2849,40 +2820,11 @@ def llm_check_label(issue_type: str) -> str:
     return "번역 사전 우선 LLM 검수"
 
 
-def insert_llm_issue(
-    connection: sqlite3.Connection,
-    run_id: int,
-    item: SourceReviewItem,
-    decision: dict[str, str],
-) -> None:
-    connection.execute(
-        """
-        INSERT INTO validation_issues (
-            run_id, table_id, rule_id, issue_type, location, row_index,
-            col_index, current_value, expected_value, difference, status,
-            severity, detail, formula
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-        """,
-        (
-            run_id,
-            item.table_id,
-            decision["rule_id"],
-            decision["issue_type"],
-            item.location,
-            item.row_index,
-            item.col_index,
-            decision["current_value"],
-            decision["expected_value"],
-            decision["difference"],
-            decision["status"],
-            "critical" if decision["status"] == "오류 의심" else "warning",
-            decision["detail"],
-        ),
-    )
-
-
-def latest_run_id(connection: sqlite3.Connection, *, report_id: int | None = None) -> int | None:
+def latest_run_id(
+    connection: DatabaseConnection,
+    *,
+    report_id: int | None = None,
+) -> int | None:
     if report_id is not None:
         row = connection.execute(
             """
@@ -2911,21 +2853,11 @@ def current_issue_count(db_path: Path, run_id: int | None) -> int:
         return 0
     with connect(db_path) as connection:
         init_db(connection)
-        row = connection.execute(
-            "SELECT COUNT(*) AS issue_count FROM validation_issues WHERE run_id = ?",
-            (run_id,),
-        ).fetchone()
-        return int(row["issue_count"]) if row else 0
+        return validation_problem_count(connection, run_id=run_id)
 
 
-def refresh_issue_count(connection: sqlite3.Connection, run_id: int) -> int:
-    row = connection.execute(
-        "SELECT COUNT(*) AS issue_count FROM validation_issues WHERE run_id = ?",
-        (run_id,),
-    ).fetchone()
-    issue_count = int(row["issue_count"]) if row else 0
-    connection.execute("UPDATE validation_runs SET issue_count = ? WHERE id = ?", (issue_count, run_id))
-    return issue_count
+def refresh_issue_count(connection: DatabaseConnection, run_id: int) -> int:
+    return refresh_run_issue_count(connection, run_id=run_id)
 
 
 def int_or_none(value: Any) -> int | None:

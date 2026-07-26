@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-import sqlite3
 from typing import Any
 
 from app.db.connection import DatabaseRow
@@ -127,7 +126,7 @@ def matrix_row_label(cells: list[Any]) -> str:
 def clean_table_cell_text(cell: Any) -> str:
     if isinstance(cell, str):
         value = cell
-    elif isinstance(cell, sqlite3.Row):
+    elif hasattr(cell, "keys") and "text_value" in cell.keys():
         value = cell["text_value"]
     elif isinstance(cell, dict):
         value = cell.get("text_value", "")

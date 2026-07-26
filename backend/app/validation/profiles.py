@@ -8,6 +8,7 @@ import re
 from typing import Any, Callable, Protocol
 
 from app.core.llm_client import ResponsesTransport, parse_responses_json, resolve_llm_client_settings
+from app.domain.enums import ProfileStatus
 
 from app.validation.catalog import (
     LLM_PROFILE_RULE_TYPES,
@@ -53,7 +54,7 @@ class ValidationProfile:
     source_report_id: int | None
     structure_signature: str
     table_type: str
-    status: str
+    status: ProfileStatus | str
     source: str
     rules: dict[str, Any]
     notes: str
@@ -86,7 +87,7 @@ class ProfileDraft:
     table_title: str
     structure_signature: str
     table_type: str
-    status: str
+    status: ProfileStatus | str
     source: str
     rules: dict[str, Any]
     notes: str

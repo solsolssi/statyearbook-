@@ -7,6 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from app.domain.enums import ProfileStatus
+
 
 CURATED_PROFILE_PATH = Path(__file__).with_name("curated_profiles.json")
 
@@ -15,7 +17,7 @@ CURATED_PROFILE_PATH = Path(__file__).with_name("curated_profiles.json")
 class CuratedProfileApplication:
     checks: list[dict[str, Any]]
     table_type: str
-    status: str
+    status: ProfileStatus | str
     notes: str
 
 
@@ -47,7 +49,7 @@ def apply_curated_profile(
     *,
     checks: list[dict[str, Any]],
     table_type: str,
-    status: str,
+    status: ProfileStatus | str,
     notes: str,
 ) -> CuratedProfileApplication:
     profile = curated_profiles().get(table_code)

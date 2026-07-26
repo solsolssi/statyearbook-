@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 import hashlib
 from pathlib import Path
@@ -8,26 +8,12 @@ from pathlib import Path
 from app.core.numeric_text import parse_numeric_value
 from app.db.connection import DB_PATH, DatabaseConnection, connect
 from app.db.schema import init_db
+from app.domain.parsed import ParsedTable
 
 
-@dataclass(frozen=True)
-class ImportedTable:
-    code: str
-    title: str
-    matrix: list[list[str]]
-    title_en: str = ""
-    section_title: str = ""
-    section_title_en: str = ""
-    domain: str = "통계"
-    unit: str = ""
-    base_date: str = ""
-    section_file: str = ""
-    table_order: int = 0
-    note: str = ""
-    source: str = ""
-    raw_context: str = ""
-    header_count: int = 1
-    footnote_matrix: list[list[str]] = field(default_factory=list)
+# Compatibility alias for importers and external scripts. New code should use
+# ParsedTable, which is the parser-neutral domain contract.
+ImportedTable = ParsedTable
 
 
 @dataclass(frozen=True)

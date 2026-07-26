@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 import argparse
 import re
-import sqlite3
 from typing import Iterable
 
 from openpyxl import Workbook, load_workbook
@@ -14,7 +13,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from app.core.contact_metadata import ContactMetadata, parse_contact_metadata
-from app.db.connection import DB_PATH, connect
+from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
 from app.db.schema import init_db
 from app.validation.highlights import highlight_cells_for
 from app.validation.spec_repository import load_rule_specs_by_id
@@ -131,11 +130,11 @@ def export_validation_workbooks(
 
 
 def resolve_report(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     *,
     report_id: int | None,
     year: int | None,
-) -> sqlite3.Row:
+) -> DatabaseRow:
     if report_id is not None:
         row = connection.execute("SELECT * FROM annual_reports WHERE id = ?", (report_id,)).fetchone()
     elif year is not None:
@@ -152,7 +151,12 @@ def resolve_report(
     return row
 
 
-def resolve_run_id(connection: sqlite3.Connection, *, report_id: int, run_id: int | None) -> int:
+def resolve_run_id(
+    connection: DatabaseConnection,
+    *,
+    report_id: int,
+    run_id: int | None,
+) -> int:
     if run_id is not None:
         row = connection.execute(
             "SELECT id FROM validation_runs WHERE id = ? AND report_id = ?",
@@ -179,7 +183,7 @@ def unique(values: Iterable[str]) -> list[str]:
 
 def write_metadata_workbook(
     path: Path,
-    tables: list[sqlite3.Row],
+    tables: list[DatabaseRow],
     contacts: dict[int, ContactMetadata],
 ) -> None:
     workbook = Workbook()
@@ -208,23 +212,23 @@ def write_metadata_workbook(
 def write_highlighted_workbook(
     path: Path,
     *,
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     report_id: int,
     run_id: int,
-    tables: list[sqlite3.Row],
-    checks: list[sqlite3.Row],
+    tables: list[DatabaseRow],
+    checks: list[DatabaseRow],
     contacts: dict[int, ContactMetadata],
 ) -> dict[str, str]:
     del run_id
     workbook = Workbook()
     workbook.remove(workbook.active)
-    checks_by_table: dict[int, list[sqlite3.Row]] = defaultdict(list)
+    checks_by_table: dict[int, list[DatabaseRow]] = defaultdict(list)
     issue_base_codes: set[str] = set()
     for check in checks:
         checks_by_table[int(check["table_id"])].append(check)
         issue_base_codes.add(base_table_code(check["code"]))
 
-    tables_by_base: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    tables_by_base: dict[str, list[DatabaseRow]] = defaultdict(list)
     for table in tables:
         tables_by_base[base_table_code(table["code"])].append(table)
 
@@ -251,9 +255,9 @@ def write_highlighted_workbook(
 def write_statistic_sheet(
     sheet,
     *,
-    connection: sqlite3.Connection,
-    tables: list[sqlite3.Row],
-    checks_by_table: dict[int, list[sqlite3.Row]],
+    connection: DatabaseConnection,
+    tables: list[DatabaseRow],
+    checks_by_table: dict[int, list[DatabaseRow]],
     contacts: dict[int, ContactMetadata],
 ) -> None:
     first = tables[0]
@@ -327,9 +331,9 @@ def write_statistic_sheet(
 def write_table_section(
     sheet,
     *,
-    connection: sqlite3.Connection,
-    table: sqlite3.Row,
-    checks: list[sqlite3.Row],
+    connection: DatabaseConnection,
+    table: DatabaseRow,
+    checks: list[DatabaseRow],
     start_row: int,
     display_columns: int,
 ) -> int:
@@ -414,7 +418,10 @@ def write_table_section(
     return detail_start + 2 + len(checks)
 
 
-def validation_table_from_cells(table: sqlite3.Row, cells: list[sqlite3.Row]) -> ValidationTable:
+def validation_table_from_cells(
+    table: DatabaseRow,
+    cells: list[DatabaseRow],
+) -> ValidationTable:
     from app.validation.models import ValidationCell
 
     return ValidationTable(
@@ -439,7 +446,10 @@ def validation_table_from_cells(table: sqlite3.Row, cells: list[sqlite3.Row]) ->
     )
 
 
-def check_axis_labels(table: ValidationTable, check: sqlite3.Row) -> tuple[str, str]:
+def check_axis_labels(
+    table: ValidationTable,
+    check: DatabaseRow,
+) -> tuple[str, str]:
     row_index = check["row_index"]
     col_index = check["col_index"]
     if row_index is None or col_index is None:
@@ -468,7 +478,7 @@ def apply_highlight(cell, *, status: str, role: str) -> None:
     cell.fill = PatternFill("solid", fgColor=color)
 
 
-def append_issue_comment(cell, check: sqlite3.Row) -> None:
+def append_issue_comment(cell, check: DatabaseRow) -> None:
     body = (
         f"[{check['status']}] {check['check_type']}\n"
         f"현재값: {check['current_value']}\n"
@@ -484,7 +494,7 @@ def append_issue_comment(cell, check: sqlite3.Row) -> None:
 def write_validation_index_workbook(
     path: Path,
     *,
-    checks: list[sqlite3.Row],
+    checks: list[DatabaseRow],
     contacts: dict[int, ContactMetadata],
     highlighted_filename: str,
     sheet_names: dict[str, str],
@@ -551,8 +561,10 @@ def base_table_code(code: str) -> str:
     return PART_SUFFIX_RE.sub("", code).strip()
 
 
-def group_tables_by_base(tables: Iterable[sqlite3.Row]) -> dict[str, list[sqlite3.Row]]:
-    grouped: dict[str, list[sqlite3.Row]] = {}
+def group_tables_by_base(
+    tables: Iterable[DatabaseRow],
+) -> dict[str, list[DatabaseRow]]:
+    grouped: dict[str, list[DatabaseRow]] = {}
     for table in tables:
         grouped.setdefault(base_table_code(table["code"]), []).append(table)
     return grouped
@@ -574,7 +586,7 @@ def unique_sheet_name(value: str, used: set[str]) -> str:
     return candidate
 
 
-def table_max_col(connection: sqlite3.Connection, table_id: int) -> int:
+def table_max_col(connection: DatabaseConnection, table_id: int) -> int:
     row = connection.execute(
         "SELECT COALESCE(MAX(col_index), 0) AS max_col FROM stat_table_cells WHERE table_id = ?",
         (table_id,),

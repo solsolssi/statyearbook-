@@ -135,21 +135,7 @@ def translate_sql(sql: str, *, returning_id: bool | None = None) -> tuple[str, b
         text,
         flags=re.IGNORECASE,
     )
-    text = re.sub(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT INTO", text, flags=re.IGNORECASE)
     text = re.sub(r"\bchar\s*\(", "chr(", text, flags=re.IGNORECASE)
-    text = re.sub(
-        r"\b([A-Za-z_][A-Za-z0-9_.]*)\s+IS\s+\?",
-        r"\1 IS NOT DISTINCT FROM ?",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    is_insert_ignore = re.search(r"\bINSERT\s+INTO\b", text, flags=re.IGNORECASE) and (
-        "ON CONFLICT" not in text.upper()
-        and re.search(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", sql, flags=re.IGNORECASE)
-    )
-    if is_insert_ignore:
-        text = f"{text} ON CONFLICT DO NOTHING"
 
     should_return_id = wants_returning_id(text) if returning_id is None else returning_id
     if should_return_id and " RETURNING " not in text.upper():

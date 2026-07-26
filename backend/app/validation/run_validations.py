@@ -17,7 +17,6 @@ from app.validation.language_workflow import (
 from app.validation.workflow import (
     ValidationWorkflow,
     ValidationWorkflowOptions,
-    validation_issue_count,
 )
 
 
@@ -88,13 +87,8 @@ def rebuild_linguistic_review_scope(
             )
     reusable_counts = apply_reusable_linguistic_reviews(db_path, run_id=run_id)
     synchronize_blue_review_checks(db_path, run_id=run_id)
-    refresh_count = validation_issue_count(db_path, run_id)
     with connect(db_path) as connection:
-        connection.execute(
-            "UPDATE validation_runs SET issue_count = ? WHERE id = ?",
-            (refresh_count, run_id),
-        )
-        connection.commit()
+        refresh_count = refresh_stored_issue_count(connection, run_id)
     candidate_count, pending_count = language_review_counts(db_path, run_id)
     return {
         "blue_candidates": blue_candidates,

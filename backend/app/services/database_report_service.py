@@ -9,6 +9,7 @@ from urllib.parse import unquote
 from app.core.contact_metadata import parse_contact_metadata
 from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
 from app.db.schema import init_db
+from app.domain.enums import TableStatus
 from app.models.report import (
     ColumnDefinition,
     Metric,
@@ -106,7 +107,6 @@ class DatabaseReportService:
             run_id = self._latest_run_id(connection, report["id"])
             cells_by_table = load_cells_by_table(connection, [int(row["id"]) for row in rows])
             checks_by_table: dict[int, list[DatabaseRow]] = {}
-            issue_rows_by_table: dict[int, list[DatabaseRow]] = {}
             specs_by_rule_id: dict[str, dict[str, Any]] = {}
             if run_id is not None:
                 check_rows = load_checks_for_tables(
@@ -117,18 +117,6 @@ class DatabaseReportService:
                 )
                 checks_by_table = group_rows_by_int(check_rows, "table_id")
                 specs_by_rule_id = load_rule_specs_by_id(connection, check_rows)
-                issue_rows_by_table = group_rows_by_int(
-                    load_issue_rows_for_tables(
-                        connection,
-                        run_id,
-                        [
-                            int(row["id"])
-                            for row in rows
-                            if not checks_by_table.get(int(row["id"]))
-                        ],
-                    ),
-                    "table_id",
-                )
 
             physical_tables = [
                 self._row_to_table(
@@ -138,7 +126,6 @@ class DatabaseReportService:
                     run_id,
                     cells=cells_by_table.get(int(row["id"]), []),
                     check_rows=checks_by_table.get(int(row["id"]), []),
-                    issue_rows=issue_rows_by_table.get(int(row["id"]), []),
                     specs_by_rule_id=specs_by_rule_id,
                     include_highlights=include_highlights,
                 )
@@ -163,22 +150,6 @@ class DatabaseReportService:
             check_rows = load_checks_for_tables(connection, run_id, table_ids) if run_id is not None else []
             checks_by_table = group_rows_by_int(check_rows, "table_id")
             specs_by_rule_id = load_rule_specs_by_id(connection, check_rows)
-            issue_rows_by_table = (
-                group_rows_by_int(
-                    load_issue_rows_for_tables(
-                        connection,
-                        run_id,
-                        [
-                            int(row["id"])
-                            for row in table_rows
-                            if not checks_by_table.get(int(row["id"]))
-                        ],
-                    ),
-                    "table_id",
-                )
-                if run_id is not None
-                else {}
-            )
 
             physical_tables = [
                 self._row_to_table(
@@ -188,7 +159,6 @@ class DatabaseReportService:
                     run_id,
                     cells=cells_by_table.get(int(row["id"]), []),
                     check_rows=checks_by_table.get(int(row["id"]), []),
-                    issue_rows=issue_rows_by_table.get(int(row["id"]), []),
                     specs_by_rule_id=specs_by_rule_id,
                     include_highlights=True,
                 )
@@ -318,7 +288,6 @@ class DatabaseReportService:
         *,
         cells: list[DatabaseRow] | None = None,
         check_rows: list[DatabaseRow] | None = None,
-        issue_rows: list[DatabaseRow] | None = None,
         specs_by_rule_id: dict[str, dict[str, Any]] | None = None,
         include_highlights: bool = True,
     ) -> StatTable:
@@ -352,7 +321,6 @@ class DatabaseReportService:
             header_count,
             matrix,
             check_rows=check_rows,
-            issue_rows=issue_rows,
             specs_by_rule_id=specs_by_rule_id,
             include_highlights=include_highlights,
         )
@@ -488,38 +456,6 @@ def load_checks_for_tables(
     return rows
 
 
-def load_issue_rows_for_tables(
-    connection: DatabaseConnection,
-    run_id: int,
-    table_ids: list[int],
-) -> list[DatabaseRow]:
-    rows: list[DatabaseRow] = []
-    for chunk in chunks(table_ids):
-        placeholders = ", ".join("?" for _ in chunk)
-        rows.extend(
-            connection.execute(
-                f"""
-                SELECT *
-                FROM validation_issues
-                WHERE run_id = ? AND table_id IN ({placeholders})
-                ORDER BY
-                    table_id,
-                    CASE severity
-                        WHEN 'critical' THEN 0
-                        WHEN 'warning' THEN 1
-                        ELSE 2
-                    END,
-                    row_index IS NULL,
-                    row_index,
-                    col_index,
-                    id
-                """,
-                [run_id, *chunk],
-            ).fetchall()
-        )
-    return rows
-
-
 def build_validation_issues(
     connection: DatabaseConnection,
     run_id: int | None,
@@ -528,7 +464,6 @@ def build_validation_issues(
     matrix: list[list[Any]] | None = None,
     *,
     check_rows: list[DatabaseRow] | None = None,
-    issue_rows: list[DatabaseRow] | None = None,
     specs_by_rule_id: dict[str, dict[str, Any]] | None = None,
     include_highlights: bool = True,
 ) -> list[ValidationIssue]:
@@ -561,52 +496,18 @@ def build_validation_issues(
             (run_id, table_id),
         ).fetchall()
 
-    if check_rows:
-        specs_by_rule_id = specs_by_rule_id or load_rule_specs_by_id(connection, check_rows)
-        return [
-            validation_issue_from_row(
-                row,
-                issue_id=f"check-{row['id']}",
-                check_type=row["check_type"],
-                header_count=header_count,
-                matrix=matrix,
-                spec=specs_by_rule_id.get(row["rule_id"]),
-                include_highlights=include_highlights,
-            )
-            for row in check_rows
-        ]
-
-    if issue_rows is None:
-        issue_rows = connection.execute(
-            """
-            SELECT *
-            FROM validation_issues
-            WHERE run_id = ? AND table_id = ?
-            ORDER BY
-                CASE severity
-                    WHEN 'critical' THEN 0
-                    WHEN 'warning' THEN 1
-                    ELSE 2
-                END,
-                row_index IS NULL,
-                row_index,
-                col_index,
-                id
-            """,
-            (run_id, table_id),
-        ).fetchall()
-
+    specs_by_rule_id = specs_by_rule_id or load_rule_specs_by_id(connection, check_rows)
     return [
         validation_issue_from_row(
             row,
-            issue_id=f"issue-{row['id']}",
-            check_type=row["issue_type"],
+            issue_id=f"check-{row['id']}",
+            check_type=row["check_type"],
             header_count=header_count,
             matrix=matrix,
-            spec=None,
+            spec=specs_by_rule_id.get(row["rule_id"]),
             include_highlights=include_highlights,
         )
-        for row in issue_rows
+        for row in check_rows
     ]
 
 
@@ -615,13 +516,13 @@ def decode_display_text(value: str) -> str:
     return decoded or value
 
 
-def status_from_checks(checks: list[ValidationIssue]) -> tuple[str, str]:
+def status_from_checks(checks: list[ValidationIssue]) -> tuple[TableStatus, str]:
     active_checks = [check for check in checks if check.status != "정상"]
     if any(check.severity == "critical" for check in active_checks):
-        return "suspected_error", "오류 의심"
+        return TableStatus.SUSPECTED_ERROR, "오류 의심"
     if active_checks:
-        return "needs_review", "확인 필요"
-    return "normal", "정상"
+        return TableStatus.NEEDS_REVIEW, "확인 필요"
+    return TableStatus.NORMAL, "정상"
 
 
 PART_SUFFIX_RE = re.compile(r"\s+표\s*(\d+)$")
@@ -732,12 +633,12 @@ def group_title_en(table: StatTable) -> str:
     return table.title_en
 
 
-def combined_status(tables: list[StatTable]) -> tuple[str, str]:
+def combined_status(tables: list[StatTable]) -> tuple[TableStatus, str]:
     if any(table.status == "suspected_error" for table in tables):
-        return "suspected_error", "오류 의심"
+        return TableStatus.SUSPECTED_ERROR, "오류 의심"
     if any(table.status == "needs_review" for table in tables):
-        return "needs_review", "확인 필요"
-    return "normal", "정상"
+        return TableStatus.NEEDS_REVIEW, "확인 필요"
+    return TableStatus.NORMAL, "정상"
 
 
 def group_table_parts(tables: list[StatTable]) -> list[StatTable]:
