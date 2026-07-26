@@ -11,6 +11,7 @@ from app.domain.enums import ProfileStatus
 
 
 CURATED_PROFILE_PATH = Path(__file__).with_name("curated_profiles.json")
+CURATED_PROFILE_DIRECTORY = Path(__file__).with_name("curated_profiles")
 
 
 @dataclass(frozen=True)
@@ -23,25 +24,46 @@ class CuratedProfileApplication:
 
 @lru_cache(maxsize=1)
 def curated_profiles() -> dict[str, dict[str, Any]]:
-    if not CURATED_PROFILE_PATH.exists():
+    payloads = curated_profile_payloads()
+    if not payloads:
         return {}
 
-    payload = json.loads(CURATED_PROFILE_PATH.read_text(encoding="utf-8"))
     profiles: dict[str, dict[str, Any]] = {}
-    for group in payload.get("groups", []):
-        profile = group.get("profile", {})
-        for code in group.get("codes", []):
-            profiles[code] = deepcopy(profile)
+    direct_profiles: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        for group in payload.get("groups", []):
+            profile = group.get("profile", {})
+            for code in group.get("codes", []):
+                profiles[code] = deepcopy(profile)
+        direct_profiles.update(
+            {
+                code: deepcopy(profile)
+                for code, profile in payload.get("profiles", {}).items()
+            }
+        )
 
     # A table-specific profile is more precise than a shared fallback group.
-    # Load it last so a newly curated table can override its former group.
-    profiles.update(
-        {
-            code: deepcopy(profile)
-            for code, profile in payload.get("profiles", {}).items()
-        }
-    )
+    profiles.update(direct_profiles)
     return profiles
+
+
+def curated_profile_payloads() -> list[dict[str, Any]]:
+    """Load chapter files first, retaining the former monolith as a fallback."""
+
+    paths = (
+        sorted(CURATED_PROFILE_DIRECTORY.glob("*.json"))
+        if CURATED_PROFILE_DIRECTORY.exists()
+        else []
+    )
+    if not paths and CURATED_PROFILE_PATH.exists():
+        paths = [CURATED_PROFILE_PATH]
+
+    payloads: list[dict[str, Any]] = []
+    for path in paths:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
 
 
 def apply_curated_profile(

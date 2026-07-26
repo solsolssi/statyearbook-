@@ -55,6 +55,7 @@ class ValidationIssue(BaseModel):
     severity: Severity = Severity.WARNING
     detail: str
     formula: str | None = None
+    display_group_key: str | None = None
     highlight_scope: HighlightScope = HighlightScope.NONE
     highlight_cells: list[ValidationHighlightCell] = Field(default_factory=list)
     highlight_rows: list[ValidationHighlightRow] = Field(default_factory=list)

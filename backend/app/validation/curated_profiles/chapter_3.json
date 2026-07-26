@@ -1,0 +1,252 @@
+{
+  "groups": [
+    {
+      "codes": [
+        "3-1-1-1",
+        "3-1-1-2"
+      ],
+      "profile": {
+        "status": "ready",
+        "decision": "no_calculation_required",
+        "label": "계산 검수 없음",
+        "table_type": "descriptive_or_reference_table",
+        "notes": "큐레이션: 표 내용을 확인한 결과 반복 산술로 검수할 합계·비율·증감률 구조가 없거나, 공통 검수만 적용하는 목록/사례/참고형 표로 분류했습니다."
+      }
+    }
+  ],
+  "profiles": {
+    "3-1-3-2": {
+      "status": "ready",
+      "decision": "curated_growth_profile",
+      "label": "정보시스템 유형별 연도 증감률 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 각 기관 유형의 증가율은 같은 유형의 당해연도 시스템 수와 직전 연도 시스템 수로 계산합니다. 시스템 수 행과 바로 아래 증가율 행을 한 묶음으로 검수합니다.",
+      "suppress_checks": [
+        {
+          "type": "row_year_over_year_rate"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.3-1-3-2.system_growth_rate",
+          "type": "row_year_over_year_rate",
+          "category": "table",
+          "check_group": "growth_rate",
+          "check_type": "증감률 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "증가율 = (당해연도 시스템 수 - 직전 연도 시스템 수) / 직전 연도 시스템 수 * 100",
+          "row_pairs": [
+            {
+              "target_row": 2,
+              "source_row": 1
+            },
+            {
+              "target_row": 4,
+              "source_row": 3
+            },
+            {
+              "target_row": 6,
+              "source_row": 5
+            },
+            {
+              "target_row": 8,
+              "source_row": 7
+            },
+            {
+              "target_row": 10,
+              "source_row": 9
+            },
+            {
+              "target_row": 12,
+              "source_row": 11
+            },
+            {
+              "target_row": 14,
+              "source_row": 13
+            }
+          ],
+          "columns": [
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "multiplier": 100,
+          "tolerance": 0.15,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "3-1-6-1": {
+      "status": "ready",
+      "decision": "curated_cumulative_total_profile",
+      "label": "모바일 신분증 누적 계-최신 연도 일치 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 누적 계는 표 안에서 가장 최근인 연도의 활용처별 누적값과 일치해야 합니다. 다음 연도가 추가되면 자동으로 그 연도를 기준으로 검수합니다. 활용처별 계는 온라인·오프라인 합계로 별도 검수합니다.",
+      "checks": [
+        {
+          "id": "curated.3-1-6-1.cumulative_matches_latest_year",
+          "type": "cell_relation_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "누적 계 = 가장 최근 연도 활용처별 누적값",
+          "comparisons": [
+            {
+              "target": {
+                "row_selector": "cumulative_total",
+                "column": 1
+              },
+              "operand_cells": [
+                {
+                  "row_selector": "latest_year",
+                  "column": 1
+                }
+              ]
+            },
+            {
+              "target": {
+                "row_selector": "cumulative_total",
+                "column": 2
+              },
+              "operand_cells": [
+                {
+                  "row_selector": "latest_year",
+                  "column": 2
+                }
+              ]
+            },
+            {
+              "target": {
+                "row_selector": "cumulative_total",
+                "column": 3
+              },
+              "operand_cells": [
+                {
+                  "row_selector": "latest_year",
+                  "column": 3
+                }
+              ]
+            },
+            {
+              "target": {
+                "row_selector": "cumulative_total",
+                "column": 4
+              },
+              "operand_cells": [
+                {
+                  "row_selector": "latest_year",
+                  "column": 4
+                }
+              ]
+            },
+            {
+              "target": {
+                "row_selector": "cumulative_total",
+                "column": 5
+              },
+              "operand_cells": [
+                {
+                  "row_selector": "latest_year",
+                  "column": 5
+                }
+              ]
+            }
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "3-1-6-2": {
+      "status": "ready",
+      "decision": "curated_cumulative_total_profile",
+      "label": "모바일 공무원증 누적 계-최신 연도 일치 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 누적 계는 표 안에서 가장 최근인 연도의 활용처 누적값과 일치해야 합니다. 다음 연도가 추가되면 자동으로 그 연도를 기준으로 검수합니다.",
+      "checks": [
+        {
+          "id": "curated.3-1-6-2.cumulative_matches_latest_year",
+          "type": "cell_relation_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "누적 계 = 가장 최근 연도 활용처 누적값",
+          "comparisons": [
+            {
+              "target": {
+                "row_selector": "cumulative_total",
+                "column": 1
+              },
+              "operand_cells": [
+                {
+                  "row_selector": "latest_year",
+                  "column": 1
+                }
+              ]
+            }
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "3-1-7": {
+      "status": "ready",
+      "decision": "curated_cumulative_summary_profile",
+      "label": "스마트워크센터 누적 계-소계 관계 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 누적 이용자 수는 소계 이용자 수와 같아야 하며, 누적 센터 수는 소계의 개소와 폐쇄를 합산한 값과 일치해야 합니다.",
+      "checks": [
+        {
+          "id": "curated.3-1-7.cumulative_matches_subtotal",
+          "type": "cell_relation_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "누적 계 = 소계 이용자 수, 센터 수는 소계 개소 + 폐쇄",
+          "comparisons": [
+            {
+              "target": {
+                "row": 2,
+                "column": 1
+              },
+              "operand_cells": [
+                {
+                  "row": 3,
+                  "column": 1
+                }
+              ]
+            },
+            {
+              "target": {
+                "row": 2,
+                "column": 2
+              },
+              "operand_cells": [
+                {
+                  "row": 3,
+                  "column": 2
+                },
+                {
+                  "row": 3,
+                  "column": 3
+                }
+              ]
+            }
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    }
+  }
+}

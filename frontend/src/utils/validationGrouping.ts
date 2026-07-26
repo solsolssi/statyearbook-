@@ -46,6 +46,10 @@ export function repeatedCalculationGroupKey(check: ValidationIssue) {
 }
 
 export function validationDisplayGroupKey(check: ValidationIssue) {
+  if (check.display_group_key) {
+    return check.display_group_key;
+  }
+
   const repeatedKey = repeatedCalculationGroupKey(check);
 
   if (repeatedKey) {

@@ -26,6 +26,8 @@ from app.validation.catalog import (
     PROFILE_SPEC_EXECUTORS,
     SUPPORTED_PROFILE_SPEC_TYPES,
 )
+from app.validation.profile_specs import validate_profile_specs
+from app.validation.highlights import highlight_targets_for
 
 
 def median(values: list[float]) -> float:
@@ -193,7 +195,9 @@ class ProfileSpecRule(ValidationRule):
 
         issues: list[ValidationIssueRecord] = []
         checks: list[ValidationCheckRecord] = []
-        for spec in self._check_specs_with_merged_metadata(table, profile.check_specs):
+        merged_specs = self._check_specs_with_merged_metadata(table, profile.check_specs)
+        validated_specs = validate_profile_specs(merged_specs, table=table).valid_specs
+        for spec in validated_specs:
             if not self._should_execute(spec):
                 continue
             executor_name = PROFILE_SPEC_EXECUTORS.get(str(spec.get("type") or ""))
@@ -1630,6 +1634,10 @@ class ProfileSpecRule(ValidationRule):
         col_index: int | None = None,
         formula: str | None = None,
     ) -> ValidationCheckRecord:
+        highlight_row = {
+            "row_index": row_index,
+            "col_index": col_index,
+        }
         return ValidationCheckRecord(
             table_id=table.id,
             profile_id=profile.id,
@@ -1647,6 +1655,12 @@ class ProfileSpecRule(ValidationRule):
             detail=detail,
             formula=formula,
             confidence=float(spec.get("confidence")) if spec.get("confidence") is not None else None,
+            highlights=highlight_targets_for(
+                highlight_row,  # type: ignore[arg-type]
+                spec=spec,
+                header_count=table.header_count,
+                matrix=table.matrix,
+            ),
         )
 
     def _issue_from_check(self, check: ValidationCheckRecord) -> ValidationIssueRecord:

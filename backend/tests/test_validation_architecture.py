@@ -5,6 +5,7 @@ import re
 import unittest
 
 from app.validation.profile_rules import ProfileSpecRule
+from app.validation.presentation import validation_display_group_key
 from app.validation.catalog import (
     LLM_PROFILE_RULE_TYPES,
     PROFILE_SPEC_EXECUTORS,
@@ -53,6 +54,25 @@ class ValidationArchitectureTests(unittest.TestCase):
             if write_pattern.search(path.read_text(encoding="utf-8")):
                 offenders.append(path.name)
         self.assertEqual(offenders, [])
+
+    def test_backend_owns_the_validation_display_group_key(self) -> None:
+        row = {
+            "id": 1,
+            "rule_id": "profile.sample.total",
+            "status": "정상",
+            "formula": "계 = A + B",
+            "location": "합계 / 2025",
+            "row_index": 1,
+            "col_index": 2,
+            "current_value": "10",
+            "expected_value": "10",
+            "detail": "합계를 확인했습니다.",
+        }
+
+        self.assertEqual(
+            validation_display_group_key(row, "합계 검수"),  # type: ignore[arg-type]
+            "repeated::합계 검수::계 = A + B::정상",
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,30 @@
+{
+  "groups": [
+    {
+      "codes": [
+        "부록 3",
+        "부록 4"
+      ],
+      "profile": {
+        "status": "ready",
+        "decision": "no_calculation_required",
+        "label": "계산 검수 없음",
+        "table_type": "descriptive_or_reference_table",
+        "notes": "큐레이션: 표 내용을 확인한 결과 반복 산술로 검수할 합계·비율·증감률 구조가 없거나, 공통 검수만 적용하는 목록/사례/참고형 표로 분류했습니다."
+      }
+    },
+    {
+      "codes": [
+        "부록 2"
+      ],
+      "profile": {
+        "status": "needs_review",
+        "decision": "manual_calculation_required",
+        "label": "표별 산식 수동 확정 필요",
+        "table_type": "calculation_review_required",
+        "notes": "큐레이션: 합계·비율 후보가 있으나 표 구조상 자동 산식 확정이 안전하지 않습니다. 실제 서비스에서는 GPT API 또는 담당자가 결과 셀과 연산 셀을 확정한 뒤 프로파일을 승인해야 합니다."
+      }
+    }
+  ],
+  "profiles": {}
+}

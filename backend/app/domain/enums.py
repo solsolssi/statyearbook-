@@ -30,6 +30,7 @@ class Severity(StringEnum):
 
 class HighlightRole(StringEnum):
     TARGET = "target"
+    OPERAND = "operand"
     RELATED = "related"
     HEADER = "header"
 

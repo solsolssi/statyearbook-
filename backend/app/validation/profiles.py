@@ -5,7 +5,7 @@ import hashlib
 from itertools import combinations
 import json
 import re
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
 from app.core.llm_client import ResponsesTransport, parse_responses_json, resolve_llm_client_settings
 from app.domain.enums import ProfileStatus
@@ -16,7 +16,11 @@ from app.validation.catalog import (
     rule_definition_payload,
     rule_spec,
 )
-from app.validation.curated_profiles import apply_curated_profile
+from app.validation.profile_generation.curated_profile_merger import merge_curated_profile
+from app.validation.profile_generation.pipeline import compile_profile_checks
+from app.validation.profile_generation.providers import ProfileProvider
+from app.validation.profile_generation.structure_analyzer import analyze_structure
+from app.validation.profile_specs import PROFILE_DOCUMENT_VERSION
 from app.validation.models import ValidationTable, clean_display_text, normalize_text
 from app.validation.rules import (
     REGION_NAMES,
@@ -32,7 +36,7 @@ from app.validation.rules import (
 )
 
 
-PROFILE_VERSION = "validation-profile-v3"
+PROFILE_VERSION = PROFILE_DOCUMENT_VERSION
 
 ProfileCheckGenerator = Callable[[ValidationTable], list[dict[str, Any]]]
 
@@ -94,16 +98,7 @@ class ProfileDraft:
     llm_model: str | None = None
 
 
-class ProfileDraftProvider(Protocol):
-    source: str
-
-    def draft(
-        self,
-        table: ValidationTable,
-        *,
-        previous_profile: ValidationProfile | None = None,
-    ) -> ProfileDraft:
-        ...
+ProfileDraftProvider = ProfileProvider
 
 
 class HeuristicProfileDraftProvider:
@@ -118,8 +113,9 @@ class HeuristicProfileDraftProvider:
         previous_profile: ValidationProfile | None = None,
     ) -> ProfileDraft:
         signature = structure_signature(table)
-        analysis = analyze_table(table)
-        templates = detect_templates(table)
+        structure = analyze_structure(table)
+        analysis = structure.attributes
+        templates = list(structure.templates)
         checks = infer_profile_checks(table, analysis=analysis, templates=templates)
         needs_llm_review = previous_profile is not None and previous_profile.structure_signature != signature
         status = profile_status(checks, needs_llm_review=needs_llm_review)
@@ -133,7 +129,7 @@ class HeuristicProfileDraftProvider:
         if status == "needs_review":
             notes = f"{notes} 일부 검수 후보의 확신도가 낮아 프로파일 재해석 대상으로 분류했습니다."
 
-        curated = apply_curated_profile(
+        curated = merge_curated_profile(
             table.code,
             checks=checks,
             table_type=table_type,
@@ -766,23 +762,11 @@ def infer_profile_checks(
     analysis: dict[str, Any],
     templates: list[str],
 ) -> list[dict[str, Any]]:
-    checks: list[dict[str, Any]] = []
-    for generator in SHARED_PROFILE_GENERATORS:
-        checks.extend(generator(table))
-    for template in templates:
-        generator = TEMPLATE_PROFILE_GENERATORS.get(template)
-        if generator is not None:
-            checks.extend(generator(table))
-    for generator in TABLE_PROFILE_GENERATORS:
-        checks.extend(generator(table))
-    for generator in FINAL_PROFILE_GENERATORS:
-        checks.extend(generator(table))
-
-    for check in checks:
-        if check.get("check_group") == "ratio":
-            check.setdefault("aggregate_strategy", "recalculate_from_numerator_and_denominator")
-
-    return dedupe_check_specs(checks)
+    return compile_profile_checks(
+        table,
+        analysis=analysis,
+        templates=templates,
+    )
 
 
 def common_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
@@ -3115,37 +3099,11 @@ def find_column(table: ValidationTable, predicate: Any) -> int | None:
     return None
 
 
-# Profile compilation is deliberately ordered. Shared checks describe every
-# table, templates add broad structural behavior, table generators infer the
-# concrete formulas, and final checks analyze the resulting numeric series.
-SHARED_PROFILE_GENERATORS: tuple[ProfileCheckGenerator, ...] = (
-    common_check_specs,
-)
-
+# Template dispatch remains here while the ordered generator pipeline lives
+# in profile_generation.pipeline.
 TEMPLATE_PROFILE_GENERATORS: dict[str, ProfileCheckGenerator] = {
     "regional_table": region_total_check_specs,
 }
-
-TABLE_PROFILE_GENERATORS: tuple[ProfileCheckGenerator, ...] = (
-    infer_gender_total_rules,
-    infer_header_formula_rules,
-    infer_same_row_ratio_rules,
-    infer_following_component_ratio_rules,
-    infer_column_share_ratio_rules,
-    infer_growth_rate_rules,
-    infer_year_rows_change_rate_rules,
-    infer_named_row_ratio_rules,
-    infer_per_unit_ratio_rules,
-    infer_row_based_ratio_rules,
-    infer_row_based_growth_rate_rules,
-    infer_wrapped_total_cell_rules,
-    infer_total_column_rules,
-    infer_total_row_rules,
-)
-
-FINAL_PROFILE_GENERATORS: tuple[ProfileCheckGenerator, ...] = (
-    outlier_check_specs,
-)
 
 
 PROFILE_REVIEW_RESPONSE_SCHEMA = {
@@ -3258,28 +3216,6 @@ def parse_llm_profile_checks(table: ValidationTable, raw_checks: Any) -> list[di
 
 
 def profile_coordinates_are_valid(table: ValidationTable, spec: dict[str, Any]) -> bool:
-    row_limit = len(table.matrix)
-    column_limit = column_count(table)
+    from app.validation.profile_specs import validate_profile_coordinates
 
-    def valid(value: Any, *, limit: int) -> bool:
-        return not isinstance(value, int) or 0 <= value < limit
-
-    for key, value in spec.items():
-        if key.endswith("_row") and not valid(value, limit=row_limit):
-            return False
-        if key.endswith("_column") and not valid(value, limit=column_limit):
-            return False
-        if key.endswith("_rows") and isinstance(value, list):
-            if any(not valid(item, limit=row_limit) for item in value):
-                return False
-        if key.endswith("_columns") and isinstance(value, list):
-            if any(not valid(item, limit=column_limit) for item in value):
-                return False
-        if key in {"operand_cells", "comparisons", "row_pairs", "terms"} and isinstance(value, list):
-            if any(isinstance(item, dict) and not profile_coordinates_are_valid(table, item) for item in value):
-                return False
-        if key == "row" and not valid(value, limit=row_limit):
-            return False
-        if key == "column" and not valid(value, limit=column_limit):
-            return False
-    return True
+    return validate_profile_coordinates(table, spec) is None

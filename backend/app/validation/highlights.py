@@ -5,7 +5,10 @@ import re
 from typing import Any
 
 from app.db.connection import DatabaseRow
+from app.domain.enums import HighlightRole, HighlightScope
+from app.domain.validation import HighlightTarget
 from app.models.report import ValidationHighlightCell, ValidationHighlightRow
+from app.validation.catalog import CALCULATION_RULE_TYPES, GROWTH_RATE_RULE_TYPES
 
 
 @dataclass(frozen=True)
@@ -16,6 +19,137 @@ class ResolvedHighlights:
     focus_cell: ValidationHighlightCell | None
 
 
+@dataclass(frozen=True)
+class HighlightPlan:
+    """Semantic highlight roles before they are adapted to the current API."""
+
+    scope: HighlightScope | str
+    targets: tuple[HighlightTarget, ...] = ()
+    operands: tuple[HighlightTarget, ...] = ()
+    related: tuple[HighlightTarget, ...] = ()
+    headers: tuple[HighlightTarget, ...] = ()
+
+    @property
+    def all_targets(self) -> tuple[HighlightTarget, ...]:
+        return self.targets + self.operands + self.related + self.headers
+
+
+class HighlightResolver:
+    """Single source of truth for rule-result, API, and export highlights."""
+
+    def plan(
+        self,
+        row: DatabaseRow,
+        *,
+        spec: dict[str, Any] | None,
+        header_count: int,
+        matrix: list[list[Any]] | None,
+    ) -> HighlightPlan:
+        cells = _profile_highlight_cells(row, spec, matrix)
+        rule_type = str((spec or {}).get("type") or "")
+        calculation_rule = (
+            rule_type in CALCULATION_RULE_TYPES
+            or rule_type in GROWTH_RATE_RULE_TYPES
+            or rule_type
+            in {
+                "row_year_over_year_change_amount",
+                "year_rows_change_amount",
+                "cross_split_operand_row",
+                "weighted_average",
+            }
+        )
+        targets: list[HighlightTarget] = []
+        operands: list[HighlightTarget] = []
+        related: list[HighlightTarget] = []
+        headers: list[HighlightTarget] = []
+        for cell in cells:
+            if cell.role == HighlightRole.TARGET:
+                targets.append(
+                    HighlightTarget(
+                        row_index=cell.row_index,
+                        col_index=cell.col_index,
+                        role=HighlightRole.TARGET,
+                        scope=HighlightScope.CELL,
+                    )
+                )
+                continue
+
+            target = HighlightTarget(
+                row_index=cell.row_index,
+                col_index=cell.col_index,
+                role=HighlightRole.RELATED,
+                scope=HighlightScope.CELL,
+            )
+            if calculation_rule:
+                operands.append(
+                    HighlightTarget(
+                        row_index=target.row_index,
+                        col_index=target.col_index,
+                        role=HighlightRole.OPERAND,
+                        scope=target.scope,
+                    )
+                )
+            elif cell.row_index < header_count:
+                headers.append(
+                    HighlightTarget(
+                        row_index=target.row_index,
+                        col_index=target.col_index,
+                        role=HighlightRole.HEADER,
+                        scope=HighlightScope.HEADER,
+                    )
+                )
+            else:
+                related.append(target)
+
+        return HighlightPlan(
+            scope=highlight_scope_for(row, spec, header_count),
+            targets=tuple(targets),
+            operands=tuple(operands),
+            related=tuple(related),
+            headers=tuple(headers),
+        )
+
+    def resolve(
+        self,
+        row: DatabaseRow,
+        *,
+        spec: dict[str, Any] | None,
+        header_count: int,
+        matrix: list[list[Any]] | None,
+    ) -> ResolvedHighlights:
+        plan = self.plan(
+            row,
+            spec=spec,
+            header_count=header_count,
+            matrix=matrix,
+        )
+        cells = self.presentation_cells(plan)
+        focus = next((cell for cell in cells if cell.role == "target"), None)
+        return ResolvedHighlights(
+            scope=str(plan.scope),
+            cells=cells,
+            rows=highlight_rows_for(row, spec),
+            focus_cell=focus or next(iter(cells), None),
+        )
+
+    @staticmethod
+    def presentation_cells(plan: HighlightPlan) -> list[ValidationHighlightCell]:
+        """Keep the public target/related contract while retaining richer roles."""
+
+        cells: list[ValidationHighlightCell | None] = []
+        for target in plan.all_targets:
+            public_role = (
+                HighlightRole.TARGET.value
+                if target.role == HighlightRole.TARGET
+                else HighlightRole.RELATED.value
+            )
+            cells.append(highlight_cell(target.row_index, target.col_index, public_role))
+        return unique_highlight_cells(cells)
+
+
+DEFAULT_HIGHLIGHT_RESOLVER = HighlightResolver()
+
+
 def resolve_highlights(
     row: DatabaseRow,
     *,
@@ -23,14 +157,27 @@ def resolve_highlights(
     header_count: int,
     matrix: list[list[Any]] | None,
 ) -> ResolvedHighlights:
-    cells = highlight_cells_for(row, spec, matrix)
-    focus = next((cell for cell in cells if cell.role == "target"), None)
-    return ResolvedHighlights(
-        scope=highlight_scope_for(row, spec, header_count),
-        cells=cells,
-        rows=highlight_rows_for(row, spec),
-        focus_cell=focus or next(iter(cells), None),
+    return DEFAULT_HIGHLIGHT_RESOLVER.resolve(
+        row,
+        spec=spec,
+        header_count=header_count,
+        matrix=matrix,
     )
+
+
+def highlight_targets_for(
+    row: DatabaseRow,
+    *,
+    spec: dict[str, Any] | None,
+    header_count: int,
+    matrix: list[list[Any]] | None = None,
+) -> tuple[HighlightTarget, ...]:
+    return DEFAULT_HIGHLIGHT_RESOLVER.plan(
+        row,
+        spec=spec,
+        header_count=header_count,
+        matrix=matrix,
+    ).all_targets
 
 
 def int_or_none(value: Any) -> int | None:
@@ -150,7 +297,7 @@ def formula_previous_column(
     return previous_columns[-1] if previous_columns else None
 
 
-def highlight_cells_for(
+def _profile_highlight_cells(
     row: DatabaseRow,
     spec: dict[str, Any] | None,
     matrix: list[list[Any]] | None = None,
@@ -369,6 +516,21 @@ def highlight_cells_for(
         cells.append(highlight_cell(row_index, col_index, "target"))
 
     return unique_highlight_cells(cells)
+
+
+def highlight_cells_for(
+    row: DatabaseRow,
+    spec: dict[str, Any] | None,
+    matrix: list[list[Any]] | None = None,
+) -> list[ValidationHighlightCell]:
+    """Compatibility API shared by the web view and spreadsheet exports."""
+
+    return DEFAULT_HIGHLIGHT_RESOLVER.resolve(
+        row,
+        spec=spec,
+        header_count=0,
+        matrix=matrix,
+    ).cells
 
 
 def highlight_rows_for(

@@ -22,6 +22,8 @@ from app.validation.profiles import (
     structure_signature,
 )
 from app.validation.catalog import rule_definition_payload
+from app.validation.profile_migrations import migrate_profile_document
+from app.validation.profile_specs import validate_profile_specs
 
 
 class ValidationProfileRepository:
@@ -64,6 +66,7 @@ class ValidationProfileRepository:
                             )
                         except Exception as error:
                             draft = fallback_profile_draft(table, error)
+                        draft = validated_profile_draft(table, draft)
                         if profile is None:
                             profile_id = self._insert_profile(
                                 connection,
@@ -277,9 +280,18 @@ class ValidationProfileRepository:
 def row_to_profile(row: DatabaseRow) -> ValidationProfile:
     rules_json = row["rules_json"] or "{}"
     try:
-        rules = json.loads(rules_json)
+        rules = migrate_profile_document(json.loads(rules_json))
     except json.JSONDecodeError:
         rules = {}
+    validation = validate_profile_specs(rules.get("checks", []))
+    if validation.errors:
+        rules["checks"] = validation.valid_specs
+        rules["table_rules"] = [
+            spec
+            for spec in validation.valid_specs
+            if spec.get("category") in {"template", "table"}
+        ]
+        rules["invalid_checks"] = [error.to_dict() for error in validation.errors]
 
     return ValidationProfile(
         id=int(row["id"]),
@@ -288,7 +300,7 @@ def row_to_profile(row: DatabaseRow) -> ValidationProfile:
         source_report_id=row["source_report_id"],
         structure_signature=row["structure_signature"],
         table_type=row["table_type"],
-        status=row["status"],
+        status="needs_review" if validation.errors else row["status"],
         source=row["source"],
         llm_model=row["llm_model"],
         rules=rules,
@@ -297,6 +309,53 @@ def row_to_profile(row: DatabaseRow) -> ValidationProfile:
         updated_at=row["updated_at"],
         approved_at=row["approved_at"],
         approved_by=row["approved_by"],
+    )
+
+
+def validated_profile_draft(
+    table: ValidationTable,
+    draft: ProfileDraft,
+) -> ProfileDraft:
+    """Validate a generated profile before it can reach the rule engine."""
+
+    rules = migrate_profile_document(draft.rules)
+    validation = validate_profile_specs(rules.get("checks", []), table=table)
+    rules["checks"] = validation.valid_specs
+    rules["table_rules"] = [
+        spec
+        for spec in validation.valid_specs
+        if spec.get("category") in {"template", "table"}
+    ]
+    rules["invalid_checks"] = [error.to_dict() for error in validation.errors]
+    rules["validation_state"] = "needs_review" if validation.errors else "valid"
+
+    if not validation.errors:
+        return ProfileDraft(
+            table_code=draft.table_code,
+            table_title=draft.table_title,
+            structure_signature=draft.structure_signature,
+            table_type=draft.table_type,
+            status=draft.status,
+            source=draft.source,
+            rules=rules,
+            notes=draft.notes,
+            llm_model=draft.llm_model,
+        )
+
+    error_summary = "; ".join(error.message for error in validation.errors[:3])
+    return ProfileDraft(
+        table_code=draft.table_code,
+        table_title=draft.table_title,
+        structure_signature=draft.structure_signature,
+        table_type=draft.table_type,
+        status="needs_review",
+        source=draft.source,
+        rules=rules,
+        notes=(
+            f"{draft.notes} 실행 불가능한 검수 명세 {len(validation.errors)}건을 "
+            f"보류했습니다: {error_summary}"
+        ),
+        llm_model=draft.llm_model,
     )
 
 

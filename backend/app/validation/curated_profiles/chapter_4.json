@@ -1,0 +1,1013 @@
+{
+  "groups": [
+    {
+      "codes": [
+        "4-1-1-3",
+        "4-1-1-4",
+        "4-1-1-5",
+        "4-1-1-6 표1",
+        "4-1-1-6 표2",
+        "4-1-1-6 표3",
+        "4-1-1-6 표4",
+        "4-1-1-6 표5",
+        "4-1-1-6 표6",
+        "4-1-11-1 표1",
+        "4-1-11-1 표2",
+        "4-1-11-2 표1",
+        "4-1-11-2 표2",
+        "4-1-11-3 표1",
+        "4-1-11-3 표2",
+        "4-2-3-1",
+        "4-2-3-2",
+        "4-2-4",
+        "4-2-6-2",
+        "4-1-9 표1",
+        "4-1-9 표2",
+        "4-1-9 표3"
+      ],
+      "profile": {
+        "status": "ready",
+        "decision": "no_calculation_required",
+        "label": "계산 검수 없음",
+        "table_type": "descriptive_or_reference_table",
+        "notes": "큐레이션: 표 내용을 확인한 결과 반복 산술로 검수할 합계·비율·증감률 구조가 없거나, 공통 검수만 적용하는 목록/사례/참고형 표로 분류했습니다."
+      }
+    },
+    {
+      "codes": [
+        "4-1-7-3",
+        "4-2-15"
+      ],
+      "profile": {
+        "status": "needs_review",
+        "decision": "manual_calculation_required",
+        "label": "표별 산식 수동 확정 필요",
+        "table_type": "calculation_review_required",
+        "notes": "큐레이션: 합계·비율 후보가 있으나 표 구조상 자동 산식 확정이 안전하지 않습니다. 실제 서비스에서는 GPT API 또는 담당자가 결과 셀과 연산 셀을 확정한 뒤 프로파일을 승인해야 합니다."
+      }
+    }
+  ],
+  "profiles": {
+    "4-1-2-4 표1": {
+      "status": "ready",
+      "decision": "curated_cross_part_total_profile",
+      "label": "외국인주민 유형별 분할표 총계 산식 승인",
+      "table_type": "regional_split_summary_table",
+      "notes": "큐레이션: 표1 총계는 표1의 외국인근로자·결혼이민자·유학생과 표2의 외국국적동포·기타 외국인·한국국적 취득자·외국인주민 자녀 소계를 더해 검수합니다.",
+      "checks": [
+        {
+          "id": "curated.4-1-2-4.total_by_all_resident_types",
+          "type": "cross_table_row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "총계 = 외국인근로자 + 결혼이민자 + 유학생 + 외국국적동포 + 기타 외국인 + 한국국적 취득자 + 외국인주민 자녀",
+          "source_table_code": "4-1-2-4 표2",
+          "target_column": 1,
+          "operand_columns": [
+            4,
+            7,
+            10
+          ],
+          "source_columns": [
+            1,
+            4,
+            7,
+            10
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-1-6-1": {
+      "status": "ready",
+      "decision": "curated_ordinance_regulation_hierarchy_profile",
+      "label": "자치법규 조례·규칙 계층 합계 산식 승인",
+      "table_type": "regional_legal_rules_table",
+      "notes": "큐레이션: 총계/조례·규칙은 총계/조례와 총계/규칙을 더하고, 각 소계는 시·도와 시·군·자치구의 바로 아래 값을 더해 검수합니다.",
+      "suppress_checks": [
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.4-1-6-1.total_ordinance_and_rules",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "총계/조례·규칙 = 총계/조례 + 총계/규칙",
+          "target_column": 1,
+          "operand_columns": [
+            2,
+            3
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-6-1.total_ordinances",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "총계/조례 = 시·도 조례 + 시·군·자치구 조례",
+          "target_column": 2,
+          "operand_columns": [
+            4,
+            6
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-6-1.total_regulations",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "총계/규칙 = 시·도 규칙 + 시·군·자치구 규칙",
+          "target_column": 3,
+          "operand_columns": [
+            5,
+            7
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-1-7-2": {
+      "status": "ready",
+      "decision": "curated_population_per_servant_ratio_profile",
+      "label": "공무원 1인당 주민 수 비율 산식 승인",
+      "table_type": "year_trend_ratio_table",
+      "notes": "큐레이션: 공무원 1인당 주민 수(천명)는 인구수(천명)에 1,000을 곱한 뒤 지방공무원 정원으로 나눈 값입니다.",
+      "checks": [
+        {
+          "id": "curated.4-1-7-2.population_per_servant",
+          "type": "row_ratio",
+          "category": "table",
+          "check_group": "ratio",
+          "check_type": "비율 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "공무원 1인당 주민 수(천명) = 인구수(천명) × 1,000 / 지방공무원 정원",
+          "target_column": 3,
+          "numerator_column": 2,
+          "denominator_column": 1,
+          "multiplier": 1000,
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-1-7-3": {
+      "status": "ready",
+      "decision": "curated_staffing_total_profile",
+      "label": "지방공무원 정원 기관·계층별 합계 산식 승인",
+      "table_type": "classification_by_institution_table",
+      "notes": "큐레이션: 총 정원은 시·도, 시·군·자치구와 읍·면·동 등 표에 제시된 바로 아래 기관·계층별 정원을 더해 검수합니다. 본청 정원과 인구 행은 서로 다른 집계 기준이므로 합계 산식에 포함하지 않습니다.",
+      "suppress_checks": [
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.4-1-7-3.total_quota_by_institution_layer",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "총 정원 = 기관·계층별 정원 합계",
+          "row_indices": [
+            1
+          ],
+          "include_calculation_rows": true,
+          "target_column": 1,
+          "operand_columns": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-1-7-4": {
+      "status": "ready",
+      "decision": "curated_grade_total_profile",
+      "label": "지방공무원 직급별 일반직·별정직 합계 산식 승인",
+      "table_type": "grade_by_service_table",
+      "notes": "큐레이션: 일반직 및 별정직 행은 1급부터 전문경력관 가·나·다까지의 직급별 정원을 더해 검수합니다. 계뿐 아니라 정무직·별정직·일반직·기타의 각 직종 열도 같은 구성 행으로 검수합니다.",
+      "checks": [
+        {
+          "id": "curated.4-1-7-4.general_and_special_grade_total",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "일반직 및 별정직 = 1급~전문경력관 가·나·다 합계(계·직종별 각 열)",
+          "target_row": 3,
+          "operand_rows": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17
+          ],
+          "columns": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-1-8-6": {
+      "status": "ready",
+      "decision": "curated_parental_leave_usage_total_profile",
+      "label": "일반직 육아휴직 이용자수 합계 산식 승인",
+      "table_type": "grade_by_gender_table",
+      "notes": "큐레이션: 일반직 계 전체는 최초 이용자수 전체와 연장 이용자수 전체의 합계입니다. 최초·연장 이용자수의 전체·여성·남성 각 열은 모두 직급·직렬별 합계로, 각 행의 전체는 여성과 남성의 합계로 검수합니다.",
+      "suppress_checks": [
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.4-1-8-6.general_service_total_usage",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "일반직 계 전체 = 최초 이용자수 전체 + 연장 이용자수 전체",
+          "row_indices": [
+            2
+          ],
+          "target_column": 1,
+          "operand_columns": [
+            2,
+            5
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-6.first_usage_grade_total",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "최초 이용자수 전체·여성·남성 = 직급·직렬별 최초 이용자수 합계",
+          "target_row": 2,
+          "operand_rows": [
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13
+          ],
+          "columns": [
+            2,
+            3,
+            4
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-6.extended_usage_grade_total",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "연장 이용자수 전체·여성·남성 = 직급·직렬별 연장 이용자수 합계",
+          "target_row": 2,
+          "operand_rows": [
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13
+          ],
+          "columns": [
+            5,
+            6,
+            7
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-6.first_usage_gender_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "최초 이용자수 전체 = 여성 + 남성",
+          "target_column": 2,
+          "operand_columns": [
+            3,
+            4
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-6.extended_usage_gender_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "연장 이용자수 전체 = 여성 + 남성",
+          "target_column": 5,
+          "operand_columns": [
+            6,
+            7
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-1-8-9": {
+      "status": "ready",
+      "decision": "curated_retirement_reason_total_profile",
+      "label": "지방공무원 퇴직 사유별 계층 합계 산식 승인",
+      "table_type": "classification_by_reason_table",
+      "notes": "큐레이션: 당연퇴직 소계는 결격사유·정년·임용기간 만료의 합계이며, 계는 의원면직·직권면직·당연퇴직 소계·징계퇴직·명예퇴직·사망·조기퇴직의 합계입니다.",
+      "suppress_checks": [
+        {
+          "type": "column_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.4-1-8-9.mandatory_retirement_subtotal",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "당연퇴직 소계 = 결격사유 + 정년 + 임용기간 만료",
+          "target_row": 5,
+          "operand_rows": [
+            6,
+            7,
+            8
+          ],
+          "columns": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-9.total_by_reason",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 = 의원면직 + 직권면직 + 당연퇴직 소계 + 징계퇴직 + 명예퇴직 + 사망 + 조기퇴직",
+          "target_row": 2,
+          "operand_rows": [
+            3,
+            4,
+            5,
+            9,
+            10,
+            11,
+            12
+          ],
+          "columns": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-1-8-10": {
+      "status": "ready",
+      "decision": "curated_public_service_separation_totals_profile",
+      "label": "지방공무원 퇴직 종류·기관·사유별 계 합계 산식 승인",
+      "table_type": "classification_by_reason_table",
+      "notes": "큐레이션: 최상단 계는 종류별·기관별·사유별 각 분류군의 합계와 일치해야 합니다. 각 분류군은 같은 계를 별도로 검수해 누락된 분류를 확인합니다.",
+      "suppress_checks": [
+        {
+          "type": "column_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.4-1-8-10.total_by_type",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 = 종류별 합계",
+          "target_row": 2,
+          "operand_rows": [
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ],
+          "columns": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-10.total_by_institution",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 = 기관별 합계",
+          "target_row": 2,
+          "operand_rows": [
+            9,
+            10,
+            11
+          ],
+          "columns": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-10.total_by_reason",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 = 사유별 합계",
+          "target_row": 2,
+          "operand_rows": [
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21
+          ],
+          "columns": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-1-15-1": {
+      "status": "ready",
+      "decision": "curated_district_number_allocation_hierarchy_profile",
+      "label": "구역번호 할당 적용·예비 소계 산식 승인",
+      "table_type": "allocation_summary_table",
+      "notes": "큐레이션: 시·군·구 소계는 적용과 예비의 합계이며, 최상위 계는 행안부 예비·시도 예비·시군구 소계를 더해 검수합니다.",
+      "suppress_checks": [
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.4-1-15-1.local_subtotal",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "시·군·구 소계 = 적용 + 예비",
+          "row_indices": [
+            3
+          ],
+          "target_column": 5,
+          "operand_columns": [
+            6,
+            7
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-15-1.total_allocation",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "구역번호 할당 계 = 행안부 예비 + 시도 예비 + 시·군·구 소계",
+          "row_indices": [
+            3
+          ],
+          "target_column": 2,
+          "operand_columns": [
+            3,
+            4,
+            5
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-2-12 표1": {
+      "status": "ready",
+      "decision": "curated_hot_spring_protected_area_profile",
+      "label": "온천보호구역·온천공 보호구역 합계 산식 승인",
+      "table_type": "regional_facility_summary_table",
+      "notes": "큐레이션: 온천원보호지구 계는 이용 중과 개발 중의 합계로 검수합니다. 표 전체 계는 지정절차 진행중, 온천원보호지구 지정 계, 표2의 온천공보호구역 지정 계를 합산해 검수합니다.",
+      "suppress_checks": [
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.4-2-12.table1.protected_area_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "온천원보호지구 지정 계 = 이용 중 + 개발 중 (온천)",
+          "target_column": 5,
+          "operand_columns": [
+            7,
+            9
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-2-12.table1.business_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "온천원보호지구 지정 계 = 이용 중 + 개발 중 (이용업소)",
+          "target_column": 6,
+          "operand_columns": [
+            8,
+            10
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-2-12.table1.total_hot_springs_across_parts",
+          "type": "cross_table_row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 / 온천 = 지정절차 진행중 + 온천원보호지구 지정 계 + 온천공보호구역 지정 계(표2)",
+          "source_table_code": "4-2-12 표2",
+          "target_column": 1,
+          "operand_columns": [
+            3,
+            5
+          ],
+          "source_column": 1,
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-2-12.table1.total_business_establishments_across_parts",
+          "type": "cross_table_row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 / 이용업소 = 지정절차 진행중 + 온천원보호지구 지정 계 + 온천공보호구역 지정 계(표2)",
+          "source_table_code": "4-2-12 표2",
+          "target_column": 2,
+          "operand_columns": [
+            4,
+            6
+          ],
+          "source_column": 2,
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-2-12 표2": {
+      "status": "ready",
+      "decision": "curated_hot_spring_business_profile",
+      "label": "온천보호구역·온천공 사업 합계 산식 승인",
+      "table_type": "regional_facility_summary_table",
+      "notes": "큐레이션: 온천공보호구역 지정 계는 이용 중과 개발 중의 합계로 검수합니다. 표1 전체 계를 산출하는 교차표 합계의 구성요소로도 사용합니다.",
+      "suppress_checks": [
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.4-2-12.table2.protected_area_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "온천공보호구역 지정 계 = 이용 중 + 개발 중 (온천)",
+          "target_column": 1,
+          "operand_columns": [
+            3,
+            5
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-2-12.table2.business_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "온천공보호구역 지정 계 = 이용 중 + 개발 중 (이용업소)",
+          "target_column": 2,
+          "operand_columns": [
+            4,
+            6
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-1-8-4": {
+      "status": "ready",
+      "decision": "curated_calculation_profile",
+      "label": "여성지방공무원 비율·전년 대비 증감 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 여성비율은 여성 공무원 수를 전체 공무원 수로 나누어 계산하고, 전년 대비 증감은 전체 공무원 수의 당해연도 값에서 전년도 값을 빼서 검수합니다.",
+      "checks": [
+        {
+          "id": "curated.4-1-8-4.female_percent",
+          "type": "row_ratio_by_rows",
+          "category": "table",
+          "check_group": "ratio",
+          "check_type": "비율 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "여성비율 = 여성 / 전체 * 100",
+          "target_row": 4,
+          "numerator_row": 3,
+          "denominator_row": 1,
+          "columns": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ],
+          "multiplier": 100,
+          "tolerance": 0.15,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-4.total_yoy_change",
+          "type": "row_year_over_year_change_amount",
+          "category": "table",
+          "check_group": "growth_rate",
+          "check_type": "증감액 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "전년 대비 증감 = 전체 당해연도 - 전체 전년도",
+          "target_row": 2,
+          "source_row": 1,
+          "columns": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-1-10": {
+      "status": "ready",
+      "decision": "curated_average_profile",
+      "label": "지방자치단체 위원회 평균회의 횟수 가중 평균 산식 승인",
+      "table_type": "regional_summary_table",
+      "notes": "큐레이션: 연간 평균회의 개최횟수의 계 값은 시도별 값을 단순 평균하지 않고, 위원회 수를 가중치로 둔 가중 평균으로 검수합니다.",
+      "checks": [
+        {
+          "id": "curated.4-1-10.weighted_average_meetings",
+          "type": "weighted_average",
+          "category": "table",
+          "check_group": "average",
+          "check_type": "평균 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 평균회의 개최횟수 = Σ(지역별 위원회 수 × 지역별 평균회의 개최횟수) / Σ(지역별 위원회 수)",
+          "target_row": 3,
+          "target_column": 2,
+          "value_column": 2,
+          "weight_column": 1,
+          "operand_rows": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20
+          ],
+          "tolerance": 0.05,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-1-8-3": {
+      "status": "ready",
+      "decision": "curated_sum_profile",
+      "label": "연령별 지방공무원 직종·연령 합계 산식 승인",
+      "table_type": "classification_by_age_table",
+      "notes": "큐레이션: 일반직은 고위공무원부터 전문임기제까지의 합계이고, 계는 일반직·특정직·정무직·별정직의 합계입니다. 각 직종의 전체 계와 여성 계는 각각 연령대별 전체·여성 값을 더해 검수합니다.",
+      "suppress_checks": [
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.4-1-8-3.general_service_total",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "일반직 = 고위공무원 + 1급 + 2급 + 3급 + 4급 + 5급 + 6급 + 7급 + 8급 + 9급 + 연구직 + 지도직 + 시간선택제 + 전문경력관 + 전담직위 + 일반임기제 + 전문임기제",
+          "target_row": 3,
+          "operand_rows": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20
+          ],
+          "columns": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14
+          ],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-3.grand_total_by_service",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 = 일반직 + 특정직 + 정무직 + 별정직",
+          "target_row": 2,
+          "operand_rows": [
+            3,
+            21,
+            22,
+            23
+          ],
+          "columns": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14
+          ],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-3.age_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 전체 = 20세 이하 전체 + 21~30세 전체 + 31~40세 전체 + 41~50세 전체 + 51~59세 전체 + 60세 이상 전체",
+          "target_column": 1,
+          "operand_columns": [
+            3,
+            5,
+            7,
+            9,
+            11,
+            13
+          ],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-3.female_age_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 여성 = 20세 이하 여성 + 21~30세 여성 + 31~40세 여성 + 41~50세 여성 + 51~59세 여성 + 60세 이상 여성",
+          "target_column": 2,
+          "operand_columns": [
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "include_calculation_rows": true,
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    }
+  }
+}

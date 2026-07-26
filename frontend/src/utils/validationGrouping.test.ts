@@ -66,6 +66,12 @@ describe("validation grouping baseline", () => {
     expect(groupedValidationIssueCount([passing, anotherPassing], "정상")).toBe(1);
   });
 
+  it("uses the backend display group key when it is present", () => {
+    const item = check({ display_group_key: "server::canonical-group" });
+
+    expect(validationDisplayGroupKey(item)).toBe("server::canonical-group");
+  });
+
   it("keeps target and operand highlights distinct", () => {
     const item = check();
     expect(targetCellForCheck(item)).toEqual({

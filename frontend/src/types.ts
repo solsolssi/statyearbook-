@@ -44,6 +44,7 @@ export interface ValidationIssue {
   severity: Severity;
   detail: string;
   formula?: string;
+  display_group_key?: string;
   highlight_scope?: "none" | "metadata" | "cell" | "header" | "row" | "column";
   highlight_cells?: ValidationHighlightCell[];
   highlight_rows?: ValidationHighlightRow[];
