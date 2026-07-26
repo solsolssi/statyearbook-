@@ -131,7 +131,11 @@ def clear_blue_review_scope(connection: DatabaseConnection, run_id: int) -> None
         ),
     )
     connection.execute(
-        "DELETE FROM linguistic_review_candidates WHERE run_id = ? AND candidate_kind LIKE 'blue_text%'",
+        """
+        DELETE FROM linguistic_review_candidates
+        WHERE run_id = ?
+          AND (source_kind = 'blue' OR candidate_kind LIKE 'blue_text%')
+        """,
         (run_id,),
     )
     connection.execute(
@@ -149,7 +153,8 @@ def synchronize_blue_review_checks(db_path: Path, *, run_id: int) -> int:
             SELECT table_id, review_type, location, row_index, col_index,
                    current_value, status, review_result_json
             FROM linguistic_review_candidates
-            WHERE run_id = ? AND candidate_kind LIKE 'blue_text%'
+            WHERE run_id = ?
+              AND (source_kind = 'blue' OR candidate_kind LIKE 'blue_text%')
             ORDER BY table_id, row_index, col_index, location, current_value, review_type
             """,
             (run_id,),
@@ -866,14 +871,15 @@ def insert_blue_review(
     connection.execute(
         """
         INSERT INTO linguistic_review_candidates (
-            run_id, table_id, review_type, candidate_kind, location,
+            run_id, table_id, review_type, candidate_kind, source_kind, location,
             row_index, col_index, current_value, korean_text, english_text,
             glossary_json, reason, prompt_version
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, 'blue', ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(run_id, table_id, review_type, location, current_value)
         DO UPDATE SET
             candidate_kind = excluded.candidate_kind,
+            source_kind = excluded.source_kind,
             korean_text = excluded.korean_text,
             english_text = excluded.english_text,
             glossary_json = excluded.glossary_json,
@@ -918,7 +924,8 @@ def repair_blue_candidate_classifications(connection: DatabaseConnection, run_id
         SELECT id, table_id, location, current_value, candidate_kind,
                korean_text, english_text, status
         FROM linguistic_review_candidates
-        WHERE run_id = ? AND candidate_kind LIKE 'blue_text%'
+        WHERE run_id = ?
+          AND (source_kind = 'blue' OR candidate_kind LIKE 'blue_text%')
         """,
         (run_id,),
     ).fetchall()
@@ -1007,7 +1014,8 @@ def existing_review_values(
         UNION ALL
         SELECT table_id, row_index, col_index, current_value
         FROM linguistic_review_candidates
-        WHERE run_id = ? AND candidate_kind LIKE 'blue_text%'
+        WHERE run_id = ?
+          AND (source_kind = 'blue' OR candidate_kind LIKE 'blue_text%')
         """,
         (run_id, BLUE_REVIEW_RULE_ID, run_id),
     ).fetchall()

@@ -22,6 +22,14 @@ DATA_MIGRATIONS = (
     ("restore_semantic_type_qualifiers_v1", schema.restore_semantic_type_qualifiers),
     ("retire_terminology_validation_v1", schema.retire_terminology_validation),
     ("canonical_validation_results_v1", schema.canonicalize_validation_results),
+    (
+        "classify_glossary_approval_metadata_v1",
+        schema.classify_glossary_approval_metadata,
+    ),
+    (
+        "classify_linguistic_candidate_sources_v1",
+        schema.classify_linguistic_candidate_sources,
+    ),
 )
 
 

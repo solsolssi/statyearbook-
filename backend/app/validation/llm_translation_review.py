@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from collections.abc import Callable
 from difflib import SequenceMatcher
 from pathlib import Path
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -44,6 +45,26 @@ from app.validation.linguistic_review import (
     LINGUISTIC_CANDIDATE_RULE_ID,
     LINGUISTIC_PROMPT_VERSION,
     NON_TRANSLATION_LATIN_TOKENS,
+)
+from app.validation.language_pipeline.execution import ReviewBatchExecutor
+from app.validation.language_pipeline.batching import (
+    chunked_by_context,
+    compact_prompt_glossary,
+    compact_prompt_items,
+    group_linguistic_items_by_context,
+    prompt_context_key,
+    review_context_token,
+    take_contexts,
+)
+from app.validation.language_pipeline.models import (
+    LLMReviewResult,
+    LLMTablePreviewResult,
+    SourceReviewItem,
+)
+from app.validation.language_pipeline.responses import validated_review_items
+from app.validation.language_pipeline.storage import (
+    LLMUsageRepository,
+    usage_event_from_response,
 )
 from app.validation.source_review import SOURCE_FORMAT_RULE_ID, SOURCE_FORMAT_TYPE
 from app.validation.region_glossary import region_review_decision
@@ -83,81 +104,7 @@ TRANSLATION_DEFECT_KINDS = {
     "entity_mismatch",
     "measure_mismatch",
 }
-
-
-@dataclass(frozen=True)
-class LLMReviewResult:
-    processed: int
-    inserted_issues: int
-    inserted_checks: int
-    final_issue_count: int
-    skipped_reason: str = ""
-
-
-@dataclass(frozen=True)
-class LLMTablePreviewResult:
-    run_id: int
-    table_code: str
-    table_title: str
-    model: str
-    reviewed_contexts: int
-    reviewed_items: int
-    results: list[dict[str, Any]]
-
-
-@dataclass(frozen=True)
-class SourceReviewItem:
-    issue_id: int
-    source_rule_id: str
-    candidate_kind: str
-    candidate_reason: str
-    candidate_expected: str
-    table_id: int
-    table_code: str
-    table_title: str
-    table_title_en: str
-    unit: str
-    base_date: str
-    location: str
-    row_index: int | None
-    col_index: int | None
-    current_value: str
-    cell_text: str
-    row_label: str
-    column_label: str
-    surrounding_rows: list[str]
-    requested_review_type: str = ""
-    korean_text: str = ""
-    english_text: str = ""
-    glossary_matches: list[dict[str, object]] | None = None
-    source_record_type: str = "issue"
-    source_record_id: int | None = None
-    prompt_version: str = ""
-    review_fingerprint: str = ""
-
-    def to_prompt_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.issue_id,
-            "candidate_kind": self.candidate_kind,
-            "candidate_reason": self.candidate_reason,
-            "candidate_expected": self.candidate_expected,
-            "table_code": self.table_code,
-            "table_title_ko": self.table_title,
-            "table_title_en": self.table_title_en,
-            "unit": self.unit,
-            "base_date": self.base_date,
-            "location": self.location,
-            "current_value": self.current_value,
-            "cell_text": self.cell_text,
-            "row_label": self.row_label,
-            "column_label": self.column_label,
-            "surrounding_rows": self.surrounding_rows,
-            "requested_review_type": self.requested_review_type,
-            "korean_text": self.korean_text,
-            "english_text": self.english_text,
-            "translation_glossary": self.glossary_matches or [],
-            "prompt_version": self.prompt_version,
-        }
+LOGGER = logging.getLogger(__name__)
 
 
 def apply_reusable_linguistic_reviews(
@@ -168,22 +115,16 @@ def apply_reusable_linguistic_reviews(
 ) -> tuple[int, int, int]:
     """Apply authoritative dictionary and context cache results without calling an API."""
 
-    model = reviewed_model or str(llm_review_settings()["model"])
-    with connect(db_path) as connection:
-        init_db(connection)
-        with connection:
-            region_counts = resolve_blue_region_candidates(connection, run_id)
-            dictionary_counts = resolve_linguistic_candidates_from_glossary(connection, run_id)
-            cache_counts = reuse_cached_linguistic_reviews(
-                connection,
-                run_id,
-                reviewed_model=model,
-            )
-            refresh_issue_count(connection, run_id)
+    from app.validation.language_pipeline.resolution import ReusableLanguageResolver
+
+    result = ReusableLanguageResolver(db_path).resolve(
+        run_id=run_id,
+        reviewed_model=reviewed_model,
+    )
     return (
-        region_counts[0] + dictionary_counts[0] + cache_counts[0],
-        region_counts[1] + dictionary_counts[1] + cache_counts[1],
-        region_counts[2] + dictionary_counts[2] + cache_counts[2],
+        result.inserted_issues,
+        result.inserted_checks,
+        result.resolved_candidates,
     )
 
 
@@ -282,12 +223,22 @@ def append_llm_translation_reviews(
             f"missing {settings['api_key_env']}",
         )
 
+    usage_repository = LLMUsageRepository(db_path)
     client = ResponsesAPIClient(
         api_key=settings["api_key"],
         model=settings["model"],
         base_url=settings["base_url"],
         timeout=settings["timeout"],
         provider=settings["provider"],
+        usage_callback=lambda response: usage_repository.record(
+            usage_event_from_response(
+                run_id=resolved_run_id,
+                provider=settings["provider"],
+                model=settings["model"],
+                request_kind="language_review",
+                response=response,
+            )
+        ),
     )
 
     batches = chunked_by_context(items, settings["batch_size"])
@@ -421,9 +372,10 @@ def pending_linguistic_candidate_count(
     scope_clause = ""
     scope_params: list[object] = []
     if blue_only:
-        scope_clause = "AND candidate_kind LIKE 'blue_text%'"
+        scope_clause = "AND (source_kind = 'blue' OR candidate_kind LIKE 'blue_text%')"
     elif standard_language_only:
         scope_clause = """
+            AND source_kind <> 'blue'
             AND candidate_kind NOT LIKE 'blue_text%'
             AND review_type IN (?, ?)
         """
@@ -459,6 +411,7 @@ def reset_standard_language_review_results(
             SELECT COUNT(*) AS item_count
             FROM linguistic_review_candidates
             WHERE run_id = ?
+              AND source_kind <> 'blue'
               AND candidate_kind NOT LIKE 'blue_text%'
               AND review_type IN (?, ?)
             """,
@@ -501,6 +454,7 @@ def reset_standard_language_review_results(
             resolution_source = '',
             reviewed_at = NULL
         WHERE run_id = ?
+          AND source_kind <> 'blue'
           AND candidate_kind NOT LIKE 'blue_text%'
           AND review_type IN (?, ?)
         """,
@@ -529,6 +483,7 @@ def reconcile_standard_language_findings(
         JOIN stat_tables st ON st.id = lrc.table_id
         WHERE lrc.run_id = ?
           AND lrc.status = 'reviewed'
+          AND lrc.source_kind <> 'blue'
           AND lrc.candidate_kind NOT LIKE 'blue_text%'
           AND lrc.review_type IN (?, ?)
           AND lrc.review_result_json <> ''
@@ -788,12 +743,22 @@ def preview_llm_table_reviews(
     grouped_items = group_linguistic_items_by_context(items)
     if limit is not None:
         grouped_items = take_contexts(grouped_items, limit)
+    usage_repository = LLMUsageRepository(db_path)
     client = ResponsesAPIClient(
         api_key=settings["api_key"],
         model=settings["model"],
         base_url=settings["base_url"],
         timeout=settings["timeout"],
         provider=settings["provider"],
+        usage_callback=lambda response: usage_repository.record(
+            usage_event_from_response(
+                run_id=resolved_run_id,
+                provider=settings["provider"],
+                model=settings["model"],
+                request_kind="language_preview",
+                response=response,
+            )
+        ),
     )
     results: list[dict[str, Any]] = []
     reviewed_contexts = 0
@@ -871,12 +836,14 @@ class ResponsesAPIClient:
         base_url: str,
         timeout: int,
         provider: str = "openai",
+        usage_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
         self.timeout = timeout
         self.provider = provider
+        self._usage_callback = usage_callback
         self._transport = ResponsesTransport(
             LLMClientSettings(
                 enabled=True,
@@ -946,9 +913,12 @@ class ResponsesAPIClient:
             "max_output_tokens": max(3000, len(items) * 400),
         }
         response = self._post(body)
-        parsed = parse_response_json(response)
-        raw_items = parsed.get("items", [])
-        return raw_items if isinstance(raw_items, list) else []
+        if self._usage_callback is not None:
+            try:
+                self._usage_callback(response)
+            except Exception:
+                LOGGER.exception("LLM 사용량 기록에 실패했습니다.")
+        return validated_review_items(response)
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         return self._transport.create(body)
@@ -962,90 +932,7 @@ def review_batch_with_retries(
     client: ResponsesAPIClient,
     batch: list[SourceReviewItem],
 ) -> list[dict[str, Any]]:
-    decisions_by_id = {
-        int(decision["id"]): decision
-        for decision in request_review_with_retries(client, batch)
-        if isinstance(decision, dict) and int_or_none(decision.get("id")) is not None
-    }
-    for _ in range(2):
-        retry_items = [
-            item
-            for item in batch
-            if item.issue_id not in decisions_by_id
-            or llm_decision_needs_retry(decisions_by_id[item.issue_id], item)
-        ]
-        if not retry_items:
-            break
-        for retry_decision in request_review_with_retries(
-            client,
-            retry_items,
-            require_english_replacement=True,
-        ):
-            if not isinstance(retry_decision, dict):
-                continue
-            retry_id = int_or_none(retry_decision.get("id"))
-            if retry_id is not None:
-                decisions_by_id[retry_id] = retry_decision
-
-    remaining_items = [
-        item
-        for item in batch
-        if item.issue_id not in decisions_by_id
-        or llm_decision_needs_retry(decisions_by_id[item.issue_id], item)
-    ]
-    for context_items in group_items_for_retry(remaining_items):
-        for _ in range(2):
-            retry_items = [
-                item
-                for item in context_items
-                if item.issue_id not in decisions_by_id
-                or llm_decision_needs_retry(decisions_by_id[item.issue_id], item)
-            ]
-            if not retry_items:
-                break
-            for retry_decision in request_review_with_retries(
-                client,
-                retry_items,
-                require_english_replacement=True,
-            ):
-                if not isinstance(retry_decision, dict):
-                    continue
-                retry_id = int_or_none(retry_decision.get("id"))
-                if retry_id is not None:
-                    decisions_by_id[retry_id] = retry_decision
-    unresolved = [
-        item
-        for item in batch
-        if item.issue_id not in decisions_by_id
-        or llm_decision_needs_retry(decisions_by_id[item.issue_id], item)
-    ]
-    for item in unresolved:
-        decision = decisions_by_id.get(item.issue_id)
-        recovered = recover_incomplete_bilingual_decision(decision, item)
-        if recovered is not None:
-            decisions_by_id[item.issue_id] = recovered
-    unresolved = [
-        item
-        for item in batch
-        if item.issue_id not in decisions_by_id
-        or llm_decision_needs_retry(decisions_by_id[item.issue_id], item)
-    ]
-    if unresolved:
-        codes = ", ".join(f"{item.table_code}:{item.location}" for item in unresolved)
-        samples = []
-        for item in unresolved[:5]:
-            decision = decisions_by_id.get(item.issue_id, {})
-            samples.append(
-                f"id={item.issue_id}, requested={item.requested_review_type}, "
-                f"returned={decision.get('issue_type', 'missing')}, "
-                f"status={decision.get('status', 'missing')}, "
-                f"expected={str(decision.get('expected_value', ''))[:60]!r}"
-            )
-        raise RuntimeError(
-            f"LLM review returned incomplete replacement text: {codes}; "
-            f"samples: {' | '.join(samples)}"
-        )
-    return list(decisions_by_id.values())
+    return _review_batch_executor().execute(client, batch)
 
 
 def recover_incomplete_bilingual_decision(
@@ -1106,22 +993,19 @@ def request_review_with_retries(
     *,
     require_english_replacement: bool = False,
 ) -> list[dict[str, Any]]:
-    last_error: Exception | None = None
-    for attempt in range(3):
-        try:
-            return client.review(
-                items,
-                require_english_replacement=require_english_replacement,
-            )
-        except json.JSONDecodeError as exc:
-            last_error = exc
-        except RuntimeError as exc:
-            if "did not contain structured output" not in str(exc):
-                raise
-            last_error = exc
-        if attempt < 2:
-            time.sleep(2**attempt)
-    raise RuntimeError("LLM review repeatedly returned malformed structured output") from last_error
+    return _review_batch_executor().request_with_retries(
+        client,
+        items,
+        require_english_replacement=require_english_replacement,
+    )
+
+
+def _review_batch_executor() -> ReviewBatchExecutor:
+    return ReviewBatchExecutor(
+        decision_needs_retry=llm_decision_needs_retry,
+        recover_decision=recover_incomplete_bilingual_decision,
+        context_key=prompt_context_key,
+    )
 
 
 def group_items_for_retry(items: list[SourceReviewItem]) -> list[list[SourceReviewItem]]:
@@ -1345,6 +1229,9 @@ def build_source_review_item(
         ),
         source_record_type="issue",
         source_record_id=int(row["issue_id"]),
+        source_kind=(
+            "blue" if row["source_rule_id"] == BLUE_REVIEW_RULE_ID else "source_format"
+        ),
     )
 
 
@@ -1358,6 +1245,7 @@ def load_linguistic_review_items(
             lrc.id AS candidate_id,
             lrc.review_type,
             lrc.candidate_kind,
+            lrc.source_kind,
             lrc.reason,
             lrc.table_id,
             st.code,
@@ -1399,7 +1287,10 @@ def load_linguistic_review_items(
                 issue_id=-int(row["candidate_id"]),
                 source_rule_id=(
                     BLUE_REVIEW_RULE_ID
-                    if str(row["candidate_kind"]).startswith("blue_text")
+                    if (
+                        str(row["source_kind"] or "") == "blue"
+                        or str(row["candidate_kind"]).startswith("blue_text")
+                    )
                     else LINGUISTIC_CANDIDATE_RULE_ID
                 ),
                 candidate_kind=str(row["candidate_kind"]),
@@ -1438,6 +1329,14 @@ def load_linguistic_review_items(
                 source_record_type="candidate",
                 source_record_id=int(row["candidate_id"]),
                 prompt_version=str(row["prompt_version"] or LINGUISTIC_PROMPT_VERSION),
+                source_kind=(
+                    "blue"
+                    if (
+                        str(row["source_kind"] or "") == "blue"
+                        or str(row["candidate_kind"]).startswith("blue_text")
+                    )
+                    else str(row["source_kind"] or "document")
+                ),
             )
         )
     return items
@@ -2703,9 +2602,13 @@ def upsert_llm_reviewed_glossary(
             origin_key, source_text, source_normalized, target_text,
             target_normalized, category, subcategory, source_kind,
             source_report_id, source_table_id, status, priority,
-            occurrence_count, evidence, verified_at
+            occurrence_count, evidence, verified_at, approval_status,
+            approved_by, glossary_version, provenance_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'llm', ?, ?, 'llm_reviewed', 1000, 1, ?, CURRENT_TIMESTAMP)
+        VALUES (
+            ?, ?, ?, ?, ?, ?, ?, 'llm', ?, ?, 'llm_reviewed', 1000, 1, ?,
+            CURRENT_TIMESTAMP, 'model_reviewed', 'llm', 1, ?
+        )
         ON CONFLICT(origin_key) DO UPDATE SET
             occurrence_count = translation_glossary.occurrence_count + 1,
             category = excluded.category,
@@ -2713,6 +2616,10 @@ def upsert_llm_reviewed_glossary(
             evidence = excluded.evidence,
             source_report_id = excluded.source_report_id,
             source_table_id = excluded.source_table_id,
+            approval_status = excluded.approval_status,
+            approved_by = excluded.approved_by,
+            glossary_version = translation_glossary.glossary_version + 1,
+            provenance_json = excluded.provenance_json,
             updated_at = CURRENT_TIMESTAMP
         """,
         (
@@ -2726,6 +2633,15 @@ def upsert_llm_reviewed_glossary(
             report_id,
             item.table_id,
             evidence,
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "table_code": item.table_code,
+                    "location": item.location,
+                    "model": reviewed_model,
+                },
+                ensure_ascii=False,
+            ),
         ),
     )
 
@@ -2865,165 +2781,6 @@ def int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def prompt_context_key(item: SourceReviewItem) -> tuple[object, ...]:
-    return (
-        item.table_id,
-        item.location,
-        item.row_index,
-        item.col_index,
-        normalize_review_text(item.current_value),
-    )
-
-
-def review_context_token(item: SourceReviewItem) -> str:
-    payload = {
-        "table_id": item.table_id,
-        "table_code": item.table_code,
-        "location": normalize_review_text(item.location),
-        "row_index": item.row_index,
-        "col_index": item.col_index,
-        "current_value": normalize_review_text(item.current_value),
-    }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    return f"ctx_{hashlib.sha256(encoded).hexdigest()[:24]}"
-
-
-def compact_prompt_items(items: list[SourceReviewItem]) -> list[dict[str, Any]]:
-    """Send shared cell context once while keeping one output id per review type."""
-
-    grouped: dict[tuple[object, ...], dict[str, Any]] = {}
-    for item in items:
-        key = prompt_context_key(item)
-        group = grouped.get(key)
-        if group is None:
-            group = item.to_prompt_dict()
-            for field in (
-                "id",
-                "candidate_kind",
-                "candidate_reason",
-                "candidate_expected",
-                "requested_review_type",
-                "prompt_version",
-            ):
-                group.pop(field, None)
-            group["translation_glossary"] = compact_prompt_glossary(
-                item.glossary_matches or []
-            )
-            group["context_token"] = review_context_token(item)
-            if normalize_review_text(str(group.get("cell_text") or "")) == normalize_review_text(
-                item.current_value
-            ):
-                group.pop("cell_text", None)
-            if normalize_review_text(str(group.get("row_label") or "")) == normalize_review_text(
-                item.current_value
-            ):
-                group.pop("row_label", None)
-            if normalize_review_text(str(group.get("column_label") or "")) == normalize_review_text(
-                item.current_value
-            ):
-                group.pop("column_label", None)
-            group["review_requests"] = []
-            grouped[key] = group
-        request_item = {
-            "id": item.issue_id,
-            "requested_review_type": item.requested_review_type,
-            "candidate_kind": item.candidate_kind,
-        }
-        if item.source_rule_id == BLUE_REVIEW_RULE_ID and item.candidate_reason:
-            request_item["candidate_reason"] = item.candidate_reason
-        if item.candidate_expected:
-            request_item["candidate_expected"] = item.candidate_expected
-        group["review_requests"].append(request_item)
-    return list(grouped.values())
-
-
-def compact_prompt_glossary(entries: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Keep only source-traceable glossary evidence that can affect a decision."""
-
-    compacted: list[dict[str, object]] = []
-    seen: set[tuple[str, str, str]] = set()
-    for entry in entries:
-        status = str(entry.get("status") or "")
-        if status not in {"approved", "official_verified", "official_name_only"}:
-            continue
-        source = normalize_review_text(str(entry.get("source") or ""))
-        target = normalize_review_text(str(entry.get("target") or ""))
-        key = (source.casefold(), target.casefold(), status)
-        if key in seen:
-            continue
-        seen.add(key)
-        compacted.append(
-            {
-                "source": source,
-                "target": target,
-                "status": status,
-                "subcategory": str(entry.get("subcategory") or ""),
-                "source_title": normalize_review_text(str(entry.get("source_title") or "")),
-                "source_url": str(entry.get("source_url") or ""),
-            }
-        )
-    return compacted[:8]
-
-
-def chunked_by_context(items: list[SourceReviewItem], context_size: int) -> list[list[SourceReviewItem]]:
-    batches: list[list[SourceReviewItem]] = []
-    current: list[SourceReviewItem] = []
-    context_count = 0
-    previous_key: tuple[object, ...] | None = None
-    for item in items:
-        key = prompt_context_key(item)
-        if key != previous_key:
-            if current and context_count >= context_size:
-                batches.append(current)
-                current = []
-                context_count = 0
-            context_count += 1
-            previous_key = key
-        current.append(item)
-    if current:
-        batches.append(current)
-    return batches
-
-
-def group_linguistic_items_by_context(items: list[SourceReviewItem]) -> list[SourceReviewItem]:
-    """Keep every review type for one cell contiguous so one prompt carries its context once."""
-
-    grouped: dict[tuple[object, ...], list[SourceReviewItem]] = {}
-    for item in items:
-        grouped.setdefault(prompt_context_key(item), []).append(item)
-
-    type_order = {
-        SPELLING_CHECK_TYPE: 0,
-        TRANSLATION_CHECK_TYPE: 1,
-    }
-    return [
-        item
-        for context_items in grouped.values()
-        for item in sorted(
-            context_items,
-            key=lambda candidate: (
-                type_order.get(candidate.requested_review_type, 99),
-                candidate.issue_id,
-            ),
-        )
-    ]
-
-
-def take_contexts(items: list[SourceReviewItem], context_limit: int) -> list[SourceReviewItem]:
-    if context_limit <= 0:
-        return []
-    selected: list[SourceReviewItem] = []
-    seen: set[tuple[object, ...]] = set()
-    for item in items:
-        key = prompt_context_key(item)
-        if key not in seen:
-            if len(seen) >= context_limit:
-                break
-            seen.add(key)
-        selected.append(item)
-    return selected
 
 
 def build_parser() -> argparse.ArgumentParser:

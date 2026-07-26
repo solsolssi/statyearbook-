@@ -62,7 +62,8 @@ def rebuild_linguistic_review_scope(
                 """
                 SELECT COUNT(*) AS candidate_count
                 FROM linguistic_review_candidates
-                WHERE run_id = ? AND candidate_kind LIKE 'blue_text%'
+                WHERE run_id = ?
+                  AND (source_kind = 'blue' OR candidate_kind LIKE 'blue_text%')
                 """,
                 (run_id,),
             ).fetchone()

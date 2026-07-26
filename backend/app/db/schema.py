@@ -214,6 +214,10 @@ CREATE TABLE IF NOT EXISTS translation_glossary (
     source_report_id INTEGER,
     source_table_id INTEGER,
     status TEXT NOT NULL DEFAULT 'reference',
+    approval_status TEXT NOT NULL DEFAULT 'unreviewed',
+    approved_by TEXT NOT NULL DEFAULT '',
+    glossary_version INTEGER NOT NULL DEFAULT 1,
+    provenance_json TEXT NOT NULL DEFAULT '{}',
     priority INTEGER NOT NULL DEFAULT 0,
     occurrence_count INTEGER NOT NULL DEFAULT 1,
     evidence TEXT NOT NULL DEFAULT '',
@@ -272,6 +276,7 @@ CREATE TABLE IF NOT EXISTS linguistic_review_candidates (
     table_id INTEGER NOT NULL,
     review_type TEXT NOT NULL,
     candidate_kind TEXT NOT NULL,
+    source_kind TEXT NOT NULL DEFAULT 'document',
     location TEXT NOT NULL,
     row_index INTEGER,
     col_index INTEGER,
@@ -312,6 +317,24 @@ CREATE TABLE IF NOT EXISTS linguistic_review_cache (
 
 CREATE INDEX IF NOT EXISTS idx_linguistic_review_cache_lookup
 ON linguistic_review_cache(review_type, prompt_version, reviewed_model);
+
+CREATE TABLE IF NOT EXISTS llm_usage_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    request_kind TEXT NOT NULL DEFAULT 'language_review',
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd REAL NOT NULL DEFAULT 0,
+    response_status TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES validation_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_usage_events_run
+ON llm_usage_events(run_id, created_at);
 """
 
 
@@ -334,6 +357,11 @@ def ensure_schema_columns(connection: DatabaseConnection) -> None:
     ensure_column(connection, "translation_glossary", "valid_from", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "translation_glossary", "valid_to", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "translation_glossary", "verified_at", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "translation_glossary", "approval_status", "TEXT NOT NULL DEFAULT 'unreviewed'")
+    ensure_column(connection, "translation_glossary", "approved_by", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "translation_glossary", "glossary_version", "INTEGER NOT NULL DEFAULT 1")
+    ensure_column(connection, "translation_glossary", "provenance_json", "TEXT NOT NULL DEFAULT '{}'")
+    ensure_column(connection, "linguistic_review_candidates", "source_kind", "TEXT NOT NULL DEFAULT 'document'")
     ensure_column(connection, "linguistic_review_candidates", "prompt_version", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "linguistic_review_candidates", "reviewed_model", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "linguistic_review_candidates", "review_result_json", "TEXT NOT NULL DEFAULT ''")
@@ -352,6 +380,50 @@ def ensure_schema_columns(connection: DatabaseConnection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_report_processing_jobs_source_hash
         ON report_processing_jobs(source_file_hash, report_year, report_title)
+        """
+    )
+
+
+def classify_glossary_approval_metadata(connection: DatabaseConnection) -> None:
+    """Backfill explicit approval metadata from the legacy source/status fields."""
+
+    connection.execute(
+        """
+        UPDATE translation_glossary
+        SET approval_status = CASE
+                WHEN source_kind = 'official' THEN 'approved'
+                WHEN source_kind IN ('curated', 'seed') THEN 'reference'
+                WHEN status IN ('llm_verified', 'llm_reviewed') THEN 'model_reviewed'
+                WHEN status IN ('rejected', 'quarantined') THEN 'rejected'
+                ELSE 'reference'
+            END,
+            approved_by = CASE
+                WHEN source_kind = 'official' THEN 'official_source'
+                WHEN source_kind = 'curated' THEN 'curator'
+                WHEN source_kind = 'seed' THEN 'project_seed'
+                WHEN status IN ('llm_verified', 'llm_reviewed') THEN 'llm'
+                ELSE approved_by
+            END,
+            glossary_version = CASE
+                WHEN glossary_version < 1 THEN 1
+                ELSE glossary_version
+            END
+        WHERE approval_status = 'unreviewed' OR glossary_version < 1
+        """
+    )
+
+
+def classify_linguistic_candidate_sources(connection: DatabaseConnection) -> None:
+    """Make blue-marked HWPX candidates explicit without changing their UI type."""
+
+    connection.execute(
+        """
+        UPDATE linguistic_review_candidates
+        SET source_kind = CASE
+                WHEN candidate_kind LIKE 'blue_text%' THEN 'blue'
+                ELSE 'document'
+            END
+        WHERE source_kind = 'document' OR source_kind = ''
         """
     )
 

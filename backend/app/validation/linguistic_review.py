@@ -74,7 +74,9 @@ def clear_linguistic_review_run(
     connection.execute(
         """
         DELETE FROM linguistic_review_candidates
-        WHERE run_id = ? AND candidate_kind NOT LIKE 'blue_text%'
+        WHERE run_id = ?
+          AND source_kind <> 'blue'
+          AND candidate_kind NOT LIKE 'blue_text%'
         """,
         (run_id,),
     )
@@ -374,7 +376,8 @@ def blue_review_candidate_keys(
         """
         SELECT table_id, location, row_index, col_index, current_value
         FROM linguistic_review_candidates
-        WHERE run_id = ? AND candidate_kind LIKE 'blue_text%'
+        WHERE run_id = ?
+          AND (source_kind = 'blue' OR candidate_kind LIKE 'blue_text%')
         """,
         (run_id,),
     ).fetchall()
@@ -425,11 +428,11 @@ def insert_candidate_once(
     cursor = connection.execute(
         """
         INSERT INTO linguistic_review_candidates (
-            run_id, table_id, review_type, candidate_kind, location,
+            run_id, table_id, review_type, candidate_kind, source_kind, location,
             row_index, col_index, current_value, korean_text, english_text,
             glossary_json, reason, prompt_version
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, 'document', ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT DO NOTHING
         """,
         (

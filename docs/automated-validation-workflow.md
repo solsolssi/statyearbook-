@@ -32,6 +32,12 @@
 | `validation/spec_repository.py` | 검수 결과의 `rule_id`를 저장된 프로파일 명세와 다시 연결 |
 | `validation/highlights.py` | 명세와 검수 좌표로 목표·연산 입력 셀 계산 |
 | `validation/presentation.py` | 내부 검수 결과를 API 표시 모델로 변환 |
+| `validation/language_pipeline/candidates.py` | 문서·파란색·원문 형식 언어 후보 생성 |
+| `validation/language_pipeline/resolution.py` | 공식 사전 판정과 문맥 캐시 재사용 |
+| `validation/language_pipeline/batching.py` | 동일 셀 문맥 그룹화와 LLM 배치 생성 |
+| `validation/language_pipeline/execution.py` | 응답 누락 재시도와 문맥별 복구 정책 |
+| `validation/language_pipeline/responses.py` | 구조화 응답 형식 검증 |
+| `validation/language_pipeline/storage.py` | 모델·토큰·예상 비용 사용량 기록 |
 
 ## 1. 파일 입력과 DB 구성
 
@@ -129,6 +135,13 @@
 5. 표·행·열 문맥, 프롬프트 버전, 모델을 포함한 캐시 키로 이전 결과를 재사용합니다.
 6. 남은 후보만 한 문맥당 한 요청으로 묶어 LLM에 보냅니다.
 7. 응답 ID와 원본 셀 값을 다시 대조한 뒤에만 결과를 저장합니다.
+
+파란색 후보는 다른 언어 후보와 같은 테이블에 저장하되
+`source_kind="blue"`로 원문 출처를 보존합니다. 화면에 표시되는 검수 유형은 기존
+`파란색 표기 확인`을 그대로 유지합니다. 사전 항목은 원문 출처, 승인 상태, 승인
+주체와 버전을 함께 기록합니다. LLM 응답의 모델·입출력 토큰과 예상 비용은
+`llm_usage_events`에 요청 단위로 쌓이며, 가격은 배포 환경의
+`LLM_INPUT_COST_PER_MILLION`, `LLM_OUTPUT_COST_PER_MILLION`으로 설정합니다.
 
 LLM 응답 일부가 빠지거나 원본과 연결되지 않으면 임의의 셀에 저장하지 않고 해당
 후보를 대기 상태로 남깁니다. 전수 LLM 모드에서는 대기 후보가 하나라도 있으면

@@ -369,7 +369,40 @@ def refresh_translation_glossary(connection: DatabaseConnection) -> int:
                 ),
             )
             changed += 1
+    refresh_glossary_governance_metadata(connection)
     return changed
+
+
+def refresh_glossary_governance_metadata(connection: DatabaseConnection) -> None:
+    """Keep provenance, approval and version metadata explicit for every entry."""
+
+    connection.execute(
+        """
+        UPDATE translation_glossary
+        SET approval_status = CASE
+                WHEN source_kind = 'official' THEN 'approved'
+                WHEN source_kind IN ('curated', 'seed') THEN 'reference'
+                WHEN source_kind = 'llm' THEN 'model_reviewed'
+                WHEN status IN ('rejected', 'quarantined') THEN 'rejected'
+                ELSE 'reference'
+            END,
+            approved_by = CASE
+                WHEN source_kind = 'official' THEN 'official_source'
+                WHEN source_kind = 'curated' THEN 'curator'
+                WHEN source_kind = 'seed' THEN 'project_seed'
+                WHEN source_kind = 'llm' THEN 'llm'
+                ELSE ''
+            END,
+            glossary_version = CASE
+                WHEN glossary_version < 1 THEN 1
+                ELSE glossary_version
+            END,
+            provenance_json = CASE
+                WHEN provenance_json = '' THEN '{}'
+                ELSE provenance_json
+            END
+        """
+    )
 
 
 def collect_pair(

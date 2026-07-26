@@ -6,14 +6,8 @@ from pathlib import Path
 from app.db.connection import DB_PATH, connect
 from app.db.schema import init_db
 from app.domain.enums import LanguageReviewStatus
-from app.validation.blue_review import append_blue_text_review_checks, synchronize_blue_review_checks
-from app.validation.llm_translation_review import (
-    append_llm_translation_reviews,
-    apply_reusable_linguistic_reviews,
-)
-from app.validation.linguistic_review import prepare_linguistic_reviews
+from app.validation.language_pipeline.pipeline import LanguageReviewPipeline
 from app.validation.result_repository import refresh_run_issue_count
-from app.validation.source_review import append_source_format_review_checks
 
 
 @dataclass(frozen=True)
@@ -38,6 +32,7 @@ class LanguageValidationWorkflow:
 
     def __init__(self, db_path: Path = DB_PATH) -> None:
         self._db_path = db_path
+        self._pipeline = LanguageReviewPipeline(db_path)
 
     def run(
         self,
@@ -47,57 +42,19 @@ class LanguageValidationWorkflow:
         source_path: str,
         include_llm: bool,
     ) -> LanguageValidationResult:
-        blue_candidates = append_blue_text_review_checks(
-            self._db_path,
+        result = self._pipeline.run(
             report_id=report_id,
             run_id=run_id,
             source_path=source_path,
+            include_llm=include_llm,
         )
-        source_issues = append_source_format_review_checks(
-            self._db_path,
-            report_id=report_id,
-            run_id=run_id,
-        )
-
-        with connect(self._db_path) as connection:
-            init_db(connection)
-            prepare_linguistic_reviews(
-                connection,
-                report_id=report_id,
-                run_id=run_id,
-            )
-            refresh_stored_issue_count(connection, run_id)
-
-        _, _, reused_count = apply_reusable_linguistic_reviews(
-            self._db_path,
-            run_id=run_id,
-        )
-        if include_llm:
-            llm_result = append_llm_translation_reviews(
-                self._db_path,
-                report_id=report_id,
-                run_id=run_id,
-                limit=None,
-            )
-            if llm_result.skipped_reason:
-                raise RuntimeError(
-                    f"LLM 전수 언어 검수가 실행되지 않았습니다: {llm_result.skipped_reason}"
-                )
-
-        synchronize_blue_review_checks(self._db_path, run_id=run_id)
-        candidate_count, pending_count = linguistic_review_counts(self._db_path, run_id)
-        if include_llm and pending_count:
-            raise RuntimeError(
-                "LLM 전수 언어 검수가 완료되지 않았습니다: "
-                f"{pending_count}/{candidate_count}건 대기"
-            )
 
         return LanguageValidationResult(
-            candidate_count=candidate_count,
-            pending_count=pending_count,
-            reused_count=reused_count,
-            blue_candidate_count=blue_candidates,
-            source_issue_count=source_issues,
+            candidate_count=result.candidate_count,
+            pending_count=result.pending_count,
+            reused_count=result.reused_count,
+            blue_candidate_count=result.blue_candidate_count,
+            source_issue_count=result.source_issue_count,
         )
 
 
