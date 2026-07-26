@@ -1,5 +1,6 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
 
+from app.core.config import get_settings
 from app.models.report import (
     ReportPayload,
     ReportProcessingJob,
@@ -21,6 +22,7 @@ from app.workflows.report_processing import (
     ReportProcessingError,
     ReportProcessingWorkflow,
 )
+from app.workflows.job_executor import InProcessJobExecutor, JobExecutor, QueuedJobExecutor
 
 router = APIRouter()
 
@@ -80,7 +82,7 @@ async def create_report_import(
     except ReportUploadError as error:
         raise HTTPException(status_code=error.status_code, detail=str(error)) from error
     job_id = int(job["id"])
-    background_tasks.add_task(run_processing_job, job_id)
+    job_executor(background_tasks).submit(job_id)
     return ReportProcessingJob(**job)
 
 
@@ -103,7 +105,7 @@ def retry_report_import(job_id: int, background_tasks: BackgroundTasks) -> Repor
     if job is None:
         raise HTTPException(status_code=404, detail="가져오기 작업을 찾을 수 없습니다.")
     job = workflow.queue_retry(job_id)
-    background_tasks.add_task(run_processing_job, job_id, True)
+    job_executor(background_tasks).submit(job_id, retry=True)
     return ReportProcessingJob(**job)
 
 
@@ -118,6 +120,13 @@ def run_processing_job(job_id: int, retry: bool = False) -> None:
         # The workflow already persisted the stage and error. The status API is
         # the source of truth, so a background exception must not lose context.
         return
+
+
+def job_executor(background_tasks: BackgroundTasks) -> JobExecutor:
+    backend = get_settings().job_executor_backend.strip().lower()
+    if backend in {"queue", "queued", "worker"}:
+        return QueuedJobExecutor()
+    return InProcessJobExecutor(background_tasks.add_task, run_processing_job)
 
 
 @router.get("/validation/profiles", response_model=list[ValidationProfileSummary])

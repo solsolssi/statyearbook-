@@ -20,6 +20,14 @@ class Settings(BaseModel):
     upload_dir: Path = Path(__file__).resolve().parents[2] / "uploads"
     max_upload_bytes: int = 100 * 1024 * 1024
     auto_import_include_llm: bool = False
+    source_storage_backend: str = "local"
+    object_storage_bucket: str = ""
+    object_storage_endpoint: str = ""
+    object_storage_region: str = "auto"
+    object_storage_access_key: str = ""
+    object_storage_secret_key: str = ""
+    job_executor_backend: str = "inprocess"
+    job_lease_seconds: int = 300
 
 
 @lru_cache
@@ -44,6 +52,14 @@ def get_settings() -> Settings:
         ),
         max_upload_bytes=int(env_value("MAX_UPLOAD_BYTES", default=str(100 * 1024 * 1024))),
         auto_import_include_llm=env_flag("AUTO_IMPORT_INCLUDE_LLM", default=False),
+        source_storage_backend=env_value("SOURCE_STORAGE_BACKEND", default="local"),
+        object_storage_bucket=env_value("OBJECT_STORAGE_BUCKET"),
+        object_storage_endpoint=env_value("OBJECT_STORAGE_ENDPOINT"),
+        object_storage_region=env_value("OBJECT_STORAGE_REGION", default="auto"),
+        object_storage_access_key=env_value("OBJECT_STORAGE_ACCESS_KEY"),
+        object_storage_secret_key=env_value("OBJECT_STORAGE_SECRET_KEY"),
+        job_executor_backend=env_value("JOB_EXECUTOR_BACKEND", default="inprocess"),
+        job_lease_seconds=int(env_value("JOB_LEASE_SECONDS", default="300")),
     )
 
 

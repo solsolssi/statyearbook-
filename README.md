@@ -40,6 +40,9 @@ npm run dev
 
 작업 상태는 `report_processing_jobs`와 `report_processing_stages`에 저장됩니다.
 실패 시 성공한 앞 단계는 재사용하고 실패한 단계부터 재시도할 수 있습니다.
+동일한 파일·연도·제목·옵션 조합은 SHA-256 해시로 판별해 기존 작업을 재사용합니다.
+각 단계의 진행률과 worker lease도 DB에 저장되므로 프로세스가 중단되면 lease 만료
+후 다른 worker가 완료된 단계 다음부터 이어서 처리할 수 있습니다.
 자세한 내부 흐름은 [자동 검수 아키텍처](docs/automated-validation-workflow.md)를
 참고하세요.
 
@@ -121,6 +124,8 @@ UPLOAD_DIR=/data/uploads
 ALLOWED_ORIGINS=https://your-vercel-project.vercel.app
 AUTO_IMPORT_INCLUDE_LLM=0
 PROFILE_LLM_ENABLED=0
+SOURCE_STORAGE_BACKEND=local
+JOB_EXECUTOR_BACKEND=inprocess
 ```
 
 LLM 검수를 운영에서 자동 실행하려면 아래처럼 명시적으로 켭니다.
@@ -136,6 +141,29 @@ AUTO_IMPORT_INCLUDE_LLM=1
 업로드 원본 파일을 재검수에도 보존하려면 Railway Volume을 `/data`에 연결합니다.
 볼륨이 없어도 업로드 직후 DB 저장과 검수는 가능하지만, 재배포 뒤 원본 파일 경로는
 유지되지 않을 수 있습니다.
+
+API와 검수 worker를 분리할 때는 두 서비스에 동일한 PostgreSQL과 객체 저장소
+설정을 넣습니다.
+
+```dotenv
+SOURCE_STORAGE_BACKEND=s3
+OBJECT_STORAGE_BUCKET=annual-reports
+OBJECT_STORAGE_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+OBJECT_STORAGE_REGION=auto
+OBJECT_STORAGE_ACCESS_KEY=...
+OBJECT_STORAGE_SECRET_KEY=...
+JOB_EXECUTOR_BACKEND=worker
+JOB_LEASE_SECONDS=300
+```
+
+별도 Railway worker의 Start Command는 다음과 같습니다.
+
+```bash
+python -m app.workflows.report_worker
+```
+
+단일 백엔드 서비스만 운영한다면 기존처럼 `SOURCE_STORAGE_BACKEND=local`,
+`JOB_EXECUTOR_BACKEND=inprocess`를 사용하면 됩니다.
 
 ### Vercel 프론트엔드
 

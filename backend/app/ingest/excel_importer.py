@@ -48,15 +48,16 @@ def import_excel(
     run_validation: bool = True,
 ) -> dict[str, int | str]:
     source_path = source_path.expanduser().resolve()
-    tables = parse_excel(source_path)
-    if not tables:
-        raise ValueError("엑셀에서 2열 이상의 통계표를 찾지 못했습니다.")
+    from app.ingest.parser_registry import parse_report
 
-    result = ReportImportRepository(db_path).replace_report(
-        source_path=source_path,
+    report = parse_report(
+        source_path,
+        source_type="xlsx",
         year=year,
         title=title or f"{year} 행정안전통계연보",
-        tables=tables,
+    )
+    result = ReportImportRepository(db_path).replace_parsed_report(
+        report,
     )
     validation_issues = 0
     if run_validation:

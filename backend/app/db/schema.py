@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS annual_reports (
     source_file_name TEXT NOT NULL,
     source_file_path TEXT NOT NULL,
     file_hash TEXT NOT NULL UNIQUE,
+    parse_warnings_json TEXT NOT NULL DEFAULT '[]',
     imported_at TEXT NOT NULL,
     is_archived INTEGER NOT NULL DEFAULT 0
 );
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS stat_tables (
     source TEXT NOT NULL DEFAULT '',
     extracted_at TEXT NOT NULL DEFAULT '',
     raw_context TEXT NOT NULL DEFAULT '',
+    parse_warnings_json TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE,
     UNIQUE (report_id, code)
 );
@@ -56,6 +58,9 @@ CREATE TABLE IF NOT EXISTS stat_table_cells (
     numeric_value REAL,
     is_header INTEGER NOT NULL DEFAULT 0,
     footnote_marker TEXT NOT NULL DEFAULT '',
+    source_coordinate TEXT NOT NULL DEFAULT '',
+    text_color TEXT NOT NULL DEFAULT '',
+    parse_warnings_json TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY (table_id) REFERENCES stat_tables(id) ON DELETE CASCADE,
     UNIQUE (table_id, row_index, col_index)
 );
@@ -121,12 +126,21 @@ CREATE TABLE IF NOT EXISTS report_processing_jobs (
     run_id INTEGER,
     source_file_name TEXT NOT NULL,
     source_file_path TEXT NOT NULL,
+    source_storage TEXT NOT NULL DEFAULT 'local',
+    source_object_key TEXT NOT NULL DEFAULT '',
+    source_file_hash TEXT NOT NULL DEFAULT '',
+    source_file_size INTEGER NOT NULL DEFAULT 0,
     source_type TEXT NOT NULL,
     report_year INTEGER NOT NULL,
     report_title TEXT NOT NULL,
     options_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'queued',
     current_stage TEXT NOT NULL DEFAULT 'queued',
+    progress_percent INTEGER NOT NULL DEFAULT 0,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    lease_owner TEXT NOT NULL DEFAULT '',
+    lease_expires_at TEXT,
+    last_heartbeat_at TEXT,
     error_message TEXT NOT NULL DEFAULT '',
     result_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -307,6 +321,11 @@ def create_schema(connection: DatabaseConnection) -> None:
 
 def ensure_schema_columns(connection: DatabaseConnection) -> None:
     ensure_column(connection, "stat_table_cells", "footnote_marker", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "stat_table_cells", "source_coordinate", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "stat_table_cells", "text_color", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "stat_table_cells", "parse_warnings_json", "TEXT NOT NULL DEFAULT '[]'")
+    ensure_column(connection, "stat_tables", "parse_warnings_json", "TEXT NOT NULL DEFAULT '[]'")
+    ensure_column(connection, "annual_reports", "parse_warnings_json", "TEXT NOT NULL DEFAULT '[]'")
     ensure_column(connection, "annual_reports", "is_archived", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(connection, "translation_glossary", "subcategory", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "translation_glossary", "source_url", "TEXT NOT NULL DEFAULT ''")
@@ -320,6 +339,21 @@ def ensure_schema_columns(connection: DatabaseConnection) -> None:
     ensure_column(connection, "linguistic_review_candidates", "review_result_json", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "linguistic_review_candidates", "review_fingerprint", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "linguistic_review_candidates", "resolution_source", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "report_processing_jobs", "source_storage", "TEXT NOT NULL DEFAULT 'local'")
+    ensure_column(connection, "report_processing_jobs", "source_object_key", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "report_processing_jobs", "source_file_hash", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "report_processing_jobs", "source_file_size", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection, "report_processing_jobs", "progress_percent", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection, "report_processing_jobs", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection, "report_processing_jobs", "lease_owner", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "report_processing_jobs", "lease_expires_at", "TEXT")
+    ensure_column(connection, "report_processing_jobs", "last_heartbeat_at", "TEXT")
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_report_processing_jobs_source_hash
+        ON report_processing_jobs(source_file_hash, report_year, report_title)
+        """
+    )
 
 
 def init_db(connection: DatabaseConnection) -> None:

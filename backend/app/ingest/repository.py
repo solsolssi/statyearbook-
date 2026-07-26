@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
+import json
 from pathlib import Path
 
 from app.core.numeric_text import parse_numeric_value
 from app.db.connection import DB_PATH, DatabaseConnection, connect
 from app.db.schema import init_db
-from app.domain.parsed import ParsedTable
+from app.domain.parsed import ParsedReport, ParsedTable
 
 
 # Compatibility alias for importers and external scripts. New code should use
@@ -39,16 +40,36 @@ class ReportImportRepository:
         tables: list[ImportedTable],
         archive_previous_same_title: bool = False,
     ) -> ImportResult:
+        report = ParsedReport(
+            year=year,
+            title=title,
+            source_path=source_path,
+            source_file_name=source_file_name or source_path.name,
+            file_hash=file_digest(source_path),
+            tables=tuple(tables),
+        )
+        return self.replace_parsed_report(
+            report,
+            archive_previous_same_title=archive_previous_same_title,
+        )
+
+    def replace_parsed_report(
+        self,
+        report: ParsedReport,
+        *,
+        persisted_source_path: str | None = None,
+        archive_previous_same_title: bool = False,
+    ) -> ImportResult:
         valid_tables = [
             table
-            for table in tables
+            for table in report.tables
             if table.matrix and max((len(row) for row in table.matrix), default=0) >= 2
         ]
         if not valid_tables:
             raise ValueError("원본 파일에서 저장 가능한 통계표를 찾지 못했습니다.")
 
         imported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        source_hash = file_digest(source_path)
+        source_hash = report.file_hash or file_digest(report.source_path)
         table_count = 0
         cell_count = 0
 
@@ -77,20 +98,22 @@ class ReportImportRepository:
                 if archive_previous_same_title:
                     connection.execute(
                         "UPDATE annual_reports SET is_archived = 1 WHERE year = ? AND title = ?",
-                        (year, title),
+                        (report.year, report.title),
                     )
                 cursor = connection.execute(
                     """
                     INSERT INTO annual_reports (
-                        year, title, source_file_name, source_file_path, file_hash, imported_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        year, title, source_file_name, source_file_path, file_hash,
+                        parse_warnings_json, imported_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        year,
-                        title,
-                        source_file_name or source_path.name,
-                        str(source_path),
+                        report.year,
+                        report.title,
+                        report.source_file_name or report.source_path.name,
+                        persisted_source_path or str(report.source_path),
                         source_hash,
+                        json.dumps(report.parse_warnings, ensure_ascii=False),
                         imported_at,
                     ),
                 )
@@ -103,8 +126,8 @@ class ReportImportRepository:
                         INSERT INTO stat_tables (
                             report_id, code, title, title_en, section_title, section_title_en,
                             domain, unit, base_date, section_file, table_order, cell_range,
-                            note, source, extracted_at, raw_context
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            note, source, extracted_at, raw_context, parse_warnings_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             report_id,
@@ -123,11 +146,16 @@ class ReportImportRepository:
                             table.source,
                             imported_at,
                             table.raw_context[:5000],
+                            json.dumps(table.parse_warnings, ensure_ascii=False),
                         ),
                     )
                     table_id = int(table_cursor.lastrowid)
                     table_count += 1
 
+                    parsed_cells = {
+                        (cell.row_index, cell.col_index): cell
+                        for cell in table.cells
+                    }
                     for row_index, source_row in enumerate(table.matrix):
                         row = [*source_row, *([""] * (width - len(source_row)))]
                         footnotes = (
@@ -136,22 +164,42 @@ class ReportImportRepository:
                             else []
                         )
                         for col_index, value in enumerate(row):
+                            parsed_cell = parsed_cells.get((row_index, col_index))
                             footnote = footnotes[col_index] if col_index < len(footnotes) else ""
                             connection.execute(
                                 """
                                 INSERT INTO stat_table_cells (
                                     table_id, row_index, col_index, text_value, numeric_value,
-                                    is_header, footnote_marker
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                                    is_header, footnote_marker, source_coordinate, text_color,
+                                    parse_warnings_json
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
                                 (
                                     table_id,
                                     row_index,
                                     col_index,
                                     value,
-                                    parse_numeric_value(value),
-                                    1 if row_index < table.header_count else 0,
-                                    footnote,
+                                    (
+                                        parsed_cell.numeric_value
+                                        if parsed_cell is not None
+                                        else parse_numeric_value(value)
+                                    ),
+                                    (
+                                        int(parsed_cell.is_header)
+                                        if parsed_cell is not None
+                                        else (1 if row_index < table.header_count else 0)
+                                    ),
+                                    (
+                                        parsed_cell.footnote_marker
+                                        if parsed_cell is not None
+                                        else footnote
+                                    ),
+                                    parsed_cell.source_coordinate if parsed_cell is not None else "",
+                                    parsed_cell.text_color if parsed_cell is not None else "",
+                                    json.dumps(
+                                        parsed_cell.parse_warnings if parsed_cell is not None else (),
+                                        ensure_ascii=False,
+                                    ),
                                 ),
                             )
                             cell_count += 1

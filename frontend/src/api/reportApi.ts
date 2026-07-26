@@ -12,6 +12,8 @@ export interface ReportImportJob {
   source_file_name: string;
   status: "queued" | "running" | "completed" | "failed";
   current_stage: string;
+  progress_percent: number;
+  attempt_count: number;
   error_message: string;
 }
 

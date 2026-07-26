@@ -5,6 +5,7 @@
 | 계층 | 책임 |
 | --- | --- |
 | 형식별 파서 | 원본 파일을 표·셀·메타정보의 중립 모델로 변환 |
+| 원본 저장소 | 로컬 파일 또는 S3/R2에 원본을 저장·구체화 |
 | 가져오기 저장소 | 연보와 모든 표·셀을 한 트랜잭션으로 저장 |
 | 업로드 서비스 | 파일 형식·크기를 검증하고 원본을 스트리밍 저장한 뒤 작업 생성 |
 | 작업 저장소 | 처리 작업과 단계별 시도·결과·오류를 DB에 기록 |
@@ -12,6 +13,7 @@
 | 계산 검수 워크플로 | 프로파일 준비 후 결정론적 규칙 엔진 실행 |
 | 언어 검수 워크플로 | 파란색 후보, 오탈자·번역 후보, 사전·캐시·LLM 처리 |
 | 처리 작업 워크플로 | import → calculation → language 단계를 기록·재시도 |
+| 작업 실행기 | 로컬 BackgroundTasks 또는 외부 worker에 작업 전달 |
 | 조회/표시 계층 | 검수 결과를 사용자용 그룹과 하이라이트 좌표로 변환 |
 
 이 경계 덕분에 파서, 계산 규칙, LLM 모델, 화면 표시를 서로 독립적으로 교체할 수
@@ -33,10 +35,11 @@
 
 ## 1. 파일 입력과 DB 구성
 
-`ReportImportService`가 업로드 본문을 청크 단위로 저장하면서 허용 형식과 최대
-크기를 검증하고 처리 작업을 생성합니다. API 라우트는 파일 본문 전체를 메모리에
-올리지 않습니다. `ReportProcessingWorkflow`는 저장된 작업을 읽고 원본 확장자에
-맞는 파서를 선택합니다. 작업과 각 단계의 상태 저장은
+`ReportImportService`가 업로드 본문을 청크 단위로 `SourceStorage`에 저장하면서
+허용 형식과 최대 크기를 검증하고 처리 작업을 생성합니다. API 라우트는 파일 본문
+전체를 메모리에 올리지 않습니다. SHA-256, 연도, 제목과 옵션이 모두 같은 작업은
+기존 작업을 재사용합니다. `ReportProcessingWorkflow`는 저장된 작업을 읽고
+원본 형식에 맞는 파서를 선택합니다. 작업과 각 단계의 상태 저장은
 `ReportProcessingJobRepository`가 담당합니다.
 
 - Excel: 병합 셀 값을 펼치고, 표 번호가 반복되는 지점으로 한 시트의 여러 표를
@@ -45,11 +48,11 @@
 - HWPX: 문서 XML, 병합 셀, 각주와 원문 스타일 정보를 이용합니다.
 - Markdown: 변환된 표와 주변 문단의 메타정보를 연결합니다.
 
-파서 결과는 `ImportedTable` 형식으로 정규화합니다. Excel은
-`ReportImportRepository`가 `annual_reports`, `stat_tables`, `stat_table_cells`를
-한 트랜잭션으로 저장합니다. 중간 실패 시 불완전한 연보가 남지 않습니다. HWPX와
-Markdown도 같은 DB 계약을 사용하므로 이후 단계에는 파일 형식 차이가 노출되지
-않습니다.
+세 파서 결과는 모두 `ParsedReport → ParsedTable → ParsedCell` 계약으로
+정규화합니다. 병합 해석 결과, 각주, 원본 좌표, 색상과 파싱 경고를 이 계약에
+보존하고, 표 번호·제목·행렬·헤더 범위·셀 좌표 검증을 통과한 보고서만
+`ReportImportRepository`가 `annual_reports`, `stat_tables`, `stat_table_cells`에
+한 트랜잭션으로 저장합니다. 중간 실패 시 불완전한 연보가 남지 않습니다.
 
 ## 2. 구조 변경 감지
 
@@ -154,6 +157,8 @@ LLM 응답 일부가 빠지거나 원본과 연결되지 않으면 임의의 셀
 ## 7. 실패와 재시도
 
 각 단계의 시도 횟수, 결과와 오류는 `report_processing_stages`에 별도로 저장됩니다.
+작업 진행률, worker lease, heartbeat와 전체 시도 횟수는
+`report_processing_jobs`에 저장됩니다.
 
 - import 실패: 파일 입력부터 다시 실행
 - calculation 실패: 이미 저장한 연보를 재사용하고 계산부터 다시 실행
@@ -164,7 +169,9 @@ LLM 전송 계층은 408, 409, 429와 일시적인 5xx 오류에 지수 백오�
 깨졌거나 지원하지 않는 구조처럼 복구할 수 없는 오류는 작업 상태 API에 단계와
 원인을 남깁니다.
 
-PoC는 FastAPI 프로세스의 BackgroundTasks를 사용합니다. 여러 서버 인스턴스와
-프로세스 재시작까지 자동 복구해야 하는 운영 환경에서는 같은
-`ReportProcessingWorkflow`를 Celery, RQ 또는 별도 작업 큐 worker에서 호출하면
-됩니다. DB 단계 기록과 재시도 경계는 그대로 재사용할 수 있습니다.
+로컬은 `InProcessJobExecutor`가 FastAPI BackgroundTasks를 사용합니다. 운영에서는
+`QueuedJobExecutor`가 작업을 DB에 남기고 `python -m
+app.workflows.report_worker`로 실행한 worker가 lease를 획득해 처리합니다. 긴 검수
+중에는 heartbeat로 lease를 연장하며 프로세스가 중단되면 만료된 작업을 다른
+worker가 가져갑니다. 완료된 단계의 저장 결과를 읽어 마지막 성공 단계 다음부터
+재개하므로 같은 import나 계산을 불필요하게 반복하지 않습니다.

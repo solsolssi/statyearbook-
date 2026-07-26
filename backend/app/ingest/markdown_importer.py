@@ -954,17 +954,26 @@ def import_markdown(
     limit: int | None = None,
 ) -> dict[str, int | str]:
     source_path = source_path.expanduser().resolve()
-    parsed_tables = parse_markdown(source_path)
-    if limit is not None:
-        parsed_tables = parsed_tables[: max(limit, 0)]
     report_title = title or f"{year} 행정안전통계연보"
-    imported_tables = prepare_markdown_import_tables(parsed_tables)
-    result = ReportImportRepository(db_path).replace_report(
-        source_path=source_path,
-        year=year,
-        title=report_title,
-        tables=imported_tables,
-    )
+    if limit is None:
+        from app.ingest.parser_registry import parse_report
+
+        report = parse_report(
+            source_path,
+            source_type="markdown",
+            year=year,
+            title=report_title,
+        )
+        result = ReportImportRepository(db_path).replace_parsed_report(report)
+    else:
+        parsed_tables = parse_markdown(source_path)[: max(limit, 0)]
+        imported_tables = prepare_markdown_import_tables(parsed_tables)
+        result = ReportImportRepository(db_path).replace_report(
+            source_path=source_path,
+            year=year,
+            title=report_title,
+            tables=imported_tables,
+        )
 
     validation_issues = 0
     if run_validation:

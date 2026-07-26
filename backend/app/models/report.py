@@ -226,12 +226,18 @@ class ReportProcessingJob(BaseModel):
     run_id: int | None = None
     source_file_name: str
     source_file_path: str
+    source_storage: str = "local"
+    source_object_key: str = ""
+    source_file_hash: str = ""
+    source_file_size: int = 0
     source_type: str
     report_year: int
     report_title: str
     options_json: str
     status: JobStatus
     current_stage: str
+    progress_percent: int = 0
+    attempt_count: int = 0
     error_message: str = ""
     result_json: str = "{}"
     created_at: str

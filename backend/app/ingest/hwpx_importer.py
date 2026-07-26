@@ -506,14 +506,17 @@ def import_hwpx(
     run_validation: bool = True,
 ) -> dict[str, int | str]:
     source_path = source_path.expanduser().resolve()
-    parsed_tables = parse_hwpx(source_path)
     report_title = title or f"{year} 행정안전통계연보"
-    imported_tables = prepare_hwpx_import_tables(parsed_tables)
-    result = ReportImportRepository(db_path).replace_report(
-        source_path=source_path,
+    from app.ingest.parser_registry import parse_report
+
+    report = parse_report(
+        source_path,
+        source_type="hwpx",
         year=year,
         title=report_title,
-        tables=imported_tables,
+    )
+    result = ReportImportRepository(db_path).replace_parsed_report(
+        report,
     )
 
     validation_issues = 0
