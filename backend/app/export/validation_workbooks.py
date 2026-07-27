@@ -19,7 +19,7 @@ from app.export.validation_presentation import (
     PresentedValidationCheck,
     build_validation_presentations,
 )
-from app.validation.models import ValidationTable, restore_hyphenated_line_breaks
+from app.validation.models import ValidationCell, ValidationTable, restore_hyphenated_line_breaks
 from app.validation.rules import combined_row_label
 from app.validation.repository import ValidationRepository
 
@@ -325,6 +325,7 @@ def write_statistic_sheet(
             sheet,
             connection=connection,
             table=table,
+            validation_table=load_export_validation_table(connection, table),
             checks=table_checks,
             presentations=presentations,
             start_row=current_row,
@@ -347,6 +348,7 @@ def write_table_section(
     *,
     connection: DatabaseConnection,
     table: DatabaseRow,
+    validation_table: ValidationTable,
     checks: list[DatabaseRow],
     presentations: dict[int, PresentedValidationCheck],
     start_row: int,
@@ -532,6 +534,41 @@ def write_validation_index_workbook(
 def validation_table_map(db_path: Path, report_id: int) -> dict[int, ValidationTable]:
     repository = ValidationRepository(db_path)
     return {table.id: table for table in repository.load_tables(report_id)}
+
+
+def load_export_validation_table(
+    connection: DatabaseConnection,
+    table: DatabaseRow,
+) -> ValidationTable:
+    cells = connection.execute(
+        """
+        SELECT row_index, col_index, text_value, numeric_value, is_header
+        FROM stat_table_cells
+        WHERE table_id = ?
+        ORDER BY row_index, col_index
+        """,
+        (int(table["id"]),),
+    ).fetchall()
+    return ValidationTable(
+        id=int(table["id"]),
+        report_id=int(table["report_id"]),
+        code=str(table["code"]),
+        title=str(table["title"]),
+        unit=str(table["unit"] or ""),
+        base_date=str(table["base_date"] or ""),
+        source=str(table["source"] or ""),
+        note=str(table["note"] or ""),
+        cells=[
+            ValidationCell(
+                row_index=int(cell["row_index"]),
+                col_index=int(cell["col_index"]),
+                text_value=str(cell["text_value"] or ""),
+                numeric_value=cell["numeric_value"],
+                is_header=bool(cell["is_header"]),
+            )
+            for cell in cells
+        ],
+    )
 
 
 def display_cell_text(text: str, footnote_marker: str) -> str:
