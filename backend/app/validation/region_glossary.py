@@ -190,6 +190,11 @@ def region_english_names() -> dict[str, str]:
             for source, target in OFFICIAL_PROVINCE_NAMES.items()
         }
     )
+    # Some yearbook tables shorten Busan's official "부산진구" to "진구".
+    # Resolve that source spelling through the same regional dictionary path
+    # instead of dropping the whole long 시군구 list from review.
+    names.setdefault(normalize_region_name("부산광역시 진구"), "Busan Busanjin-gu")
+    names.setdefault(normalize_region_name("부산 진구"), "Busan Busanjin-gu")
 
     return names
 

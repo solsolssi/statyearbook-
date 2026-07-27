@@ -92,4 +92,17 @@ describe("validation visibility baseline", () => {
     ]);
     expect(types.at(-1)).toBe("사용자 정의 검수");
   });
+
+  it("excludes internal profile checks from filters and visible status", () => {
+    const source = table([
+      issue("검수 프로파일 확인", "확인 필요", "warning"),
+      issue("합계 검수", "정상", "info"),
+    ]);
+    const types = validationTypesForTables([source]);
+    const [visible] = tablesWithValidationVisibility([source], new Set());
+
+    expect(types).not.toContain("검수 프로파일 확인");
+    expect(visible.checks.map((check) => check.type)).toEqual(["합계 검수"]);
+    expect(visible.status).toBe("normal");
+  });
 });

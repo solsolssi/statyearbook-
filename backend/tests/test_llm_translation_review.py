@@ -1057,6 +1057,43 @@ class LLMTranslationReviewTest(unittest.TestCase):
         self.assertEqual(decision["status"], "정상")  # type: ignore[index]
         self.assertEqual(decision["expected_value"], "서울 Seoul")  # type: ignore[index]
 
+    def test_official_organization_name_overrides_polluted_yearbook_translation(self) -> None:
+        item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="translation_pair",
+            requested_review_type="번역 검수",
+            current_value="기후에너지환경부 Ministry of Environment",
+            korean_text="기후에너지환경부",
+            english_text="Ministry of Environment",
+            glossary_matches=[
+                {
+                    "source": "기후에너지환경부",
+                    "target": "Ministry of Environment",
+                    "category": "기관명",
+                    "status": "llm_verified",
+                    "source_title": "연보 반복 번역 사전",
+                    "aliases": [],
+                },
+                {
+                    "source": "기후에너지환경부",
+                    "target": "Ministry of Climate, Energy and Environment",
+                    "category": "기관명",
+                    "status": "official_verified",
+                    "source_title": "중앙행정기관 공식 영어 명칭",
+                    "aliases": [],
+                },
+            ],
+        )
+
+        decision = glossary_decision_for(item)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision["status"], "오류 의심")  # type: ignore[index]
+        self.assertEqual(
+            decision["expected_value"],  # type: ignore[index]
+            "기후에너지환경부 Ministry of Climate, Energy and Environment",
+        )
+
     def test_all_approved_alternatives_are_checked_before_suggesting_replacement(self) -> None:
         item = self.source_item(
             source_rule_id="source.linguistic_review",

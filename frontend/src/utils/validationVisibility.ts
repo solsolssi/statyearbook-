@@ -20,14 +20,20 @@ export const VALIDATION_CHECK_TYPES = [
 ] as const;
 
 export const DEFAULT_HIDDEN_VALIDATION_TYPES = new Set<string>(["이상치 검수"]);
+export const INTERNAL_VALIDATION_TYPES = new Set<string>(["검수 프로파일 확인"]);
 
 export function validationTypesForTables(
   tables: ValidationTableLike[],
   preferredOrder: readonly string[] = VALIDATION_CHECK_TYPES,
 ) {
-  const discovered = new Set(preferredOrder);
+  const discovered = new Set(
+    preferredOrder.filter((type) => !INTERNAL_VALIDATION_TYPES.has(type)),
+  );
   for (const table of tables) {
     for (const check of table.checks) {
+      if (INTERNAL_VALIDATION_TYPES.has(check.type)) {
+        continue;
+      }
       discovered.add(check.type as (typeof VALIDATION_CHECK_TYPES)[number]);
     }
   }
@@ -35,11 +41,9 @@ export function validationTypesForTables(
 }
 
 function visibleChecks(checks: ValidationIssue[], hiddenTypes: ReadonlySet<string>) {
-  if (hiddenTypes.size === 0) {
-    return checks;
-  }
-
-  return checks.filter((check) => !hiddenTypes.has(check.type));
+  return checks.filter(
+    (check) => !INTERNAL_VALIDATION_TYPES.has(check.type) && !hiddenTypes.has(check.type),
+  );
 }
 
 function statusFromChecks(checks: ValidationIssue[]): { status: TableStatus; status_label: string } {
@@ -71,10 +75,6 @@ export function tablesWithValidationVisibility<T extends ValidationTableLike>(
   tables: T[],
   hiddenTypes: ReadonlySet<string>,
 ): T[] {
-  if (hiddenTypes.size === 0) {
-    return tables;
-  }
-
   return tables.map((table) => {
     const checks = visibleChecks(table.checks, hiddenTypes);
     const status = statusFromChecks(checks);

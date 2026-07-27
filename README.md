@@ -46,6 +46,12 @@ npm run dev
 자세한 내부 흐름은 [자동 검수 아키텍처](docs/automated-validation-workflow.md)를
 참고하세요.
 
+전체 시계열 Excel과 당해연도 증분 Excel을 원장에 적재하고 연보별 표시 구간을
+생성하는 목표 구조는
+[엑셀 시계열 원장 기반 연보 생성](docs/excel-series-yearbook-architecture.md)에
+정리되어 있습니다. 원장 적재와 연보 스냅샷을 분리해 기존 HWPX/Markdown 기준
+검수 결과를 회귀 기준으로 유지합니다.
+
 ### 업로드 API
 
 브라우저는 파일을 raw body로 전송하고 원본 파일명은 쿼리에 넣습니다.

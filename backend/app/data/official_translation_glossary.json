@@ -69,6 +69,11 @@
       "title": "Easy and Convenient Subsidy24 - Ministry of the Interior and Safety",
       "url": "https://www.mois.go.kr/eng/bbs/type002/commonSelectBoardArticle.do?bbsId=BBSMSTR_000000000022&nttId=98890",
       "verified_at": "2026-07-16"
+    },
+    "dsri_official": {
+      "title": "국가데이터연구원 공식 누리집",
+      "url": "https://mods.go.kr/dsri/",
+      "verified_at": "2026-07-27"
     }
   },
   "entries": [
@@ -97,6 +102,7 @@
     {"source":"식품의약품안전처","target":"Ministry of Food and Drug Safety","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["식약처"]},
     {"source":"국가데이터처","target":"Ministry of Data and Statistics","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["데이터처"]},
     {"source":"지식재산처","target":"Ministry of Intellectual Property","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["지재처"]},
+    {"source":"국가데이터연구원","target":"Data and Statistics Research Institute","category":"기관명","subcategory":"산하기관","source_id":"dsri_official","status":"official_verified","aliases":["DSRI"]},
     {"source":"국세청","target":"National Tax Service","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
     {"source":"관세청","target":"Korea Customs Service","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
     {"source":"조달청","target":"Public Procurement Service","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},

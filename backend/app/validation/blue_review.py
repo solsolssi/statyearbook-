@@ -282,9 +282,19 @@ def upsert_reviewed_blue_check(
     current_value: str,
     decision: dict[str, str],
 ) -> int:
-    expected_value = decision["expected_value"] or normalize_review_text(current_value)
     status = decision["status"]
-    severity = "critical" if status == "오류 의심" else "warning" if status == "확인 필요" else "info"
+    if status == "정상":
+        # A blue HWPX mark means the source explicitly requested review. Keep
+        # reviewed-normal blue marks in the needs-review bucket so users can
+        # confirm that the marked text was checked, while showing the check
+        # value itself as a pass.
+        expected_value = "통과"
+        display_status = "확인 필요"
+        severity = "warning"
+    else:
+        expected_value = decision["expected_value"] or normalize_review_text(current_value)
+        display_status = status
+        severity = "critical" if status == "오류 의심" else "warning"
     inserted = upsert_validation_result(
         connection,
         run_id=run_id,
@@ -299,7 +309,7 @@ def upsert_reviewed_blue_check(
             current_value=current_value,
             expected_value=expected_value,
             difference=decision["difference"],
-            status=status,
+            status=display_status,
             severity=severity,
             detail=decision["detail"],
             confidence=0.78,
@@ -398,7 +408,7 @@ def extract_blue_review_candidates(hwpx_path: Path) -> list[BlueReviewCandidate]
                                 element,
                                 blue_char_ids,
                                 table_code=current_code,
-                                cell_text=normalize_review_text("".join(element.itertext())),
+                                cell_text=clean_hwpx_review_context("".join(element.itertext())),
                                 row_text="",
                                 source_row_index=None,
                                 source_col_index=None,
@@ -454,7 +464,7 @@ def append_blue_table_candidates(
     rows = [element for element in list(table) if local_name(element.tag) == "tr"]
     for fallback_row_index, row in enumerate(rows):
         cells = [element for element in list(row) if local_name(element.tag) == "tc"]
-        row_text = normalize_review_text(" | ".join("".join(cell.itertext()) for cell in cells))
+        row_text = clean_hwpx_review_context(" | ".join("".join(cell.itertext()) for cell in cells))
         for fallback_col_index, cell in enumerate(cells):
             if any(
                 local_name(descendant.tag) == "tbl"
@@ -462,7 +472,7 @@ def append_blue_table_candidates(
                 if descendant is not cell
             ):
                 continue
-            cell_text = normalize_review_text("".join(cell.itertext()))
+            cell_text = clean_hwpx_review_context("".join(cell.itertext()))
             source_row_index, source_col_index = source_cell_coordinates(
                 cell,
                 fallback_row_index=fallback_row_index,
@@ -525,7 +535,7 @@ def append_blue_runs(
             continue
         if any(local_name(descendant.tag) == "tbl" for descendant in element.iter() if descendant is not element):
             continue
-        text = normalize_review_text("".join(element.itertext()))
+        text = clean_hwpx_review_context("".join(element.itertext()))
         if not text:
             continue
         if text not in run_texts:
@@ -583,6 +593,18 @@ def blue_review_texts(run_texts: list[str], cell_text: str, *, table_code: str) 
             review_texts.append(marker_source)
 
     return review_texts
+
+
+def clean_hwpx_review_context(value: str) -> str:
+    """Remove embedded HWPX memo bookkeeping before matching blue text to cells."""
+
+    normalized = normalize_review_text(value)
+    normalized = re.sub(
+        r"\b\d*MEMO/.*?memo\d+user\d+\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z(?:번역)?",
+        " ",
+        normalized,
+    )
+    return normalize_review_text(normalized)
 
 
 def blue_char_property_ids(archive: zipfile.ZipFile) -> set[str]:
@@ -1088,8 +1110,8 @@ def candidate_matches_table_code(candidate: BlueReviewCandidate, table_code: str
 
 
 def cell_context_matches(cell_text: str, source_cell_text: str, candidate: str) -> bool:
-    normalized_cell = compact_review_match_text(cell_text)
-    normalized_source = compact_review_match_text(source_cell_text)
+    normalized_cell = compact_review_match_text(clean_hwpx_review_context(cell_text))
+    normalized_source = compact_review_match_text(clean_hwpx_review_context(source_cell_text))
     normalized_candidate = compact_review_match_text(candidate)
     if not normalized_candidate or normalized_candidate not in normalized_cell:
         return False
@@ -1166,7 +1188,9 @@ def compact_review_match_text(value: str) -> str:
 
 
 def is_blue_review_candidate(text: str) -> bool:
-    if not text or len(text) > 1400:
+    if not text:
+        return False
+    if len(text) > 1400 and not looks_like_long_region_review_text(text):
         return False
     if text in {"-", "–", "—"} or BLUE_ENGLISH_MARKER_RE.fullmatch(text):
         return False
@@ -1174,6 +1198,18 @@ def is_blue_review_candidate(text: str) -> bool:
     if not meaningful_chars:
         return False
     return bool(meaningful_chars)
+
+
+def looks_like_long_region_review_text(text: str) -> bool:
+    """Keep long blue administrative-area lists so dictionary review can handle them."""
+
+    if len(text) <= 1400:
+        return False
+    region_terms = re.findall(
+        r"[가-힣]+(?:특별자치시|특별자치도|특별시|광역시|시|군|구|읍|면|동)",
+        text,
+    )
+    return len(region_terms) >= 20 and "," in text
 
 
 def normalize_table_code(value: str) -> str:

@@ -79,6 +79,8 @@ from app.validation.result_repository import (
 from app.validation.translation_glossary import (
     infer_category,
     infer_subcategory,
+    official_organization_conflict,
+    normalize_official_target,
     normalize_source,
     normalize_target,
     parse_glossary_context,
@@ -1801,6 +1803,27 @@ def glossary_decision_for(item: SourceReviewItem) -> dict[str, str] | None:
     source_normalized = normalize_source(korean) if korean else ""
     target_normalized = normalize_target(english) if english else ""
 
+    authoritative = [
+        entry
+        for entry in entries
+        if str(entry.get("status") or "") in {"approved", "official_verified", "official_name_only"}
+    ]
+
+    # Official organization names must be exact. A repeated yearbook value or
+    # cached LLM review can be polluted by the same source typo, so an
+    # authoritative organization entry wins before any lower-priority exact
+    # match is allowed to close the candidate.
+    official_org_decision = official_organization_glossary_decision_for(
+        item,
+        authoritative,
+        source_normalized=source_normalized,
+        target_normalized=target_normalized,
+        korean=korean,
+        english=english,
+    )
+    if official_org_decision is not None:
+        return official_org_decision
+
     # Only audited or authoritative pairs can close a candidate. Raw yearbook
     # repetition is evidence, not proof: the same typo may be copied every year.
     exact_match_statuses = {
@@ -1824,11 +1847,6 @@ def glossary_decision_for(item: SourceReviewItem) -> dict[str, str] | None:
             )
             return normal_glossary_decision(item, source_title)
 
-    authoritative = [
-        entry
-        for entry in entries
-        if str(entry.get("status") or "") in {"approved", "official_verified", "official_name_only"}
-    ]
     if not authoritative:
         return None
 
@@ -1863,6 +1881,53 @@ def glossary_decision_for(item: SourceReviewItem) -> dict[str, str] | None:
     # A dictionary mismatch is evidence for the contextual LLM review, not an
     # automatic finding. Statistical labels and historical organization names
     # often have multiple valid translations depending on year and table scope.
+    return None
+
+
+def official_organization_glossary_decision_for(
+    item: SourceReviewItem,
+    entries: list[dict[str, object]],
+    *,
+    source_normalized: str,
+    target_normalized: str,
+    korean: str,
+    english: str,
+) -> dict[str, str] | None:
+    if item.requested_review_type not in {TRANSLATION_CHECK_TYPE, BLUE_REVIEW_TYPE}:
+        return None
+    if not source_normalized or not target_normalized:
+        return None
+
+    for entry in entries:
+        if str(entry.get("status") or "") != "official_verified":
+            continue
+        if str(entry.get("category") or "") != "기관명":
+            continue
+        entry_target = normalize_review_text(str(entry.get("target") or ""))
+        if not entry_target:
+            continue
+        entry_source = normalize_source(str(entry.get("source") or ""))
+        aliases = [normalize_source(str(alias)) for alias in entry.get("aliases", []) if alias]
+        source_matches = source_normalized in {entry_source, *aliases}
+        if not source_matches:
+            continue
+        if normalize_official_target(english) == normalize_official_target(entry_target):
+            source_title = normalize_review_text(str(entry.get("source_title") or "공식 번역 사전"))
+            return normal_glossary_decision(item, source_title)
+
+        source_text = korean or normalize_review_text(str(entry.get("source") or ""))
+        expected_value = normalize_review_text(f"{source_text} {entry_target}".strip())
+        source_title = normalize_review_text(str(entry.get("source_title") or "공식 번역 사전"))
+        return {
+            "status": "오류 의심",
+            "issue_type": item.requested_review_type or TRANSLATION_CHECK_TYPE,
+            "rule_id": LLM_TRANSLATION_RULE_ID,
+            "defect_kind": "official_organization_name_mismatch",
+            "current_value": normalize_review_text(item.current_value),
+            "expected_value": expected_value,
+            "difference": "공식 기관 영문명 불일치",
+            "detail": f"{source_title}의 공식 영문명과 일치하지 않습니다. 기관명은 공식 표기와 정확히 맞아야 합니다.",
+        }
     return None
 
 
@@ -2580,6 +2645,8 @@ def upsert_llm_reviewed_glossary(
     if not source or not re.search(r"[가-힣]", source):
         return
     if not re.search(r"[A-Za-z]", target) or re.search(r"[가-힣]", target):
+        return
+    if official_organization_conflict(source, target, category=infer_category(source, target)) is not None:
         return
 
     source_normalized = normalize_source(source)

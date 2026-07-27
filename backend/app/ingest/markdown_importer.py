@@ -23,6 +23,7 @@ from app.ingest.hwpx_importer import (
     guess_header_count,
     is_data_table,
     is_metadata_row,
+    looks_like_data_row,
     numeric_value,
     parse_title_block,
     split_bilingual,
@@ -302,6 +303,23 @@ def append_table_part(
         )
 
 
+def is_importable_table_matrix(matrix: list[list[str]]) -> bool:
+    if is_data_table(matrix):
+        return True
+
+    normalized = drop_empty_columns(matrix)
+    if len(normalized) != 2 or max((len(row) for row in normalized), default=0) < 2:
+        return False
+
+    header_row, data_row = normalized
+    non_empty_count = sum(1 for row in normalized for cell in row if cell.strip())
+    return (
+        non_empty_count >= 4
+        and row_looks_like_header(header_row)
+        and looks_like_data_row(data_row)
+    )
+
+
 def extract_part_caption(matrix: list[list[str]]) -> tuple[list[list[str]], str, str]:
     if not matrix:
         return matrix, "", ""
@@ -573,7 +591,7 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
                 index += 1
             html = "\n".join(block)
             matrix = html_table_matrix(html)
-            if current and is_data_table(matrix) and not is_publication_info_table(matrix):
+            if current and is_importable_table_matrix(matrix) and not is_publication_info_table(matrix):
                 for part_matrix in split_embedded_caption_sections(matrix):
                     append_table_part(current, part_matrix, source_kind="html")
             index += 1
@@ -585,7 +603,7 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
                 block.append(lines[index])
                 index += 1
             matrix = markdown_table_matrix(block)
-            if current and is_data_table(matrix) and not is_publication_info_table(matrix):
+            if current and is_importable_table_matrix(matrix) and not is_publication_info_table(matrix):
                 for part_matrix in split_embedded_caption_sections(matrix):
                     append_table_part(current, part_matrix, source_kind="markdown")
             continue
@@ -820,6 +838,10 @@ def split_table_by_part_structure(table: LogicalTable) -> list[LogicalTable]:
             continue
 
         last_signature, last_continuation_signature, last_parts = groups[-1]
+        if part_caption_starts_distinct_subtable(last_parts[-1], part):
+            groups.append((signature, continuation_signature, [part]))
+            continue
+
         if not has_header and signature_column_count(signature) == signature_column_count(last_signature):
             last_parts.append(part)
             continue
@@ -850,6 +872,14 @@ def split_table_by_part_structure(table: LogicalTable) -> list[LogicalTable]:
             )
         )
     return split_tables
+
+
+def part_caption_starts_distinct_subtable(previous: TablePart, current: TablePart) -> bool:
+    previous_title = compact_signature_cell(previous.title)
+    current_title = compact_signature_cell(current.title)
+    if not previous_title or not current_title:
+        return False
+    return previous_title != current_title
 
 
 def table_parts_raw_text(parts: Iterable[TablePart]) -> str:

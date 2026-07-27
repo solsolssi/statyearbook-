@@ -64,7 +64,7 @@ BASE_TRANSLATIONS: tuple[dict[str, str], ...] = (
     {"source": "증감률", "expected": "Rate of Change"},
     {"source": "기후에너지환경부", "expected": "Ministry of Climate, Energy and Environment"},
     {"source": "국가데이터처", "expected": "Ministry of Data and Statistics"},
-    {"source": "국가데이터연구원", "expected": "National Data Research Institute"},
+    {"source": "국가데이터연구원", "expected": "Data and Statistics Research Institute"},
     {"source": "방송미디어통신위원회", "expected": "Korea Media and Communications Commission"},
     {"source": "지식재산처", "expected": "Ministry of Intellectual Property"},
     {"source": "민생회복 소비쿠폰 안내", "expected": "Information on Livelihood Recovery Consumer Coupons"},

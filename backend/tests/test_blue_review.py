@@ -19,7 +19,9 @@ from app.validation.blue_review import (
     classify_blue_review_value,
     extract_blue_review_candidates,
     insert_blue_review,
+    is_blue_review_candidate,
     row_context_matches,
+    cell_context_matches,
     should_skip_blue_review,
     synchronize_blue_review_checks,
 )
@@ -140,7 +142,7 @@ class BlueReviewExtractionTests(unittest.TestCase):
             with connect(db_path) as connection:
                 checks = connection.execute(
                     """
-                    SELECT location, status, row_index, col_index
+                    SELECT location, status, expected_value, row_index, col_index
                     FROM validation_checks
                     WHERE run_id = ? AND check_type = '파란색 표기 확인'
                     ORDER BY location
@@ -156,11 +158,12 @@ class BlueReviewExtractionTests(unittest.TestCase):
         self.assertEqual(
             [(row["location"], row["status"], row["row_index"], row["col_index"]) for row in checks],
             [
-                ("5행 5열", "정상", 4, 4),
+                ("5행 5열", "확인 필요", 4, 4),
                 ("6행 1열", "확인 필요", 5, 0),
             ],
         )
-        self.assertEqual(issue_count, 1)
+        self.assertEqual(checks[0]["expected_value"], "통과")
+        self.assertEqual(issue_count, 2)
 
     def test_numeric_and_metadata_blue_marks_are_not_candidates(self) -> None:
         self.assertTrue(should_skip_blue_review("4행 2열", "3,456"))
@@ -168,6 +171,25 @@ class BlueReviewExtractionTests(unittest.TestCase):
         self.assertTrue(should_skip_blue_review("출처", "안전정책과 주무관 홍길동"))
         self.assertTrue(should_skip_blue_review("주석", "잠정치임"))
         self.assertFalse(should_skip_blue_review("4행 2열", "전자메가폰 Electronic Megaphone"))
+
+    def test_hwpx_memo_payload_does_not_block_blue_cell_matching(self) -> None:
+        source_cell = (
+            "서울역2 Seoul Station2 "
+            "0MEMO/65535/35/1565104720/31264680/user/\\;;"
+            "memo3535user655352026-07-09T22:39:28Z번역이전구축"
+        )
+
+        self.assertTrue(
+            cell_context_matches(
+                "서울역2 Seoul Station2 이전구축",
+                source_cell,
+                "이전구축",
+            )
+        )
+
+    def test_long_blue_region_lists_are_kept_for_dictionary_review(self) -> None:
+        region_list = ", ".join(f"서울특별시 테스트구{i}" for i in range(220))
+        self.assertTrue(is_blue_review_candidate(region_list))
 
     def test_embedded_latin_unit_is_not_mistaken_for_bilingual_translation(self) -> None:
         kind, korean, english = classify_blue_review_value(
@@ -268,6 +290,7 @@ class BlueReviewExtractionTests(unittest.TestCase):
             value: region_review_decision(value)
             for value in (
                 "부산 해운대구",
+                "부산광역시 진구",
                 "강원 강릉시 주문진읍",
                 "전남 구례군 간전면",
                 "서울 종로구 사직동",
@@ -281,6 +304,7 @@ class BlueReviewExtractionTests(unittest.TestCase):
             decisions["강원 강릉시 주문진읍"].expected_value,  # type: ignore[union-attr]
             "Gangwon Gangneung-si Jumunjin-eup",
         )
+        self.assertEqual(decisions["부산광역시 진구"].expected_value, "Busan Busanjin-gu")  # type: ignore[union-attr]
         self.assertEqual(
             decisions["전남 구례군 간전면"].expected_value,  # type: ignore[union-attr]
             "Jeonnam Gurye-gun Ganjeon-myeon",

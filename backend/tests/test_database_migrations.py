@@ -33,11 +33,26 @@ class DatabaseMigrationsTest(unittest.TestCase):
                 table = connection.execute(
                     "SELECT name FROM sqlite_master WHERE name = 'annual_reports'"
                 ).fetchone()
+                series_tables = connection.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM sqlite_master
+                    WHERE type = 'table' AND name IN (
+                        'series_import_batches',
+                        'statistical_datasets',
+                        'statistical_dataset_versions',
+                        'statistical_observations',
+                        'yearbook_table_recipes'
+                    )
+                    """
+                ).fetchone()
                 migration_count = connection.execute(
                     "SELECT COUNT(*) AS count FROM schema_migrations"
                 ).fetchone()
 
             self.assertIsNotNone(table)
+            assert series_tables is not None
+            self.assertEqual(int(series_tables["count"]), 5)
             assert migration_count is not None
             self.assertGreater(int(migration_count["count"]), 0)
 

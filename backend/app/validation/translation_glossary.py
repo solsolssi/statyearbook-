@@ -129,6 +129,10 @@ def normalize_target(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
+def normalize_official_target(value: str) -> str:
+    return re.sub(r"\s+", " ", clean_glossary_text(value)).casefold()
+
+
 def clean_glossary_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\\~", "~")).strip(" :;|/\n\t")
 
@@ -324,6 +328,8 @@ def refresh_translation_glossary(connection: DatabaseConnection) -> int:
             target_normalized = normalize_target(target)
             if not source_normalized or not target_normalized:
                 continue
+            if official_organization_conflict(source, target, category=category) is not None:
+                continue
             origin_key = f"report:{report_id}:{source_normalized}:{target_normalized}"
             subcategory = infer_subcategory(source, target, category)
             reference_source = reference_source_for(category, subcategory)
@@ -369,6 +375,7 @@ def refresh_translation_glossary(connection: DatabaseConnection) -> int:
                 ),
             )
             changed += 1
+    changed += quarantine_official_organization_conflicts(connection)
     refresh_glossary_governance_metadata(connection)
     return changed
 
@@ -565,6 +572,94 @@ def official_glossary_payload() -> dict[str, object]:
     return json.loads(OFFICIAL_GLOSSARY_PATH.read_text(encoding="utf-8"))
 
 
+@cache
+def official_organization_targets() -> dict[str, tuple[str, str, str]]:
+    payload = official_glossary_payload()
+    sources = payload.get("sources", {})
+    targets: dict[str, tuple[str, str, str]] = {}
+    for item in payload.get("entries", []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status") or "") != "official_verified":
+            continue
+        if str(item.get("category") or "") != "기관명":
+            continue
+        source = clean_glossary_text(str(item.get("source", "")))
+        target = clean_glossary_text(str(item.get("target", "")))
+        if not source or not target:
+            continue
+        source_meta = sources.get(str(item.get("source_id", "")), {})
+        source_title = clean_glossary_text(str(source_meta.get("title", "공식 번역 사전")))
+        for alias in (source, *tuple(item.get("aliases", []) or ())):
+            alias_text = clean_glossary_text(str(alias))
+            if alias_text:
+                targets[normalize_source(alias_text)] = (source, target, source_title)
+    return targets
+
+
+def official_organization_conflict(
+    source: str,
+    target: str,
+    *,
+    category: str = "",
+) -> tuple[str, str, str] | None:
+    if category and category != "기관명":
+        return None
+    source_normalized = normalize_source(source)
+    if not source_normalized:
+        return None
+    official = official_organization_targets().get(source_normalized)
+    if official is None:
+        return None
+    official_source, official_target, source_title = official
+    if normalize_official_target(target) == normalize_official_target(official_target):
+        return None
+    return official_source, official_target, source_title
+
+
+def quarantine_official_organization_conflicts(connection: DatabaseConnection) -> int:
+    rows = connection.execute(
+        """
+        SELECT id, source_text, target_text, category, evidence
+        FROM translation_glossary
+        WHERE status <> 'official_verified'
+          AND status <> 'quarantined'
+          AND source_kind <> 'official'
+          AND trim(source_text) <> ''
+          AND trim(target_text) <> ''
+        """
+    ).fetchall()
+    quarantined = 0
+    for row in rows:
+        conflict = official_organization_conflict(
+            str(row["source_text"]),
+            str(row["target_text"]),
+            category=str(row["category"] or ""),
+        )
+        if conflict is None:
+            continue
+        _, official_target, source_title = conflict
+        connection.execute(
+            """
+            UPDATE translation_glossary
+            SET status = 'quarantined',
+                approval_status = 'rejected',
+                evidence = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                (
+                    f"공식 기관명 사전과 충돌하여 격리: {row['target_text']} "
+                    f"→ {official_target}. 기준: {source_title}"
+                ),
+                int(row["id"]),
+            ),
+        )
+        quarantined += 1
+    return quarantined
+
+
 def reference_source_for(category: str, subcategory: str) -> dict[str, object]:
     sources = official_glossary_payload().get("sources", {})
     if not isinstance(sources, dict):
@@ -676,6 +771,7 @@ def glossary_entries_for_source(
         LEFT JOIN annual_reports ar ON ar.id = tg.source_report_id
         LEFT JOIN translation_glossary_aliases tga ON tga.glossary_id = tg.id
         WHERE (tg.source_normalized = ? OR tga.alias_normalized = ?)
+          AND tg.status NOT IN ('rejected', 'quarantined')
           AND (tg.source_report_id IS NULL OR tg.source_report_id <> ?)
         ORDER BY
             CASE tg.status
@@ -730,6 +826,7 @@ def glossary_entries_for_text(
         LEFT JOIN annual_reports ar ON ar.id = tg.source_report_id
         LEFT JOIN translation_glossary_aliases tga ON tga.glossary_id = tg.id
         WHERE (tg.source_report_id IS NULL OR tg.source_report_id <> ?)
+          AND tg.status NOT IN ('rejected', 'quarantined')
           AND (
               (length(tg.source_normalized) >= 2 AND instr(?, tg.source_normalized) > 0)
               OR (length(tga.alias_normalized) >= 2 AND instr(?, tga.alias_normalized) > 0)

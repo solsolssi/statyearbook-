@@ -71,6 +71,98 @@ ON stat_tables(report_id, table_order);
 CREATE INDEX IF NOT EXISTS idx_stat_table_cells_table_position
 ON stat_table_cells(table_id, row_index, col_index);
 
+CREATE TABLE IF NOT EXISTS series_import_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_file_name TEXT NOT NULL,
+    source_file_path TEXT NOT NULL DEFAULT '',
+    file_hash TEXT NOT NULL,
+    import_kind TEXT NOT NULL,
+    target_year INTEGER,
+    status TEXT NOT NULL DEFAULT 'imported',
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '',
+    imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (file_hash, import_kind, target_year)
+);
+
+CREATE INDEX IF NOT EXISTS idx_series_import_batches_target
+ON series_import_batches(target_year, imported_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS statistical_datasets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_key TEXT NOT NULL UNIQUE,
+    external_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_statistical_datasets_title
+ON statistical_datasets(title, status);
+
+CREATE TABLE IF NOT EXISTS statistical_dataset_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dataset_id INTEGER NOT NULL,
+    structure_signature TEXT NOT NULL,
+    header_row_count INTEGER NOT NULL DEFAULT 1,
+    period_column INTEGER NOT NULL DEFAULT 0,
+    dimension_columns_json TEXT NOT NULL DEFAULT '[]',
+    columns_json TEXT NOT NULL DEFAULT '[]',
+    source_batch_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (dataset_id) REFERENCES statistical_datasets(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_batch_id) REFERENCES series_import_batches(id) ON DELETE RESTRICT,
+    UNIQUE (dataset_id, structure_signature)
+);
+
+CREATE INDEX IF NOT EXISTS idx_statistical_dataset_versions_dataset
+ON statistical_dataset_versions(dataset_id, created_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS statistical_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dataset_version_id INTEGER NOT NULL,
+    source_batch_id INTEGER NOT NULL,
+    period TEXT NOT NULL,
+    dimension_key TEXT NOT NULL DEFAULT '',
+    dimension_values_json TEXT NOT NULL DEFAULT '[]',
+    values_json TEXT NOT NULL DEFAULT '[]',
+    source_sheet TEXT NOT NULL DEFAULT '',
+    source_row_number INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (dataset_version_id) REFERENCES statistical_dataset_versions(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_batch_id) REFERENCES series_import_batches(id) ON DELETE CASCADE,
+    UNIQUE (dataset_version_id, source_batch_id, period, dimension_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_statistical_observations_lookup
+ON statistical_observations(dataset_version_id, period, dimension_key, source_batch_id DESC);
+
+CREATE TABLE IF NOT EXISTS yearbook_table_recipes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_code TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    effective_from_year INTEGER NOT NULL,
+    effective_to_year INTEGER,
+    source_dataset_id INTEGER,
+    materializer TEXT NOT NULL DEFAULT 'copy',
+    config_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'draft',
+    source_report_id INTEGER,
+    source_table_id INTEGER,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    approved_at TEXT,
+    approved_by TEXT,
+    FOREIGN KEY (source_dataset_id) REFERENCES statistical_datasets(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_table_id) REFERENCES stat_tables(id) ON DELETE SET NULL,
+    UNIQUE (table_code, revision)
+);
+
+CREATE INDEX IF NOT EXISTS idx_yearbook_table_recipes_effective
+ON yearbook_table_recipes(table_code, effective_from_year, effective_to_year, status);
+
 CREATE TABLE IF NOT EXISTS validation_rule_definitions (
     key TEXT PRIMARY KEY,
     name TEXT NOT NULL,

@@ -252,6 +252,41 @@ def structure_signature(table: ValidationTable) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:20]
 
 
+def compatible_structure_signature(table: ValidationTable) -> str:
+    """Signature that treats rolling calendar labels as structural placeholders."""
+
+    headers: list[list[str]] = []
+    for row in table.matrix[: table.header_count]:
+        headers.append(
+            [
+                normalize_structure_label(cell.text_value if cell else "")
+                for cell in row
+            ]
+        )
+    payload = {
+        "header_count": table.header_count,
+        "column_count": column_count(table),
+        "row_count": len(table.matrix),
+        "label_columns": leading_label_columns(table),
+        "headers": headers,
+        "row_labels": [
+            normalize_structure_label(combined_row_label(table, row) or table.row_label(row))
+            for _, row in table.data_rows()
+        ],
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:20]
+
+
+def normalize_structure_label(value: str) -> str:
+    normalized_years = re.sub(
+        r"(?<!\d)(?:19|20)\d{2}(?:\s*년(?:도)?)?(?!\d)",
+        "<year>",
+        clean_display_text(value),
+    )
+    return normalize_text(normalized_years)
+
+
 def detect_templates(table: ValidationTable) -> list[str]:
     templates: list[str] = []
     all_headers = " ".join(table.column_text(col_index) for col_index in range(column_count(table)))

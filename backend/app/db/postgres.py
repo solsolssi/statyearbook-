@@ -11,6 +11,11 @@ LASTROWID_TABLES = {
     "validation_runs",
     "report_processing_jobs",
     "validation_profiles",
+    "series_import_batches",
+    "statistical_datasets",
+    "statistical_dataset_versions",
+    "statistical_observations",
+    "yearbook_table_recipes",
 }
 
 

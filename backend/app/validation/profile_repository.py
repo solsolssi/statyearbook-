@@ -8,7 +8,7 @@ from pathlib import Path
 from app.core.env import load_local_env_file
 from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
 from app.db.schema import init_db
-from app.validation.models import ValidationTable
+from app.validation.models import ValidationCell, ValidationTable
 from app.validation.profiles import (
     COMMON_RULE_IDS,
     GPTProfileDraftProvider,
@@ -18,6 +18,7 @@ from app.validation.profiles import (
     ProfileDraftProvider,
     ValidationProfile,
     common_check_specs,
+    compatible_structure_signature,
     outlier_check_specs,
     structure_signature,
 )
@@ -57,6 +58,17 @@ class ValidationProfileRepository:
                     previous_profile = self._latest_profile_by_code(connection, table.code)
                     if previous_profile is None:
                         previous_profile = self._latest_profile_by_title(connection, table.title)
+                    if (
+                        profile is None
+                        and inherited_profile is None
+                        and previous_profile is not None
+                        and self._is_rolling_year_compatible(
+                            connection,
+                            table,
+                            previous_profile,
+                        )
+                    ):
+                        inherited_profile = previous_profile
                     if profile is None or refresh:
                         try:
                             draft = (
@@ -200,6 +212,64 @@ class ValidationProfileRepository:
             (profile_id,),
         ).fetchone()
         return row_to_profile(row) if row else None
+
+    def _is_rolling_year_compatible(
+        self,
+        connection: DatabaseConnection,
+        table: ValidationTable,
+        profile: ValidationProfile,
+    ) -> bool:
+        if profile.source_report_id is None:
+            return False
+        table_row = connection.execute(
+            """
+            SELECT id, report_id, code, title, unit, base_date, source, note
+            FROM stat_tables
+            WHERE report_id = ? AND (code = ? OR title = ?)
+            ORDER BY CASE WHEN code = ? THEN 0 ELSE 1 END, table_order, id
+            LIMIT 1
+            """,
+            (
+                profile.source_report_id,
+                profile.table_code,
+                profile.table_title,
+                profile.table_code,
+            ),
+        ).fetchone()
+        if table_row is None:
+            return False
+        cells = connection.execute(
+            """
+            SELECT row_index, col_index, text_value, numeric_value, is_header
+            FROM stat_table_cells
+            WHERE table_id = ?
+            ORDER BY row_index, col_index
+            """,
+            (table_row["id"],),
+        ).fetchall()
+        previous_table = ValidationTable(
+            id=int(table_row["id"]),
+            report_id=int(table_row["report_id"]),
+            code=str(table_row["code"]),
+            title=str(table_row["title"]),
+            unit=str(table_row["unit"] or ""),
+            base_date=str(table_row["base_date"] or ""),
+            source=str(table_row["source"] or ""),
+            note=str(table_row["note"] or ""),
+            cells=[
+                ValidationCell(
+                    row_index=int(cell["row_index"]),
+                    col_index=int(cell["col_index"]),
+                    text_value=str(cell["text_value"] or ""),
+                    numeric_value=cell["numeric_value"],
+                    is_header=bool(cell["is_header"]),
+                )
+                for cell in cells
+            ],
+        )
+        return compatible_structure_signature(
+            previous_table
+        ) == compatible_structure_signature(table)
 
     def _insert_profile(
         self,
