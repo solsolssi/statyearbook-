@@ -67,6 +67,7 @@ def append_blue_text_review_checks(
     report_id: int,
     run_id: int,
     source_path: str | Path,
+    table_ids: list[int] | None = None,
 ) -> int:
     hwpx_path = resolve_hwpx_source(Path(source_path))
     if hwpx_path is None:
@@ -78,6 +79,24 @@ def append_blue_text_review_checks(
 
     with connect(db_path) as connection:
         init_db(connection)
+        if table_ids is not None:
+            if not table_ids:
+                return 0
+            allowed_codes = {
+                table_code_for_row(row)
+                for row in connection.execute(
+                    f"""
+                    SELECT code FROM stat_tables
+                    WHERE report_id = ? AND id IN ({','.join('?' for _ in table_ids)})
+                    """,
+                    (report_id, *table_ids),
+                ).fetchall()
+            }
+            candidates = [
+                candidate
+                for candidate in candidates
+                if normalize_table_code(candidate.table_code) in allowed_codes
+            ]
         with connection:
             existing = existing_review_values(connection, run_id)
             inserted = append_cell_reviews(connection, report_id, run_id, candidates, existing)

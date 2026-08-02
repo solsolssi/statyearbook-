@@ -7,6 +7,7 @@ from app.db.connection import DB_PATH
 from app.validation.engine import ValidationEngine
 from app.validation.profile_repository import ValidationProfileRepository
 from app.validation.repository import ValidationRepository
+from app.validation.selection import filter_calculation_results
 
 
 @dataclass(frozen=True)
@@ -34,8 +35,10 @@ class CalculationValidationWorkflow:
         *,
         report_id: int,
         refresh_profiles: bool = False,
+        table_ids: list[int] | None = None,
+        selected_rule_keys: list[str] | tuple[str, ...] | None = None,
     ) -> CalculationValidationResult:
-        tables = self._validation_repository.load_tables(report_id)
+        tables = self._validation_repository.load_tables(report_id, table_ids=table_ids)
         profiles = self._profile_repository.ensure_profiles(
             report_id=report_id,
             tables=tables,
@@ -44,9 +47,19 @@ class CalculationValidationWorkflow:
 
         engine = ValidationEngine(profiles=profiles)
         outcome = engine.evaluate(tables)
+        if selected_rule_keys is not None:
+            outcome.issues, outcome.checks = filter_calculation_results(
+                issues=outcome.issues,
+                checks=outcome.checks,
+                rule_keys=selected_rule_keys,
+            )
         run_id = self._validation_repository.save_run(
             report_id=report_id,
-            rules_version=engine.rules_version,
+            rules_version=(
+                f"{engine.rules_version}:selected={','.join(selected_rule_keys)}"
+                if selected_rule_keys is not None
+                else engine.rules_version
+            ),
             issues=outcome.issues,
             checks=outcome.checks,
         )

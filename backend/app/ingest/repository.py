@@ -59,6 +59,9 @@ class ReportImportRepository:
         *,
         persisted_source_path: str | None = None,
         archive_previous_same_title: bool = False,
+        force_new: bool = False,
+        origin_kind: str = "uploaded",
+        base_report_id: int | None = None,
     ) -> ImportResult:
         valid_tables = [
             table
@@ -70,6 +73,10 @@ class ReportImportRepository:
 
         imported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         source_hash = report.file_hash or file_digest(report.source_path)
+        if force_new:
+            source_hash = hashlib.sha256(
+                f"{source_hash}:{imported_at}:{report.year}:{report.title}".encode()
+            ).hexdigest()
         table_count = 0
         cell_count = 0
 
@@ -104,8 +111,8 @@ class ReportImportRepository:
                     """
                     INSERT INTO annual_reports (
                         year, title, source_file_name, source_file_path, file_hash,
-                        parse_warnings_json, imported_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        parse_warnings_json, imported_at, origin_kind, base_report_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         report.year,
@@ -115,6 +122,8 @@ class ReportImportRepository:
                         source_hash,
                         json.dumps(report.parse_warnings, ensure_ascii=False),
                         imported_at,
+                        origin_kind,
+                        base_report_id,
                     ),
                 )
                 report_id = int(cursor.lastrowid)

@@ -42,7 +42,16 @@ class DatabaseMigrationsTest(unittest.TestCase):
                         'statistical_datasets',
                         'statistical_dataset_versions',
                         'statistical_observations',
-                        'yearbook_table_recipes'
+                        'statistical_dataset_items',
+                        'statistical_values',
+                        'statistical_value_revisions',
+                        'statistical_period_metadata',
+                        'yearbook_table_recipes',
+                        'yearbook_table_update_policies',
+                        'yearbook_edition_manifest',
+                        'yearbook_reproduction_runs',
+                        'yearbook_reproduction_table_results',
+                        'yearbook_reproduction_cell_results'
                     )
                     """
                 ).fetchone()
@@ -52,7 +61,7 @@ class DatabaseMigrationsTest(unittest.TestCase):
 
             self.assertIsNotNone(table)
             assert series_tables is not None
-            self.assertEqual(int(series_tables["count"]), 5)
+            self.assertEqual(int(series_tables["count"]), 14)
             assert migration_count is not None
             self.assertGreater(int(migration_count["count"]), 0)
 

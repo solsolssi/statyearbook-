@@ -10,7 +10,13 @@ from app.core.env import env_value, load_local_env_file
 from app.db.postgres import PostgresConnection
 
 
-DB_PATH = Path(__file__).with_name("annual_statistics.sqlite")
+load_local_env_file()
+DB_PATH = Path(
+    env_value(
+        "ANNUAL_STATISTICS_DB_PATH",
+        default=str(Path(__file__).with_name("annual_statistics.sqlite")),
+    )
+).expanduser()
 SUPPORTED_DATABASE_BACKENDS = {"auto", "sqlite", "postgres"}
 
 

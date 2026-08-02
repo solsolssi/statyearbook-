@@ -37,6 +37,9 @@ class ReportImportRequest:
     title: str | None = None
     include_llm: bool | None = None
     refresh_profiles: bool = False
+    import_mode: str = "completed_report_new"
+    base_report_id: int | None = None
+    validate_after_import: bool = True
 
 
 class LocalUploadStore:
@@ -104,6 +107,9 @@ class ReportImportService:
                 else request.include_llm
             ),
             refresh_profiles=request.refresh_profiles,
+            import_mode=request.import_mode,
+            base_report_id=request.base_report_id,
+            validate_after_import=request.validate_after_import,
         )
 
         try:

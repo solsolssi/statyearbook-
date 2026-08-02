@@ -28,6 +28,7 @@ class ColumnDefinition(BaseModel):
     width: str | None = None
     source_col_index: int | None = None
     source_col_indexes: list[int] = Field(default_factory=list)
+    footnote_marker: str = ""
 
 
 class ValidationHighlightCell(BaseModel):
@@ -124,6 +125,12 @@ class StatTablePart(BaseModel):
     changes: list[ChangeItem]
     visualizations: list[Visualization]
     metadata: TableMetadata
+    is_test_table: bool = False
+    generation_status: str = ""
+    generation_status_label: str = ""
+    generation_message: str = ""
+    update_mode: str = ""
+    source_dataset_title: str = ""
 
 
 class StatTable(BaseModel):
@@ -152,6 +159,12 @@ class StatTable(BaseModel):
     changes: list[ChangeItem]
     visualizations: list[Visualization]
     metadata: TableMetadata
+    is_test_table: bool = False
+    generation_status: str = ""
+    generation_status_label: str = ""
+    generation_message: str = ""
+    update_mode: str = ""
+    source_dataset_title: str = ""
 
 
 class StatTableSummary(BaseModel):
@@ -170,6 +183,12 @@ class StatTableSummary(BaseModel):
     summary: list[str] = Field(default_factory=list)
     key_figures: list[Metric] = Field(default_factory=list)
     checks: list[ValidationIssue] = Field(default_factory=list)
+    is_test_table: bool = False
+    generation_status: str = ""
+    generation_status_label: str = ""
+    generation_message: str = ""
+    update_mode: str = ""
+    source_dataset_title: str = ""
 
 
 class ReportSummary(BaseModel):
@@ -181,6 +200,18 @@ class ReportSummary(BaseModel):
     needs_review_count: int
     suspected_error_count: int
     issue_counts: dict[str, int] = Field(default_factory=dict)
+    is_test_report: bool = False
+    validation_available: bool = True
+    generation_counts: dict[str, int] = Field(default_factory=dict)
+    origin_kind: str = ""
+    base_report_id: int | None = None
+    validation_scope: Literal["full", "changed_tables", "selected", "shared", "none"] = "full"
+    changed_table_count: int = 0
+    unchanged_table_count: int = 0
+    selected_validation_keys: list[str] = Field(default_factory=list)
+    reused_report_count: int = 0
+    reused_table_count: int = 0
+    reused_check_count: int = 0
 
 
 class ReportOption(BaseModel):
@@ -190,6 +221,14 @@ class ReportOption(BaseModel):
     file_name: str
     imported_at: str
     table_count: int
+    kind: Literal["published", "test", "template"] = "published"
+
+
+class ReportDeleteResult(BaseModel):
+    report_id: int
+    title: str
+    table_count: int = 0
+    validation_run_count: int = 0
 
 
 class PressInsight(BaseModel):
@@ -205,6 +244,7 @@ class ReportPayload(BaseModel):
     tables: list[StatTable]
     press_insights: list[PressInsight]
     available_reports: list[ReportOption] = Field(default_factory=list)
+    available_templates: list[ReportOption] = Field(default_factory=list)
 
 
 class ReportOverviewPayload(BaseModel):
@@ -212,6 +252,7 @@ class ReportOverviewPayload(BaseModel):
     tables: list[StatTableSummary]
     press_insights: list[PressInsight]
     available_reports: list[ReportOption] = Field(default_factory=list)
+    available_templates: list[ReportOption] = Field(default_factory=list)
 
 
 class ValidationCatalogItem(BaseModel):
@@ -254,6 +295,16 @@ class ValidationRunResult(BaseModel):
     language_pending: int = 0
     language_reused: int = 0
     language_status: LanguageReviewStatus = LanguageReviewStatus.PENDING
+    selected_rule_keys: list[str] = Field(default_factory=list)
+    reused_report_count: int = 0
+    reused_table_count: int = 0
+    reused_check_count: int = 0
+
+
+class ValidationRunRequest(BaseModel):
+    selected_rule_keys: list[str] = Field(default_factory=list)
+    reuse_existing: bool = True
+    include_llm: bool = False
 
 
 class ReportProcessingJob(BaseModel):

@@ -5,6 +5,7 @@ from app.validation.catalog import validation_catalog_payload
 from app.validation.profile_repository import ValidationProfileRepository
 from app.validation.profiles import ValidationProfile
 from app.validation.run_validations import run_validations
+from app.services.validation_execution_service import ValidationExecutionService
 
 
 class ValidationApplicationService:
@@ -13,8 +14,24 @@ class ValidationApplicationService:
     def __init__(self, profiles: ValidationProfileRepository | None = None) -> None:
         self._profiles = profiles or ValidationProfileRepository()
 
-    def run(self, report_id: int | None = None) -> ValidationRunResult:
-        return ValidationRunResult(**run_validations(report_id=report_id))
+    def run(
+        self,
+        report_id: int | None = None,
+        *,
+        selected_rule_keys: list[str] | None = None,
+        reuse_existing: bool = True,
+        include_llm: bool = False,
+    ) -> ValidationRunResult:
+        if report_id is None:
+            return ValidationRunResult(**run_validations(report_id=report_id))
+        return ValidationRunResult(
+            **ValidationExecutionService().run(
+                report_id=report_id,
+                selected_rule_keys=selected_rule_keys,
+                reuse_existing=reuse_existing,
+                include_llm=include_llm,
+            )
+        )
 
     def catalog(self) -> list[ValidationCatalogItem]:
         return [ValidationCatalogItem(**item) for item in validation_catalog_payload()]

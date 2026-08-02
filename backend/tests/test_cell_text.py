@@ -55,6 +55,22 @@ class CellTextTest(unittest.TestCase):
 
         self.assertEqual(cell_text_with_footnote(cell, {"86"}), ("62", "1)"))
 
+    def test_hwpx_footnote_marker_is_removed_before_unit_parenthesis(self) -> None:
+        cell = ET.fromstring(
+            """
+            <tc>
+              <run><t>방독면 확보량</t></run>
+              <run charPrIDRef="86"><t>1)</t></run>
+              <run><t>(개)</t></run>
+            </tc>
+            """
+        )
+
+        self.assertEqual(
+            cell_text_with_footnote(cell, {"86"}),
+            ("방독면 확보량(개)", "1)"),
+        )
+
     def test_markdown_headings_are_not_table_notes(self) -> None:
         self.assertFalse(line_is_note("### 제5장"))
         self.assertTrue(line_is_note("#주1) 기준 변경"))

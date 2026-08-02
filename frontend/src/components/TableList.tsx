@@ -7,6 +7,7 @@ import { StatusBadge } from "./StatusBadge";
 
 interface TableListProps {
   tables: StatTableSummary[];
+  isTestReport: boolean;
   activeTableId: string;
   query: string;
   filter: TableStatus | "all" | "has_issues";
@@ -28,6 +29,7 @@ const filterOptions: Array<{ value: TableStatus | "all" | "has_issues"; label: s
 
 export function TableList({
   tables,
+  isTestReport,
   activeTableId,
   query,
   filter,
@@ -77,12 +79,12 @@ export function TableList({
         </div>
       </div>
 
-      <div className="list-table">
+      <div className={`list-table${isTestReport ? " is-test-report" : ""}`}>
         <div className="list-table__header">
           <span>상태</span>
           <span>표명</span>
-          <span>확인</span>
-          <span>오류</span>
+          <span>{isTestReport ? "갱신 방식" : "확인"}</span>
+          <span>{isTestReport ? "문제" : "오류"}</span>
         </div>
         <div
           className="list-table__body"
@@ -107,10 +109,26 @@ export function TableList({
                     <small>{table.code}</small>
                     <strong>{table.title}</strong>
                     {table.part_count > 0 ? <em>하위 표 {table.part_count}개</em> : null}
+                    {isTestReport && table.generation_message ? (
+                      <em className="generation-note">{table.generation_message}</em>
+                    ) : null}
                   </span>
                 </span>
-                <span className="count-cell">{reviewCount}</span>
-                <span className="count-cell">{criticalCount}</span>
+                {isTestReport ? (
+                  <>
+                    <span className="generation-mode-cell">
+                      {updateModeLabel(table.update_mode)}
+                    </span>
+                    <span className="generation-problem-cell">
+                      {table.status === "normal" ? "-" : "확인"}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="count-cell">{reviewCount}</span>
+                    <span className="count-cell">{criticalCount}</span>
+                  </>
+                )}
               </button>
             );
           })}
@@ -118,4 +136,16 @@ export function TableList({
       </div>
     </aside>
   );
+}
+
+function updateModeLabel(mode?: string) {
+  const labels: Record<string, string> = {
+    rolling_window: "최근 N개년",
+    full_snapshot: "전체 교체",
+    text_snapshot: "텍스트 교체",
+    carry_forward: "이전 값 승계",
+    static: "고정",
+    mixed: "복합",
+  };
+  return labels[mode ?? ""] ?? "확인 중";
 }

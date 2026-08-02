@@ -24,6 +24,7 @@ from app.ingest.hwpx_importer import (
     is_data_table,
     is_metadata_row,
     looks_like_data_row,
+    normalize_table_sources,
     numeric_value,
     parse_title_block,
     split_bilingual,
@@ -947,7 +948,7 @@ def prepare_markdown_import_tables(parsed_tables: list[LogicalTable]) -> list[Im
         if base_date and parent_code and unit_key:
             inherited_base_dates[(parent_code, unit_key)] = base_date
         header_count = guess_header_count(matrix)
-        source = "\n".join(table.sources)
+        source = "\n".join(normalize_table_sources(table.code, table.sources))
         note = "\n".join(table.notes)
 
         imported_tables.append(

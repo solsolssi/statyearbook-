@@ -62,6 +62,9 @@ function statusFromChecks(checks: ValidationIssue[]): { status: TableStatus; sta
 
 function partWithVisibleChecks(part: StatTablePart, hiddenTypes: ReadonlySet<string>): StatTablePart {
   const checks = visibleChecks(part.checks, hiddenTypes);
+  if (part.is_test_table) {
+    return { ...part, checks };
+  }
   const status = statusFromChecks(checks);
 
   return {
@@ -77,6 +80,15 @@ export function tablesWithValidationVisibility<T extends ValidationTableLike>(
 ): T[] {
   return tables.map((table) => {
     const checks = visibleChecks(table.checks, hiddenTypes);
+    if (table.is_test_table) {
+      return {
+        ...table,
+        checks,
+        ...("parts" in table
+          ? { parts: table.parts.map((part) => partWithVisibleChecks(part, hiddenTypes)) }
+          : {}),
+      } as T;
+    }
     const status = statusFromChecks(checks);
 
     return {

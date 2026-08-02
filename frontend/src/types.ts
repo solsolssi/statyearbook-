@@ -17,6 +17,7 @@ export interface ColumnDefinition {
   width?: string;
   source_col_index?: number;
   source_col_indexes?: number[];
+  footnote_marker?: string;
 }
 
 export interface ValidationHighlightCell {
@@ -113,6 +114,12 @@ export interface StatTablePart {
   changes: ChangeItem[];
   visualizations: Visualization[];
   metadata: TableMetadata;
+  is_test_table?: boolean;
+  generation_status?: string;
+  generation_status_label?: string;
+  generation_message?: string;
+  update_mode?: string;
+  source_dataset_title?: string;
 }
 
 export interface StatTable {
@@ -141,6 +148,12 @@ export interface StatTable {
   changes: ChangeItem[];
   visualizations: Visualization[];
   metadata: TableMetadata;
+  is_test_table?: boolean;
+  generation_status?: string;
+  generation_status_label?: string;
+  generation_message?: string;
+  update_mode?: string;
+  source_dataset_title?: string;
 }
 
 export interface StatTableSummary {
@@ -157,6 +170,12 @@ export interface StatTableSummary {
   summary: string[];
   key_figures: Metric[];
   checks: ValidationIssue[];
+  is_test_table?: boolean;
+  generation_status?: string;
+  generation_status_label?: string;
+  generation_message?: string;
+  update_mode?: string;
+  source_dataset_title?: string;
 }
 
 export interface ReportSummary {
@@ -168,6 +187,18 @@ export interface ReportSummary {
   needs_review_count: number;
   suspected_error_count: number;
   issue_counts: Record<string, number>;
+  is_test_report?: boolean;
+  validation_available?: boolean;
+  generation_counts?: Record<string, number>;
+  origin_kind?: string;
+  base_report_id?: number | null;
+  validation_scope?: "full" | "changed_tables" | "selected" | "shared" | "none";
+  changed_table_count?: number;
+  unchanged_table_count?: number;
+  selected_validation_keys?: string[];
+  reused_report_count?: number;
+  reused_table_count?: number;
+  reused_check_count?: number;
 }
 
 export interface ReportOption {
@@ -177,6 +208,14 @@ export interface ReportOption {
   file_name: string;
   imported_at: string;
   table_count: number;
+  kind?: "published" | "test" | "template";
+}
+
+export interface ReportDeleteResult {
+  report_id: number;
+  title: string;
+  table_count: number;
+  validation_run_count: number;
 }
 
 export interface PressInsight {
@@ -192,6 +231,7 @@ export interface ReportPayload {
   tables: StatTableSummary[];
   press_insights: PressInsight[];
   available_reports: ReportOption[];
+  available_templates: ReportOption[];
 }
 
 export interface ValidationCatalogItem {
@@ -202,4 +242,203 @@ export interface ValidationCatalogItem {
   default_status: string;
   default_severity: string;
   description: string;
+}
+
+export interface SourceStatisticsSummary {
+  total_datasets: number;
+  datasets_with_values: number;
+  total_values: number;
+  earliest_period: string;
+  latest_period: string;
+  full_imported_at: string;
+  incremental_imported_at: string;
+}
+
+export interface SourceStatisticListItem {
+  external_id: string;
+  title: string;
+  source_kind: string;
+  directory: string;
+  department: string;
+  item_count: number;
+  value_count: number;
+  period_count: number;
+  earliest_period: string;
+  latest_period: string;
+}
+
+export interface SourceStatisticsOverview {
+  summary: SourceStatisticsSummary;
+  datasets: SourceStatisticListItem[];
+}
+
+export interface SourceStatisticPeriod {
+  value: string;
+  label: string;
+  row_count: number;
+}
+
+export interface SourceStatisticColumn {
+  key: string;
+  label: string;
+  data_type: string;
+  item_data_no: number;
+  align: "left" | "right" | "center";
+}
+
+export interface SourceStatisticMetadata {
+  source_kind: string;
+  storage_table: string;
+  directory: string;
+  subdirectory: string;
+  input_status: string;
+  department: string;
+  officer_name: string;
+  input_period: string;
+  data_reference_time: string;
+}
+
+export interface SourceStatisticDetail {
+  external_id: string;
+  title: string;
+  selected_period: string;
+  periods: SourceStatisticPeriod[];
+  columns: SourceStatisticColumn[];
+  rows: Array<Record<string, string | number>>;
+  metadata: SourceStatisticMetadata;
+  total_rows: number;
+}
+
+export interface SourceDataImportResult {
+  mode: "append_year";
+  base_report_id: number;
+  target_year: number;
+  batch_id: number;
+  datasets: number;
+  items: number;
+  values: number;
+  inserted_values: number;
+  updated_values: number;
+  unchanged_values: number;
+  reused: boolean;
+  generated_report_id: number;
+  reproduction_run_id: number;
+}
+
+export interface ReportTableDifference {
+  table_code: string;
+  change_type: "matching" | "modified" | "added" | "deleted";
+  changed_cell_count: number;
+  cell_differences: Array<{
+    row_index: number;
+    col_index: number;
+    left_value: string;
+    right_value: string;
+  }>;
+}
+
+export interface ReportComparisonSummary {
+  id: number;
+  left_report_id: number;
+  right_report_id: number;
+  total_table_count: number;
+  matching_table_count: number;
+  changed_table_count: number;
+  added_table_count: number;
+  deleted_table_count: number;
+  changed_cell_count: number;
+  tables: ReportTableDifference[];
+}
+
+export interface ReproductionReportOption {
+  id: number;
+  year: number;
+  title: string;
+  is_archived: boolean;
+}
+
+export interface ReproductionPeriodRule {
+  mode: "latest_n" | "single_period" | string;
+  count: number;
+  first_period: string;
+  last_period: string;
+  target_period: string;
+  anchor: string;
+}
+
+export interface ReproductionSourceCandidate {
+  dataset_id: number;
+  external_id: string;
+  title: string;
+  title_similarity: number;
+  value_coverage: number;
+  header_coverage: number;
+  has_target_period: boolean;
+}
+
+export interface ReproductionTableAnalysis {
+  table_id: number;
+  code: string;
+  title: string;
+  table_order: number;
+  mapping_status: "mapped" | "review" | "unmapped";
+  generation_status: "basic_recipe" | "custom_recipe";
+  materializer: string;
+  source_dataset_id: number | null;
+  source_external_id: string;
+  source_title: string;
+  match_method: string;
+  confidence: number;
+  reason: string;
+  period_rule: ReproductionPeriodRule;
+  candidates: ReproductionSourceCandidate[];
+  recipe_status: string;
+  comparison_status: string;
+  compared_cell_count: number;
+  mismatch_count: number;
+  comparison_error: string;
+}
+
+export interface ReproductionBuildSummary {
+  id: number;
+  report_id: number;
+  report_year: number;
+  target_data_year: number;
+  status: string;
+  total_tables: number;
+  exact_tables: number;
+  mismatch_tables: number;
+  source_difference_tables: number;
+  carried_forward_tables: number;
+  static_tables: number;
+  empty_tables: number;
+  deleted_tables: number;
+  source_missing_tables: number;
+  unavailable_tables: number;
+  recipe_required_tables: number;
+  mapping_review_tables: number;
+  compared_cells: number;
+  mismatch_cells: number;
+  source_difference_cells: number;
+  created_at: string;
+  completed_at: string;
+}
+
+export interface YearbookReproductionOverview {
+  report_id: number;
+  report_year: number;
+  report_title: string;
+  target_data_period: string;
+  summary: {
+    total_tables: number;
+    mapped_tables: number;
+    review_tables: number;
+    unmapped_tables: number;
+    basic_recipe_candidates: number;
+    custom_recipe_required: number;
+    draft_recipes: number;
+  };
+  latest_build: ReproductionBuildSummary | null;
+  available_reports: ReproductionReportOption[];
+  tables: ReproductionTableAnalysis[];
 }

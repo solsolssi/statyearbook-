@@ -140,20 +140,28 @@ def prepare_linguistic_reviews(
     *,
     report_id: int,
     run_id: int,
+    table_ids: list[int] | None = None,
 ) -> LinguisticReviewSummary:
     """Queue only the language checks required by each source value."""
 
     refresh_translation_glossary(connection)
     candidate_count = 0
 
+    table_filter = ""
+    params: list[object] = [report_id]
+    if table_ids is not None:
+        if not table_ids:
+            return LinguisticReviewSummary(candidates=0, glossary_checks=0, glossary_issues=0)
+        table_filter = f" AND id IN ({','.join('?' for _ in table_ids)})"
+        params.extend(table_ids)
     tables = connection.execute(
-        """
+        f"""
         SELECT id, code, title, title_en, section_title, section_title_en, raw_context
         FROM stat_tables
-        WHERE report_id = ?
+        WHERE report_id = ? {table_filter}
         ORDER BY table_order, id
         """,
-        (report_id,),
+        params,
     ).fetchall()
 
     with connection:

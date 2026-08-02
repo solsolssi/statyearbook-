@@ -1,0 +1,108 @@
+# test6666 vs previous 2026 validation compare
+
+- Base: main DB report 43, run 181, 2026 행정안전통계연보, 2026통계연보초안.md, scope=full, issues=845
+- Target: test DB report 50, run 1, test6666, 2026통계연보초안.hwpx, scope=selected, issues=460
+- Tables: base 367, target 366
+- Missing codes in target: 3 ['7-2-10 표1', '7-2-10 표2', '부록 6']
+- Extra codes in target: 2 ['7-2-10', '부록 6 표1']
+- Base full-only excluded issue types: {'검수 프로파일 확인': 182, '이상치 검수': 110}
+- Selected rule issue rows: base 553, target 460, diff rows 391
+- Linguistic/blue candidate rows: base 19011, target 18988, diff rows 7137
+
+## Rule issue counts by type/status
+- 메타정보 검수 / 확인 필요: base 12, target 36
+- 번역 검수 / 확인 필요: base 58, target 0
+- 오탈자 검수 / 오류 의심: base 41, target 6
+- 오탈자 검수 / 확인 필요: base 7, target 2
+- 파란색 표기 확인 / 오류 의심: base 30, target 28
+- 파란색 표기 확인 / 확인 필요: base 147, target 130
+
+## Linguistic candidate counts by type/status
+- 번역 검수 / pending: base 50, target 1147
+- 번역 검수 / reviewed: base 9138, target 7950
+- 오탈자 검수 / pending: base 84, target 1667
+- 오탈자 검수 / reviewed: base 9562, target 8066
+- 파란색 표기 확인 / pending: base 1, target 90
+- 파란색 표기 확인 / reviewed: base 176, target 68
+
+## Top changed codes
+- 7-3-4-3 / 언어/파란색 검수: base-only 322, target-only 322
+- 7-3-1-1 / 언어/파란색 검수: base-only 129, target-only 129
+- 7-2-1-3 / 언어/파란색 검수: base-only 82, target-only 82
+- 4-1-11-3 표2 / 언어/파란색 검수: base-only 85, target-only 77
+- 7-3-1-2 / 언어/파란색 검수: base-only 83, target-only 73
+- 1-1-1-3 / 언어/파란색 검수: base-only 75, target-only 75
+- 5-2-1-4 / 언어/파란색 검수: base-only 61, target-only 61
+- 7-2-12-1 / 언어/파란색 검수: base-only 60, target-only 60
+- 7-3-5-1 / 언어/파란색 검수: base-only 57, target-only 57
+- 7-2-2 / 언어/파란색 검수: base-only 55, target-only 55
+- 7-2-10 / 언어/파란색 검수: base-only 0, target-only 104
+- 1-2-1-4 / 언어/파란색 검수: base-only 44, target-only 44
+- 6-2-11-3 / 언어/파란색 검수: base-only 44, target-only 44
+- 6-3-3-3 표1 / 언어/파란색 검수: base-only 44, target-only 44
+- 7-2-10 표1 / 언어/파란색 검수: base-only 84, target-only 0
+- 4-1-1-5 / 언어/파란색 검수: base-only 36, target-only 34
+- 6-2-9-1 / 언어/파란색 검수: base-only 35, target-only 35
+- 7-2-6 / 언어/파란색 검수: base-only 35, target-only 35
+- 5-1-6-2 / 언어/파란색 검수: base-only 31, target-only 31
+- 4-1-11-2 표2 / 언어/파란색 검수: base-only 27, target-only 27
+- 6-3-3-1 / 언어/파란색 검수: base-only 26, target-only 26
+- 3-1-1-2 / 언어/파란색 검수: base-only 24, target-only 24
+- 1-1-3 / 언어/파란색 검수: base-only 22, target-only 22
+- 3-1-1-1 / 언어/파란색 검수: base-only 22, target-only 22
+- 7-2-8-2 표2 / 언어/파란색 검수: base-only 22, target-only 22
+- 2-1-4-3 / 언어/파란색 검수: base-only 20, target-only 18
+- 5-2-1-1 / 언어/파란색 검수: base-only 19, target-only 19
+- 6-2-2-1 / 언어/파란색 검수: base-only 19, target-only 19
+- 3-1-7 / 언어/파란색 검수: base-only 18, target-only 18
+- 4-1-5-2 / 언어/파란색 검수: base-only 18, target-only 18
+- 6-1-3-3 / 언어/파란색 검수: base-only 18, target-only 18
+- 8-1-3-2 표2 / 언어/파란색 검수: base-only 16, target-only 20
+- 6-2-14 / 언어/파란색 검수: base-only 17, target-only 17
+- 7-3-9-4 / 언어/파란색 검수: base-only 16, target-only 16
+- 8-1-1-2 표1 / 언어/파란색 검수: base-only 16, target-only 16
+- 8-1-3-2 표1 / 언어/파란색 검수: base-only 14, target-only 18
+- 8-1-3-2 표3 / 언어/파란색 검수: base-only 14, target-only 18
+- 부록 3 / 언어/파란색 검수: base-only 16, target-only 16
+- 부록 6 / 언어/파란색 검수: base-only 32, target-only 0
+- 부록 6 표1 / 언어/파란색 검수: base-only 0, target-only 32
+- 2-1-4-1 / 언어/파란색 검수: base-only 16, target-only 14
+- 5-2-1-5 표2 / 언어/파란색 검수: base-only 15, target-only 15
+- 7-2-10 표2 / 언어/파란색 검수: base-only 30, target-only 0
+- 1-2-4-1 / 언어/파란색 검수: base-only 14, target-only 14
+- 2-2-2-3 / 언어/파란색 검수: base-only 14, target-only 14
+- 4-1-2-4 표2 / 언어/파란색 검수: base-only 14, target-only 14
+- 4-1-5-1 / 언어/파란색 검수: base-only 14, target-only 14
+- 7-1-4-3 / 언어/파란색 검수: base-only 14, target-only 14
+- 7-2-8-1 / 언어/파란색 검수: base-only 14, target-only 14
+- 7-3-9-2 / 언어/파란색 검수: base-only 14, target-only 14
+- 8-1-1-1 / 언어/파란색 검수: base-only 14, target-only 14
+- 2-1-4-3 / 규칙 검수: base-only 13, target-only 13
+- 2-2-6 / 언어/파란색 검수: base-only 13, target-only 13
+- 4-2-12 표2 / 언어/파란색 검수: base-only 13, target-only 13
+- 2-1-4-2 / 언어/파란색 검수: base-only 13, target-only 11
+- 3-1-3-2 / 언어/파란색 검수: base-only 12, target-only 12
+- 4-1-2-4 표1 / 언어/파란색 검수: base-only 12, target-only 12
+- 4-1-8-6 / 언어/파란색 검수: base-only 12, target-only 12
+- 4-2-13 / 언어/파란색 검수: base-only 12, target-only 12
+- 6-3-1-3 / 언어/파란색 검수: base-only 12, target-only 12
+- 6-3-1-4 / 언어/파란색 검수: base-only 12, target-only 12
+- 6-3-1-6 표1 / 언어/파란색 검수: base-only 12, target-only 12
+- 6-3-2-1 / 언어/파란색 검수: base-only 12, target-only 12
+- 6-3-2-2 / 언어/파란색 검수: base-only 12, target-only 12
+- 6-3-3-2 표1 / 언어/파란색 검수: base-only 12, target-only 12
+- 7-2-8-2 표3 / 언어/파란색 검수: base-only 12, target-only 12
+- 7-3-2-1 표2 / 언어/파란색 검수: base-only 12, target-only 12
+- 7-3-2-3 / 언어/파란색 검수: base-only 12, target-only 12
+- 8-1-6 / 언어/파란색 검수: base-only 12, target-only 12
+- 7-2-4-3 / 규칙 검수: base-only 11, target-only 11
+- 2-1-4-1 / 규칙 검수: base-only 11, target-only 10
+- 1-2-1-3 / 언어/파란색 검수: base-only 10, target-only 10
+- 2-2-12-4 / 언어/파란색 검수: base-only 10, target-only 10
+- 3-1-2-1 / 언어/파란색 검수: base-only 10, target-only 10
+- 3-1-2-2 / 언어/파란색 검수: base-only 10, target-only 10
+- 3-1-2-3 / 언어/파란색 검수: base-only 10, target-only 10
+- 3-1-4 / 언어/파란색 검수: base-only 10, target-only 10
+- 4-1-1-6 표4 / 언어/파란색 검수: base-only 10, target-only 10
+- 4-1-1-6 표6 / 언어/파란색 검수: base-only 10, target-only 10
+- 4-1-8-1 / 언어/파란색 검수: base-only 10, target-only 10

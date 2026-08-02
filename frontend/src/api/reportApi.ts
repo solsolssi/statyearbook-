@@ -1,4 +1,15 @@
-import type { ReportPayload, StatTable, ValidationCatalogItem } from "../types";
+import type {
+  ReportPayload,
+  ReportComparisonSummary,
+  ReportDeleteResult,
+  ReproductionBuildSummary,
+  SourceDataImportResult,
+  SourceStatisticDetail,
+  SourceStatisticsOverview,
+  StatTable,
+  ValidationCatalogItem,
+  YearbookReproductionOverview,
+} from "../types";
 
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
 const API_BASE_URL = normalizeApiBaseUrl(
@@ -17,6 +28,40 @@ export interface ReportImportJob {
   error_message: string;
 }
 
+export type SourceDataUploadMode = "append_year";
+
+export interface ReportUploadOptions {
+  year?: number;
+  title?: string;
+  mode?: "completed_report_new" | "completed_report_update";
+  baseReportId?: number;
+}
+
+export interface SourceDataUploadOptions {
+  mode: SourceDataUploadMode;
+  baseReportId: number;
+  targetYear: number;
+  title: string;
+  infoFile: File;
+  itemFile: File;
+  valueFile: File;
+}
+
+export interface ValidationRunResult {
+  run_id: number;
+  report_id: number;
+  tables: number;
+  issues: number;
+  language_candidates: number;
+  language_pending: number;
+  language_reused: number;
+  language_status: "대기" | "완료";
+  selected_rule_keys: string[];
+  reused_report_count: number;
+  reused_table_count: number;
+  reused_check_count: number;
+}
+
 export async function fetchReport(reportId?: string): Promise<ReportPayload> {
   return requestJson<ReportPayload>(
     apiPath("/api/report/overview", { report_id: reportId }),
@@ -33,6 +78,49 @@ export async function fetchValidationCatalog(): Promise<ValidationCatalogItem[]>
   );
 }
 
+export async function fetchSourceStatistics(): Promise<SourceStatisticsOverview> {
+  return requestJson<SourceStatisticsOverview>(
+    "/api/source-statistics",
+    undefined,
+    "통계 원장을 불러오지 못했습니다.",
+  );
+}
+
+export async function fetchSourceStatistic(
+  externalId: string,
+  period?: string,
+): Promise<SourceStatisticDetail> {
+  return requestJson<SourceStatisticDetail>(
+    apiPath(`/api/source-statistics/${encodeURIComponent(externalId)}`, { period }),
+    undefined,
+    "통계 원장 상세 데이터를 불러오지 못했습니다.",
+  );
+}
+
+export async function fetchYearbookReproduction(
+  options: { reportId?: string; reportYear?: number } = {},
+): Promise<YearbookReproductionOverview> {
+  return requestJson<YearbookReproductionOverview>(
+    apiPath("/api/yearbook-reproduction", {
+      report_id: options.reportId,
+      report_year:
+        options.reportYear === undefined ? undefined : String(options.reportYear),
+    }),
+    undefined,
+    "연보 재현 준비 상태를 불러오지 못했습니다.",
+  );
+}
+
+export async function runYearbookReproduction(
+  reportId: number,
+): Promise<ReproductionBuildSummary> {
+  return requestJson<ReproductionBuildSummary>(
+    apiPath("/api/yearbook-reproduction/build", { report_id: String(reportId) }),
+    { method: "POST" },
+    "연보 셀 재현 비교를 실행하지 못했습니다.",
+  );
+}
+
 export async function fetchTable(tableId: string, reportId?: string): Promise<StatTable> {
   return requestJson<StatTable>(
     apiPath(`/api/tables/${encodeURIComponent(tableId)}`, { report_id: reportId }),
@@ -41,15 +129,89 @@ export async function fetchTable(tableId: string, reportId?: string): Promise<St
   );
 }
 
-export async function uploadReport(file: File): Promise<ReportImportJob> {
+export async function uploadReport(
+  file: File,
+  options: ReportUploadOptions = {},
+): Promise<ReportImportJob> {
   return requestJson<ReportImportJob>(
-    apiPath("/api/imports", { filename: file.name }),
+    apiPath("/api/imports", {
+      filename: file.name,
+      year: options.year === undefined ? undefined : String(options.year),
+      title: options.title,
+      mode: options.mode,
+      base_report_id:
+        options.baseReportId === undefined ? undefined : String(options.baseReportId),
+    }),
     {
       method: "POST",
       headers: { "Content-Type": file.type || "application/octet-stream" },
       body: file,
     },
     "연보 파일을 업로드하지 못했습니다.",
+  );
+}
+
+export async function compareReports(
+  leftReportId: number,
+  rightReportId: number,
+): Promise<ReportComparisonSummary> {
+  return requestJson<ReportComparisonSummary>(
+    apiPath("/api/report-comparisons", {
+      left_report_id: String(leftReportId),
+      right_report_id: String(rightReportId),
+    }),
+    { method: "POST" },
+    "두 연보를 비교하지 못했습니다.",
+  );
+}
+
+export async function deleteReport(reportId: number): Promise<ReportDeleteResult> {
+  return requestJson<ReportDeleteResult>(
+    `/api/reports/${reportId}`,
+    { method: "DELETE" },
+    "연보를 삭제하지 못했습니다.",
+  );
+}
+
+export async function uploadSourceData(
+  options: SourceDataUploadOptions,
+): Promise<SourceDataImportResult> {
+  const formData = new FormData();
+  formData.set("info_file", options.infoFile);
+  formData.set("item_file", options.itemFile);
+  formData.set("value_file", options.valueFile);
+  return requestJson<SourceDataImportResult>(
+    apiPath("/api/source-statistics/import", {
+      mode: options.mode,
+      base_report_id: String(options.baseReportId),
+      target_year: String(options.targetYear),
+      title: options.title,
+    }),
+    { method: "POST", body: formData },
+    "통계 원장 데이터를 업로드하지 못했습니다.",
+  );
+}
+
+export async function runReportValidation(
+  reportId: number,
+  options: {
+    selectedRuleKeys: string[];
+    reuseExisting: boolean;
+    includeLlm?: boolean;
+  },
+): Promise<ValidationRunResult> {
+  return requestJson<ValidationRunResult>(
+    apiPath("/api/validation/run", { report_id: String(reportId) }),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        selected_rule_keys: options.selectedRuleKeys,
+        reuse_existing: options.reuseExisting,
+        include_llm: options.includeLlm ?? false,
+      }),
+    },
+    "연보 검수를 실행하지 못했습니다.",
   );
 }
 

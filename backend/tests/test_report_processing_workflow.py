@@ -16,7 +16,11 @@ from app.validation.profile_repository import ValidationProfileRepository
 from app.validation.profiles import HeuristicProfileDraftProvider
 from app.validation.repository import ValidationRepository
 from app.validation.workflow import ValidationWorkflow
-from app.workflows.report_processing import ReportProcessingError, ReportProcessingWorkflow
+from app.workflows.report_processing import (
+    ReportProcessingError,
+    ReportProcessingOptions,
+    ReportProcessingWorkflow,
+)
 
 
 class CountingProfileProvider(HeuristicProfileDraftProvider):
@@ -288,6 +292,40 @@ class ReportProcessingWorkflowTest(unittest.TestCase):
             language_stage = job["stages"][-1]
             language_result = json.loads(str(language_stage["result_json"]))
             self.assertIn(language_result["status"], {"완료", "대기"})
+
+    def test_upload_only_job_stops_after_import(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workbook_path = root / "upload-only.xlsx"
+            db_path = root / "report.sqlite"
+            self.make_workbook(workbook_path)
+            workflow = ReportProcessingWorkflow(db_path)
+            job_id = workflow.create_job(
+                source_path=workbook_path,
+                year=2026,
+                title="직접 입력한 연보 이름",
+                options=ReportProcessingOptions(validate_after_import=False),
+            )
+
+            job = workflow.run(job_id)
+
+            self.assertEqual(job["status"], "completed")
+            self.assertIsNone(job["run_id"])
+            self.assertEqual(
+                [stage["stage_name"] for stage in job["stages"]],
+                ["import"],
+            )
+            with connect(db_path) as connection:
+                report = connection.execute(
+                    "SELECT title FROM annual_reports WHERE id = ?",
+                    (job["report_id"],),
+                ).fetchone()
+                run_count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM validation_runs WHERE report_id = ?",
+                    (job["report_id"],),
+                ).fetchone()
+            self.assertEqual(report["title"], "직접 입력한 연보 이름")
+            self.assertEqual(run_count["count"], 0)
 
     def test_retry_resumes_failed_stage_without_reimporting(self) -> None:
         with TemporaryDirectory() as directory:

@@ -23,7 +23,11 @@ CREATE TABLE IF NOT EXISTS annual_reports (
     file_hash TEXT NOT NULL UNIQUE,
     parse_warnings_json TEXT NOT NULL DEFAULT '[]',
     imported_at TEXT NOT NULL,
-    is_archived INTEGER NOT NULL DEFAULT 0
+    is_archived INTEGER NOT NULL DEFAULT 0,
+    is_template INTEGER NOT NULL DEFAULT 0,
+    origin_kind TEXT NOT NULL DEFAULT 'uploaded',
+    base_report_id INTEGER,
+    FOREIGN KEY (base_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS stat_tables (
@@ -71,6 +75,106 @@ ON stat_tables(report_id, table_order);
 CREATE INDEX IF NOT EXISTS idx_stat_table_cells_table_position
 ON stat_table_cells(table_id, row_index, col_index);
 
+CREATE TABLE IF NOT EXISTS report_update_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    base_report_id INTEGER NOT NULL,
+    report_id INTEGER NOT NULL,
+    update_kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'completed',
+    changed_table_count INTEGER NOT NULL DEFAULT 0,
+    unchanged_table_count INTEGER NOT NULL DEFAULT 0,
+    added_table_count INTEGER NOT NULL DEFAULT 0,
+    deleted_table_count INTEGER NOT NULL DEFAULT 0,
+    changed_cell_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (base_report_id) REFERENCES annual_reports(id) ON DELETE CASCADE,
+    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_update_batches_report
+ON report_update_batches(report_id, created_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS report_update_table_diffs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL,
+    table_code TEXT NOT NULL,
+    base_table_id INTEGER,
+    report_table_id INTEGER,
+    change_type TEXT NOT NULL,
+    metadata_changed INTEGER NOT NULL DEFAULT 0,
+    changed_cell_count INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (batch_id) REFERENCES report_update_batches(id) ON DELETE CASCADE,
+    FOREIGN KEY (base_table_id) REFERENCES stat_tables(id) ON DELETE SET NULL,
+    FOREIGN KEY (report_table_id) REFERENCES stat_tables(id) ON DELETE SET NULL,
+    UNIQUE (batch_id, table_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_update_table_diffs_batch
+ON report_update_table_diffs(batch_id, change_type, table_code);
+
+CREATE TABLE IF NOT EXISTS report_update_cell_diffs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_diff_id INTEGER NOT NULL,
+    row_index INTEGER NOT NULL,
+    col_index INTEGER NOT NULL,
+    previous_value TEXT NOT NULL DEFAULT '',
+    current_value TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (table_diff_id) REFERENCES report_update_table_diffs(id) ON DELETE CASCADE,
+    UNIQUE (table_diff_id, row_index, col_index)
+);
+
+CREATE TABLE IF NOT EXISTS report_comparison_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    left_report_id INTEGER NOT NULL,
+    right_report_id INTEGER NOT NULL,
+    total_table_count INTEGER NOT NULL DEFAULT 0,
+    matching_table_count INTEGER NOT NULL DEFAULT 0,
+    changed_table_count INTEGER NOT NULL DEFAULT 0,
+    added_table_count INTEGER NOT NULL DEFAULT 0,
+    deleted_table_count INTEGER NOT NULL DEFAULT 0,
+    changed_cell_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (left_report_id) REFERENCES annual_reports(id) ON DELETE CASCADE,
+    FOREIGN KEY (right_report_id) REFERENCES annual_reports(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS report_comparison_table_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    table_code TEXT NOT NULL,
+    left_table_id INTEGER,
+    right_table_id INTEGER,
+    change_type TEXT NOT NULL,
+    changed_cell_count INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (run_id) REFERENCES report_comparison_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (left_table_id) REFERENCES stat_tables(id) ON DELETE SET NULL,
+    FOREIGN KEY (right_table_id) REFERENCES stat_tables(id) ON DELETE SET NULL,
+    UNIQUE (run_id, table_code)
+);
+
+CREATE TABLE IF NOT EXISTS report_comparison_cell_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_result_id INTEGER NOT NULL,
+    row_index INTEGER NOT NULL,
+    col_index INTEGER NOT NULL,
+    left_value TEXT NOT NULL DEFAULT '',
+    right_value TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (table_result_id) REFERENCES report_comparison_table_results(id) ON DELETE CASCADE,
+    UNIQUE (table_result_id, row_index, col_index)
+);
+
+CREATE TABLE IF NOT EXISTS generated_report_table_status (
+    report_id INTEGER NOT NULL,
+    table_id INTEGER NOT NULL,
+    source_table_id INTEGER,
+    generation_status TEXT NOT NULL DEFAULT '',
+    generation_message TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (report_id, table_id),
+    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE,
+    FOREIGN KEY (table_id) REFERENCES stat_tables(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_table_id) REFERENCES stat_tables(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS series_import_batches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_file_name TEXT NOT NULL,
@@ -93,9 +197,13 @@ CREATE TABLE IF NOT EXISTS statistical_datasets (
     source_key TEXT NOT NULL UNIQUE,
     external_id TEXT NOT NULL DEFAULT '',
     title TEXT NOT NULL,
+    source_kind TEXT NOT NULL DEFAULT '',
+    storage_table TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
+    introduced_batch_id INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (introduced_batch_id) REFERENCES series_import_batches(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_statistical_datasets_title
@@ -138,6 +246,107 @@ CREATE TABLE IF NOT EXISTS statistical_observations (
 CREATE INDEX IF NOT EXISTS idx_statistical_observations_lookup
 ON statistical_observations(dataset_version_id, period, dimension_key, source_batch_id DESC);
 
+CREATE TABLE IF NOT EXISTS statistical_dataset_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dataset_id INTEGER NOT NULL,
+    item_id TEXT NOT NULL DEFAULT '',
+    level INTEGER NOT NULL DEFAULT 0,
+    item_data_no INTEGER NOT NULL,
+    item_name TEXT NOT NULL DEFAULT '',
+    data_type TEXT NOT NULL DEFAULT '',
+    is_dummy INTEGER NOT NULL DEFAULT 0,
+    input_required INTEGER NOT NULL DEFAULT 0,
+    max_level INTEGER NOT NULL DEFAULT 0,
+    is_leaf INTEGER NOT NULL DEFAULT 0,
+    full_name TEXT NOT NULL DEFAULT '',
+    display_order INTEGER NOT NULL DEFAULT 0,
+    source_batch_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (dataset_id) REFERENCES statistical_datasets(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_batch_id) REFERENCES series_import_batches(id) ON DELETE RESTRICT,
+    UNIQUE (dataset_id, item_data_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_statistical_dataset_items_order
+ON statistical_dataset_items(dataset_id, item_data_no);
+
+CREATE TABLE IF NOT EXISTS statistical_values (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dataset_id INTEGER NOT NULL,
+    data_cycle TEXT NOT NULL DEFAULT '',
+    period TEXT NOT NULL,
+    data_division TEXT NOT NULL DEFAULT '',
+    item_data_no INTEGER NOT NULL,
+    class_data_no INTEGER NOT NULL DEFAULT -1,
+    data_value TEXT NOT NULL DEFAULT '',
+    string_value TEXT NOT NULL DEFAULT '',
+    comment_identifier TEXT NOT NULL DEFAULT '',
+    comment_text TEXT NOT NULL DEFAULT '',
+    english_comment_text TEXT NOT NULL DEFAULT '',
+    write_state TEXT NOT NULL DEFAULT '',
+    check_code TEXT NOT NULL DEFAULT '',
+    verified INTEGER NOT NULL DEFAULT 0,
+    verification_result TEXT NOT NULL DEFAULT '',
+    source_sequence TEXT NOT NULL DEFAULT '',
+    source_registered_at TEXT NOT NULL DEFAULT '',
+    source_batch_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (dataset_id) REFERENCES statistical_datasets(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_batch_id) REFERENCES series_import_batches(id) ON DELETE RESTRICT,
+    UNIQUE (
+        dataset_id, data_cycle, period, data_division,
+        item_data_no, class_data_no
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_statistical_values_snapshot
+ON statistical_values(dataset_id, period DESC, data_cycle, data_division, class_data_no, item_data_no);
+
+CREATE TABLE IF NOT EXISTS statistical_value_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    statistical_value_id INTEGER NOT NULL,
+    replaced_by_batch_id INTEGER NOT NULL,
+    data_value TEXT NOT NULL DEFAULT '',
+    string_value TEXT NOT NULL DEFAULT '',
+    comment_identifier TEXT NOT NULL DEFAULT '',
+    comment_text TEXT NOT NULL DEFAULT '',
+    english_comment_text TEXT NOT NULL DEFAULT '',
+    write_state TEXT NOT NULL DEFAULT '',
+    check_code TEXT NOT NULL DEFAULT '',
+    verified INTEGER NOT NULL DEFAULT 0,
+    verification_result TEXT NOT NULL DEFAULT '',
+    source_batch_id INTEGER NOT NULL,
+    archived_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (statistical_value_id) REFERENCES statistical_values(id) ON DELETE CASCADE,
+    FOREIGN KEY (replaced_by_batch_id) REFERENCES series_import_batches(id) ON DELETE RESTRICT,
+    FOREIGN KEY (source_batch_id) REFERENCES series_import_batches(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_statistical_value_revisions_value
+ON statistical_value_revisions(statistical_value_id, archived_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS statistical_period_metadata (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dataset_id INTEGER NOT NULL,
+    period TEXT NOT NULL,
+    management_number TEXT NOT NULL DEFAULT '',
+    subdirectory TEXT NOT NULL DEFAULT '',
+    directory TEXT NOT NULL DEFAULT '',
+    input_status TEXT NOT NULL DEFAULT '',
+    department TEXT NOT NULL DEFAULT '',
+    officer_name TEXT NOT NULL DEFAULT '',
+    input_period TEXT NOT NULL DEFAULT '',
+    data_reference_time TEXT NOT NULL DEFAULT '',
+    source_batch_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (dataset_id) REFERENCES statistical_datasets(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_batch_id) REFERENCES series_import_batches(id) ON DELETE RESTRICT,
+    UNIQUE (dataset_id, period)
+);
+
+CREATE INDEX IF NOT EXISTS idx_statistical_period_metadata_period
+ON statistical_period_metadata(dataset_id, period DESC);
+
 CREATE TABLE IF NOT EXISTS yearbook_table_recipes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     table_code TEXT NOT NULL,
@@ -162,6 +371,95 @@ CREATE TABLE IF NOT EXISTS yearbook_table_recipes (
 
 CREATE INDEX IF NOT EXISTS idx_yearbook_table_recipes_effective
 ON yearbook_table_recipes(table_code, effective_from_year, effective_to_year, status);
+
+CREATE TABLE IF NOT EXISTS yearbook_table_update_policies (
+    table_code TEXT PRIMARY KEY,
+    update_mode TEXT NOT NULL DEFAULT 'full_snapshot',
+    window_size INTEGER NOT NULL DEFAULT 1,
+    no_update_action TEXT NOT NULL DEFAULT 'require_manifest',
+    structure_change_action TEXT NOT NULL DEFAULT 'source_native_preview',
+    text_update_action TEXT NOT NULL DEFAULT 'source_then_template',
+    source_report_id INTEGER,
+    source_table_id INTEGER,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (source_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_table_id) REFERENCES stat_tables(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS yearbook_edition_manifest (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    edition_year INTEGER NOT NULL,
+    table_code TEXT NOT NULL,
+    lifecycle_status TEXT NOT NULL DEFAULT 'updated',
+    target_period TEXT NOT NULL DEFAULT '',
+    source_dataset_id INTEGER,
+    title TEXT NOT NULL DEFAULT '',
+    table_order INTEGER NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    is_inferred INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (source_dataset_id) REFERENCES statistical_datasets(id) ON DELETE SET NULL,
+    UNIQUE (edition_year, table_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_yearbook_edition_manifest_year
+ON yearbook_edition_manifest(edition_year, lifecycle_status, table_order, table_code);
+
+CREATE TABLE IF NOT EXISTS yearbook_reproduction_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baseline_report_id INTEGER NOT NULL,
+    report_year INTEGER NOT NULL,
+    target_data_year INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    FOREIGN KEY (baseline_report_id) REFERENCES annual_reports(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_yearbook_reproduction_runs_report
+ON yearbook_reproduction_runs(baseline_report_id, created_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS yearbook_reproduction_table_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    baseline_table_id INTEGER NOT NULL,
+    recipe_id INTEGER,
+    source_dataset_id INTEGER,
+    status TEXT NOT NULL,
+    compared_cell_count INTEGER NOT NULL DEFAULT 0,
+    mismatch_count INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES yearbook_reproduction_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (baseline_table_id) REFERENCES stat_tables(id) ON DELETE CASCADE,
+    FOREIGN KEY (recipe_id) REFERENCES yearbook_table_recipes(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_dataset_id) REFERENCES statistical_datasets(id) ON DELETE SET NULL,
+    UNIQUE (run_id, baseline_table_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_yearbook_reproduction_results_run
+ON yearbook_reproduction_table_results(run_id, status, baseline_table_id);
+
+CREATE TABLE IF NOT EXISTS yearbook_reproduction_cell_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_result_id INTEGER NOT NULL,
+    row_index INTEGER NOT NULL,
+    col_index INTEGER NOT NULL,
+    expected_value TEXT NOT NULL DEFAULT '',
+    generated_value TEXT NOT NULL DEFAULT '',
+    is_match INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (table_result_id)
+        REFERENCES yearbook_reproduction_table_results(id) ON DELETE CASCADE,
+    UNIQUE (table_result_id, row_index, col_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_yearbook_reproduction_cells_result
+ON yearbook_reproduction_cell_results(table_result_id, is_match, row_index, col_index);
 
 CREATE TABLE IF NOT EXISTS validation_rule_definitions (
     key TEXT PRIMARY KEY,
@@ -206,7 +504,14 @@ CREATE TABLE IF NOT EXISTS validation_runs (
     started_at TEXT NOT NULL,
     completed_at TEXT NOT NULL,
     issue_count INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE
+    scope_kind TEXT NOT NULL DEFAULT 'full',
+    base_run_id INTEGER,
+    selected_rules_json TEXT NOT NULL DEFAULT '[]',
+    reused_report_count INTEGER NOT NULL DEFAULT 0,
+    reused_table_count INTEGER NOT NULL DEFAULT 0,
+    reused_check_count INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE,
+    FOREIGN KEY (base_run_id) REFERENCES validation_runs(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_validation_runs_report_latest
@@ -442,6 +747,18 @@ def ensure_schema_columns(connection: DatabaseConnection) -> None:
     ensure_column(connection, "stat_tables", "parse_warnings_json", "TEXT NOT NULL DEFAULT '[]'")
     ensure_column(connection, "annual_reports", "parse_warnings_json", "TEXT NOT NULL DEFAULT '[]'")
     ensure_column(connection, "annual_reports", "is_archived", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection, "annual_reports", "is_template", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection, "annual_reports", "origin_kind", "TEXT NOT NULL DEFAULT 'uploaded'")
+    ensure_column(connection, "annual_reports", "base_report_id", "INTEGER")
+    ensure_column(connection, "validation_runs", "scope_kind", "TEXT NOT NULL DEFAULT 'full'")
+    ensure_column(connection, "validation_runs", "base_run_id", "INTEGER")
+    ensure_column(connection, "validation_runs", "selected_rules_json", "TEXT NOT NULL DEFAULT '[]'")
+    ensure_column(connection, "validation_runs", "reused_report_count", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection, "validation_runs", "reused_table_count", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection, "validation_runs", "reused_check_count", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection, "statistical_datasets", "source_kind", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "statistical_datasets", "storage_table", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "statistical_datasets", "introduced_batch_id", "INTEGER")
     ensure_column(connection, "translation_glossary", "subcategory", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "translation_glossary", "source_url", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "translation_glossary", "source_title", "TEXT NOT NULL DEFAULT ''")

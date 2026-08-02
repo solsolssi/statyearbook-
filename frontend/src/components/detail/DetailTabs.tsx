@@ -10,9 +10,10 @@ const TABS: Array<{ id: DetailTab; label: string }> = [
 interface DetailTabsProps {
   activeTab: DetailTab;
   onChange: (tab: DetailTab) => void;
+  isTestTable?: boolean;
 }
 
-export function DetailTabs({ activeTab, onChange }: DetailTabsProps) {
+export function DetailTabs({ activeTab, onChange, isTestTable = false }: DetailTabsProps) {
   return (
     <nav className="detail-tabs" aria-label="상세 탭">
       {TABS.map((tab) => (
@@ -22,10 +23,15 @@ export function DetailTabs({ activeTab, onChange }: DetailTabsProps) {
           type="button"
           onClick={() => onChange(tab.id)}
         >
-          <span>{tab.label}</span>
+          <span>
+            {isTestTable && tab.id === "checks"
+              ? "생성 상태"
+              : isTestTable && tab.id === "changes"
+                ? "생성 변경 정보"
+                : tab.label}
+          </span>
         </button>
       ))}
     </nav>
   );
 }
-

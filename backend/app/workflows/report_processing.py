@@ -17,6 +17,7 @@ from app.validation.calculation_workflow import CalculationValidationWorkflow
 from app.validation.language_workflow import LanguageValidationWorkflow
 from app.validation.repository import ValidationRepository
 from app.validation.workflow import validation_issue_count
+from app.services.report_update_service import ReportUpdateService
 from app.workflows.report_job_repository import ReportProcessingJobRepository
 
 
@@ -29,6 +30,9 @@ SUPPORTED_SOURCE_TYPES = {
 class ReportProcessingOptions:
     include_llm: bool = False
     refresh_profiles: bool = False
+    import_mode: str = "completed_report_new"
+    base_report_id: int | None = None
+    validate_after_import: bool = True
 
 
 class ReportProcessingError(RuntimeError):
@@ -39,7 +43,7 @@ class ReportProcessingError(RuntimeError):
 
 
 class ReportProcessingWorkflow:
-    """Import and validate one uploaded report with persistent stage state."""
+    """Import a report and optionally run the legacy automatic validation stages."""
 
     def __init__(
         self,
@@ -157,6 +161,24 @@ class ReportProcessingWorkflow:
                 import_result = self._run_stage(job_id, "import", lambda: self._import_source(job))
                 report_id = int(import_result["report_id"])
                 run_id = None
+            partial_update = bool(import_result.get("update_batch_id"))
+            changed_table_ids = [
+                int(value)
+                for value in import_result.get("changed_table_ids", [])
+            ]
+            if not options.validate_after_import:
+                result = {"import": import_result}
+                self._jobs.update(
+                    job_id,
+                    report_id=report_id,
+                    run_id=None,
+                    status="completed",
+                    current_stage="completed",
+                    result=result,
+                    completed=True,
+                    progress_percent=100,
+                )
+                return self.get_job(job_id) or result
             self._jobs.update(
                 job_id,
                 report_id=report_id,
@@ -179,10 +201,18 @@ class ReportProcessingWorkflow:
                         CalculationValidationWorkflow(self._db_path).run(
                             report_id=report_id,
                             refresh_profiles=options.refresh_profiles,
+                            table_ids=changed_table_ids if partial_update else None,
                         )
                     ),
                 )
                 run_id = int(calculation_result["run_id"])
+                if partial_update:
+                    calculation_result["reused_check_count"] = ReportUpdateService(
+                        self._db_path
+                    ).reuse_unchanged_validation(
+                        batch_id=int(import_result["update_batch_id"]),
+                        new_run_id=run_id,
+                    )
             self._jobs.update(
                 job_id,
                 report_id=report_id,
@@ -209,6 +239,7 @@ class ReportProcessingWorkflow:
                             run_id=run_id,
                             source_path=str(materialized_path),
                             include_llm=options.include_llm,
+                            table_ids=changed_table_ids if partial_update else None,
                         ),
                     )
             result = {
@@ -270,7 +301,8 @@ class ReportProcessingWorkflow:
     def get_job(self, job_id: int) -> dict[str, object] | None:
         return self._jobs.get(job_id)
 
-    def _import_source(self, job: dict[str, object]) -> dict[str, int | str]:
+    def _import_source(self, job: dict[str, object]) -> dict[str, object]:
+        options = processing_options_from_json(str(job.get("options_json") or "{}"))
         with self._materialize_source(job) as source_path:
             report = parse_report(
                 source_path,
@@ -283,8 +315,23 @@ class ReportProcessingWorkflow:
             imported = ReportImportRepository(self._db_path).replace_parsed_report(
                 report,
                 persisted_source_path=str(job["source_file_path"]),
+                force_new=True,
+                origin_kind=(
+                    "uploaded_update"
+                    if options.import_mode == "completed_report_update"
+                    else "uploaded"
+                ),
+                base_report_id=options.base_report_id,
             )
-        return {
+            update = None
+            if options.import_mode == "completed_report_update":
+                if options.base_report_id is None:
+                    raise ValueError("수정 연보 업로드에는 기준 연보가 필요합니다.")
+                update = ReportUpdateService(self._db_path).record_update(
+                    base_report_id=options.base_report_id,
+                    report_id=imported.report_id,
+                )
+        result: dict[str, object] = {
             "db_path": str(self._db_path),
             "source_file": str(job["source_file_path"]),
             "report_id": imported.report_id,
@@ -292,6 +339,19 @@ class ReportProcessingWorkflow:
             "cells": imported.cell_count,
             "validation_issues": 0,
         }
+        if update is not None:
+            result.update(
+                {
+                    "update_batch_id": update.batch_id,
+                    "changed_table_ids": update.changed_table_ids,
+                    "changed_table_count": update.changed_table_count,
+                    "unchanged_table_count": update.unchanged_table_count,
+                    "added_table_count": update.added_table_count,
+                    "deleted_table_count": update.deleted_table_count,
+                    "changed_cell_count": update.changed_cell_count,
+                }
+            )
+        return result
 
     def _materialize_source(self, job: dict[str, object]):  # type: ignore[no-untyped-def]
         storage_kind = str(job.get("source_storage") or "local")
@@ -326,12 +386,14 @@ class ReportProcessingWorkflow:
         run_id: int,
         source_path: str,
         include_llm: bool,
+        table_ids: list[int] | None = None,
     ) -> dict[str, object]:
         result = LanguageValidationWorkflow(self._db_path).run(
             report_id=report_id,
             run_id=run_id,
             source_path=source_path,
             include_llm=include_llm,
+            table_ids=table_ids,
         )
         return {**asdict(result), "status": result.status}
 
@@ -381,6 +443,13 @@ def processing_options_from_json(value: str) -> ReportProcessingOptions:
     return ReportProcessingOptions(
         include_llm=bool(payload.get("include_llm", False)),
         refresh_profiles=bool(payload.get("refresh_profiles", False)),
+        import_mode=str(payload.get("import_mode") or "completed_report_new"),
+        base_report_id=(
+            int(payload["base_report_id"])
+            if payload.get("base_report_id") is not None
+            else None
+        ),
+        validate_after_import=bool(payload.get("validate_after_import", True)),
     )
 
 

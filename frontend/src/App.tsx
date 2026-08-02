@@ -4,11 +4,13 @@ import { AppHeader, type AppSection } from "./components/AppHeader";
 import { DetailView } from "./components/DetailView";
 import { PressPage } from "./components/PressPage";
 import { ReportWorkspace } from "./components/ReportWorkspace";
+import { SourceStatisticsPage } from "./components/SourceStatisticsPage";
 import { useReport } from "./hooks/useReport";
 import { useReportImport } from "./hooks/useReportImport";
+import { useReportValidation } from "./hooks/useReportValidation";
 import { useValidationCatalog } from "./hooks/useValidationCatalog";
-import { fetchTable } from "./api/reportApi";
-import type { StatTable, TableStatus } from "./types";
+import { deleteReport, fetchTable } from "./api/reportApi";
+import type { ReportOption, StatTable, TableStatus } from "./types";
 import {
   DEFAULT_HIDDEN_VALIDATION_TYPES,
   summaryWithValidationVisibility,
@@ -31,6 +33,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FilterValue>("all");
   const [tableListScrollTop, setTableListScrollTop] = useState(0);
+  const [deleteState, setDeleteState] = useState<"idle" | "deleting">("idle");
   const [hiddenValidationTypes, setHiddenValidationTypes] = useState<Set<string>>(
     () => new Set(DEFAULT_HIDDEN_VALIDATION_TYPES),
   );
@@ -53,6 +56,33 @@ export default function App() {
     setReportRefreshKey((current) => current + 1);
   }, []);
   const { upload: handleUpload, uploadState } = useReportImport(handleImportCompleted);
+  const handleValidationCompleted = useCallback(
+    (result: {
+      issues: number;
+      reused_table_count: number;
+      reused_check_count: number;
+    }) => {
+      setSelectedTableDetail(null);
+      setDetailTable(null);
+      setDetailTableId(null);
+      selectedTableRequestRef.current = "";
+      setReportRefreshKey((current) => current + 1);
+      window.alert(
+        [
+          `검수가 완료되었습니다. 확인 대상 ${result.issues.toLocaleString()}건`,
+          result.reused_table_count > 0
+            ? `동일 표 ${result.reused_table_count.toLocaleString()}개에서 검수 결과 ${result.reused_check_count.toLocaleString()}건을 재사용했습니다.`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    },
+    [],
+  );
+  const { runValidation, validationRunState } = useReportValidation(
+    handleValidationCompleted,
+  );
 
   const rawTables = report.data?.tables ?? [];
   const validationTypes = useMemo(
@@ -155,6 +185,37 @@ export default function App() {
     });
   }
 
+  async function handleDeleteReport(reportOption: ReportOption): Promise<boolean> {
+    if (deleteState === "deleting") {
+      return false;
+    }
+    setDeleteState("deleting");
+    try {
+      const result = await deleteReport(reportOption.id);
+      setSelectedReportId("");
+      setSelectedTableId("");
+      setDetailTableId(null);
+      setDetailTable(null);
+      setSelectedTableDetail(null);
+      selectedTableRequestRef.current = "";
+      setDetailStatus("idle");
+      setFilter("all");
+      setQuery("");
+      setTableListScrollTop(0);
+      setReportRefreshKey((current) => current + 1);
+      window.alert(
+        `${result.title} 연보를 삭제했습니다.\n` +
+          `표 ${result.table_count.toLocaleString()}개와 검수 실행 ${result.validation_run_count.toLocaleString()}건이 함께 정리되었습니다.`,
+      );
+      return true;
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "연보를 삭제하지 못했습니다.");
+      return false;
+    } finally {
+      setDeleteState("idle");
+    }
+  }
+
   if (report.status === "loading") {
     return <div className="state-page">데이터를 불러오는 중입니다.</div>;
   }
@@ -172,6 +233,9 @@ export default function App() {
       <main className="app-shell">
         <AppHeader
           activeSection={activeSection}
+          availableReports={report.data?.available_reports ?? []}
+          availableTemplates={report.data?.available_templates ?? []}
+          selectedReportId={selectedReportId}
           onSectionChange={setActiveSection}
           onUpload={handleUpload}
           uploadState={uploadState}
@@ -211,7 +275,9 @@ export default function App() {
       query={query}
       filter={filter}
       validationTypes={validationTypes}
+      validationCatalog={validationCatalog}
       hiddenValidationTypes={hiddenValidationTypes}
+      validationRunState={validationRunState}
       tableListScrollTop={tableListScrollTop}
       onReportChange={handleReportChange}
       onQueryChange={setQuery}
@@ -219,6 +285,14 @@ export default function App() {
       onValidationTypeVisibilityChange={handleValidationTypeVisibility}
       onShowAllValidationTypes={() => setHiddenValidationTypes(new Set())}
       onHideAllValidationTypes={() => setHiddenValidationTypes(new Set(validationTypes))}
+      onRunValidation={(options) => {
+        const reportId = report.data?.summary.report_id;
+        return reportId
+          ? runValidation(reportId, options)
+          : Promise.resolve(false);
+      }}
+      deleteState={deleteState}
+      onDeleteReport={handleDeleteReport}
       onSelect={handleSelect}
       onOpen={handleOpen}
       onTableListScrollTopChange={setTableListScrollTop}
@@ -229,12 +303,16 @@ export default function App() {
     <main className="app-shell">
       <AppHeader
         activeSection={activeSection}
+        availableReports={report.data.available_reports}
+        availableTemplates={report.data.available_templates}
+        selectedReportId={selectedReportId}
         onSectionChange={setActiveSection}
         onUpload={handleUpload}
         uploadState={uploadState}
       />
 
       {activeSection === "annual" || activeSection === "keyStats" ? reportWorkspace : null}
+      {activeSection === "source" ? <SourceStatisticsPage /> : null}
       {activeSection === "press" ? (
         <PressPage
           insights={report.data.press_insights}

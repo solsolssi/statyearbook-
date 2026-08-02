@@ -515,7 +515,25 @@ function rootTableAsPart(table: StatTable): StatTablePart {
     changes: table.changes,
     visualizations: table.visualizations,
     metadata: table.metadata,
+    is_test_table: table.is_test_table,
+    generation_status: table.generation_status,
+    generation_status_label: table.generation_status_label,
+    generation_message: table.generation_message,
+    update_mode: table.update_mode,
+    source_dataset_title: table.source_dataset_title,
   };
+}
+
+function updateModeLabel(mode?: string) {
+  const labels: Record<string, string> = {
+    rolling_window: "최근 N개년 이동",
+    full_snapshot: "당해연도 전체 교체",
+    text_snapshot: "텍스트 전체 교체",
+    carry_forward: "이전 값 승계",
+    static: "고정 표 유지",
+    mixed: "복합 갱신",
+  };
+  return labels[mode ?? ""] ?? "정책 확인 필요";
 }
 
 function CalculationUsageList({ part, check }: { part: StatTablePart; check: DisplayCheck }) {
@@ -681,14 +699,18 @@ export function DetailView({
           </div>
         </div>
         <div className="detail-header__actions">
-          <ValidationTypeFilter
-            types={validationTypes}
-            hiddenTypes={hiddenValidationTypes}
-            align="right"
-            onVisibilityChange={onValidationTypeVisibilityChange}
-            onShowAll={onShowAllValidationTypes}
-            onHideAll={onHideAllValidationTypes}
-          />
+          {!table.is_test_table ? (
+            <ValidationTypeFilter
+              types={validationTypes}
+              hiddenTypes={hiddenValidationTypes}
+              align="right"
+              onVisibilityChange={onValidationTypeVisibilityChange}
+              onShowAll={onShowAllValidationTypes}
+              onHideAll={onHideAllValidationTypes}
+            />
+          ) : (
+            <span className="test-report-detail-badge">검수 미실행</span>
+          )}
           <StatusBadge status={table.status} label={table.status_label} />
           <button className="secondary-button detail-download" type="button">
             <Download aria-hidden="true" size={16} />
@@ -723,7 +745,7 @@ export function DetailView({
           <div className="detail-section detail-section--original">
             <div className="content-title-row">
               <div className="original-title-group">
-                <h2>원본 표</h2>
+                <h2>{table.is_test_table ? "테스트 생성 표" : "원본 표"}</h2>
                 {tableParts.length > 1 ? (
                   <div className="part-tabs" aria-label="하위 표 선택">
                     {tableParts.map((part) => (
@@ -761,10 +783,56 @@ export function DetailView({
         </aside>
 
         <section className="detail-analysis-panel" aria-label="상세 분석">
-          <DetailTabs activeTab={activeTab} onChange={setActiveTab} />
+          <DetailTabs
+            activeTab={activeTab}
+            onChange={setActiveTab}
+            isTestTable={table.is_test_table}
+          />
 
           <section className="detail-content">
             {activeTab === "checks" ? (
+              table.is_test_table ? (
+                <section className="detail-section generation-detail-panel">
+                  <div className="content-title-row">
+                    <div>
+                      <h2>{activePart.generation_status_label || table.generation_status_label}</h2>
+                      <p>이 테스트 연보에는 검수를 실행하지 않았습니다.</p>
+                    </div>
+                  </div>
+                  <p className="generation-detail-message">
+                    {activePart.generation_message || table.generation_message}
+                  </p>
+                  <dl className="generation-detail-grid">
+                    <div>
+                      <dt>갱신 방식</dt>
+                      <dd>{updateModeLabel(activePart.update_mode || table.update_mode)}</dd>
+                    </div>
+                    <div>
+                      <dt>연결 원장</dt>
+                      <dd>
+                        {activePart.source_dataset_title ||
+                          table.source_dataset_title ||
+                          "연결 확인 필요"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>표 표시</dt>
+                      <dd>
+                        {(activePart.generation_status || table.generation_status) ===
+                        "exact"
+                          ? "원장 생성값"
+                          : (activePart.generation_status || table.generation_status) ===
+                              "source_difference"
+                            ? "기존 연보 대신 원장값"
+                            : (activePart.generation_status ||
+                                  table.generation_status) === "empty"
+                              ? "사용자 결정에 따라 값이 비어 있는 표"
+                              : "현재 기준 연보 레이아웃과 문제 상태"}
+                      </dd>
+                    </div>
+                  </dl>
+                </section>
+              ) : (
               <ValidationResultPanel
                 filter={selection.filter}
                 counts={{
@@ -792,6 +860,7 @@ export function DetailView({
                 onSelect={selection.select}
                 onMove={selection.move}
               />
+              )
             ) : null}
 
             {activeTab === "changes" ? (

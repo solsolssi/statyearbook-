@@ -16,6 +16,10 @@ LASTROWID_TABLES = {
     "statistical_dataset_versions",
     "statistical_observations",
     "yearbook_table_recipes",
+    "yearbook_edition_manifest",
+    "yearbook_reproduction_runs",
+    "yearbook_reproduction_table_results",
+    "yearbook_reproduction_cell_results",
 }
 
 

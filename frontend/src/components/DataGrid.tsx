@@ -201,7 +201,12 @@ export function DataGrid({
                   key={column.key}
                   ref={shouldAttachHeaderRef ? highlightedHeaderRef : undefined}
                 >
-                  <span>{column.label}</span>
+                  <span>
+                    {column.label}
+                    {column.footnote_marker ? (
+                      <sup className="data-grid__footnote">{column.footnote_marker}</sup>
+                    ) : null}
+                  </span>
                   {column.label_en ? <small>{column.label_en}</small> : null}
                 </th>
               );

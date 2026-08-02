@@ -76,9 +76,27 @@ export function TablePreview({ table, onOpen }: TablePreviewProps) {
       <section className="quick-check">
         <div className="section-label">
           <ClipboardCheck aria-hidden="true" size={16} />
-          <span>검수 결과</span>
+          <span>{table.is_test_table ? "생성 상태" : "검수 결과"}</span>
         </div>
-        {activeIssues.length > 0 ? (
+        {table.is_test_table ? (
+          <div className={`generation-status-card is-${table.generation_status}`}>
+            <div>
+              <strong>{table.generation_status_label}</strong>
+              <span>검수 미실행</span>
+            </div>
+            <p>{table.generation_message}</p>
+            <dl>
+              <div>
+                <dt>갱신 방식</dt>
+                <dd>{updateModeLabel(table.update_mode)}</dd>
+              </div>
+              <div>
+                <dt>연결 원장</dt>
+                <dd>{table.source_dataset_title || "연결 확인 필요"}</dd>
+              </div>
+            </dl>
+          </div>
+        ) : activeIssues.length > 0 ? (
           <div className="review-list">
             {activeIssues.map((issue) => {
               const issueLocation = resolveIssueLocation(table, issue);
@@ -128,7 +146,7 @@ export function TablePreview({ table, onOpen }: TablePreviewProps) {
       <section className="preview-grid-block">
         <div className="section-label">
           <FileText aria-hidden="true" size={16} />
-          <span>원본 표 미리보기</span>
+          <span>{table.is_test_table ? "테스트 생성 표 미리보기" : "원본 표 미리보기"}</span>
         </div>
         <DataGrid columns={table.columns} rows={table.rows} theme={table.theme} maxRows={6} />
       </section>
@@ -149,4 +167,16 @@ export function TablePreview({ table, onOpen }: TablePreviewProps) {
       </div>
     </section>
   );
+}
+
+function updateModeLabel(mode?: string) {
+  const labels: Record<string, string> = {
+    rolling_window: "최근 N개년 이동",
+    full_snapshot: "당해연도 전체 교체",
+    text_snapshot: "텍스트 전체 교체",
+    carry_forward: "이전 값 승계",
+    static: "고정 표 유지",
+    mixed: "복합 갱신",
+  };
+  return labels[mode ?? ""] ?? "정책 확인 필요";
 }

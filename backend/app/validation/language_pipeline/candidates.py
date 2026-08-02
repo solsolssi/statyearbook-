@@ -30,17 +30,37 @@ class LanguageCandidateGenerator:
         report_id: int,
         run_id: int,
         source_path: str,
+        table_ids: list[int] | None = None,
+        selected_check_types: frozenset[str] | None = None,
     ) -> CandidateGenerationResult:
-        blue_candidates = append_blue_text_review_checks(
-            self._db_path,
-            report_id=report_id,
-            run_id=run_id,
-            source_path=source_path,
+        blue_enabled = (
+            selected_check_types is None
+            or "파란색 표기 확인" in selected_check_types
         )
-        source_issues = append_source_format_review_checks(
-            self._db_path,
-            report_id=report_id,
-            run_id=run_id,
+        spelling_enabled = (
+            selected_check_types is None
+            or "오탈자 검수" in selected_check_types
+        )
+        blue_candidates = (
+            append_blue_text_review_checks(
+                self._db_path,
+                report_id=report_id,
+                run_id=run_id,
+                source_path=source_path,
+                table_ids=table_ids,
+            )
+            if blue_enabled
+            else 0
+        )
+        source_issues = (
+            append_source_format_review_checks(
+                self._db_path,
+                report_id=report_id,
+                run_id=run_id,
+                table_ids=table_ids,
+            )
+            if spelling_enabled
+            else 0
         )
         with connect(self._db_path) as connection:
             init_db(connection)
@@ -48,6 +68,7 @@ class LanguageCandidateGenerator:
                 connection,
                 report_id=report_id,
                 run_id=run_id,
+                table_ids=table_ids,
             )
             refresh_run_issue_count(connection, run_id=run_id)
             connection.commit()

@@ -41,12 +41,16 @@ class LanguageValidationWorkflow:
         run_id: int,
         source_path: str,
         include_llm: bool,
+        table_ids: list[int] | None = None,
+        selected_check_types: frozenset[str] | None = None,
     ) -> LanguageValidationResult:
         result = self._pipeline.run(
             report_id=report_id,
             run_id=run_id,
             source_path=source_path,
             include_llm=include_llm,
+            table_ids=table_ids,
+            selected_check_types=selected_check_types,
         )
 
         return LanguageValidationResult(

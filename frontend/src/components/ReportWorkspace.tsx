@@ -6,6 +6,7 @@ import type {
   StatTable,
   StatTableSummary,
   TableStatus,
+  ValidationCatalogItem,
 } from "../types";
 import { ReportSummaryPanel } from "./ReportSummaryPanel";
 import { TableList } from "./TableList";
@@ -13,7 +14,11 @@ import { TablePreview } from "./TablePreview";
 
 type FilterValue = TableStatus | "all" | "has_issues";
 
-function matchesWorkspaceFilter(table: StatTableSummary, query: string, filter: FilterValue) {
+function matchesWorkspaceFilter(
+  table: StatTableSummary,
+  query: string,
+  filter: FilterValue,
+) {
   const normalizedQuery = query.trim().toLowerCase();
   const hasQueryMatch =
     !normalizedQuery ||
@@ -24,7 +29,10 @@ function matchesWorkspaceFilter(table: StatTableSummary, query: string, filter: 
   const hasFilterMatch =
     filter === "all" ||
     table.status === filter ||
-    (filter === "has_issues" && table.checks.some((check) => check.status !== "정상"));
+    (filter === "has_issues" &&
+      (table.is_test_table
+        ? table.status !== "normal"
+        : table.checks.some((check) => check.status !== "정상")));
 
   return hasQueryMatch && hasFilterMatch;
 }
@@ -40,7 +48,10 @@ interface ReportWorkspaceProps {
   query: string;
   filter: FilterValue;
   validationTypes: string[];
+  validationCatalog: ValidationCatalogItem[];
   hiddenValidationTypes: ReadonlySet<string>;
+  validationRunState: "idle" | "running" | "error";
+  deleteState: "idle" | "deleting";
   tableListScrollTop: number;
   onReportChange: (reportId: string) => void;
   onQueryChange: (query: string) => void;
@@ -48,6 +59,12 @@ interface ReportWorkspaceProps {
   onValidationTypeVisibilityChange: (type: string, visible: boolean) => void;
   onShowAllValidationTypes: () => void;
   onHideAllValidationTypes: () => void;
+  onRunValidation: (options: {
+    selectedRuleKeys: string[];
+    reuseExisting: boolean;
+    includeLlm: boolean;
+  }) => Promise<boolean>;
+  onDeleteReport: (report: ReportOption) => Promise<boolean>;
   onSelect: (tableId: string) => void;
   onOpen: (tableId: string) => void;
   onTableListScrollTopChange: (scrollTop: number) => void;
@@ -64,7 +81,10 @@ export function ReportWorkspace({
   query,
   filter,
   validationTypes,
+  validationCatalog,
   hiddenValidationTypes,
+  validationRunState,
+  deleteState,
   tableListScrollTop,
   onReportChange,
   onQueryChange,
@@ -72,6 +92,8 @@ export function ReportWorkspace({
   onValidationTypeVisibilityChange,
   onShowAllValidationTypes,
   onHideAllValidationTypes,
+  onRunValidation,
+  onDeleteReport,
   onSelect,
   onOpen,
   onTableListScrollTopChange,
@@ -110,15 +132,21 @@ export function ReportWorkspace({
           selectedReportId={selectedReportId || String(summary.report_id ?? "")}
           activeFilter={filter}
           validationTypes={validationTypes}
+          validationCatalog={validationCatalog}
           hiddenValidationTypes={hiddenValidationTypes}
+          validationRunState={validationRunState}
+          deleteState={deleteState}
           onReportChange={onReportChange}
           onFilterChange={handleSummaryFilterChange}
           onValidationTypeVisibilityChange={onValidationTypeVisibilityChange}
           onShowAllValidationTypes={onShowAllValidationTypes}
           onHideAllValidationTypes={onHideAllValidationTypes}
+          onRunValidation={onRunValidation}
+          onDeleteReport={onDeleteReport}
         />
         <TableList
           tables={filteredTables}
+          isTestReport={Boolean(summary.is_test_report)}
           activeTableId={activeId}
           query={query}
           filter={filter}

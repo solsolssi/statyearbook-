@@ -33,7 +33,7 @@ def parse_report(
     path = source_path.expanduser().resolve()
     tables = tuple(
         normalize_parsed_table(table)
-        for table in parse_tables(path, source_type=source_type)
+        for table in parse_tables(path, source_type=source_type, year=year)
     )
     report = ParsedReport(
         year=year,
@@ -47,7 +47,12 @@ def parse_report(
     return report
 
 
-def parse_tables(source_path: Path, *, source_type: str) -> list[ParsedTable]:
+def parse_tables(
+    source_path: Path,
+    *,
+    source_type: str,
+    year: int | None = None,
+) -> list[ParsedTable]:
     # Lazy imports keep the parser-neutral registry independent from each
     # format adapter and avoid package import cycles.
     if source_type == "xlsx":
@@ -57,7 +62,7 @@ def parse_tables(source_path: Path, *, source_type: str) -> list[ParsedTable]:
     if source_type == "hwpx":
         from app.ingest.hwpx_importer import parse_hwpx, prepare_hwpx_import_tables
 
-        return prepare_hwpx_import_tables(parse_hwpx(source_path))
+        return prepare_hwpx_import_tables(parse_hwpx(source_path), report_year=year)
     if source_type == "markdown":
         from app.ingest.markdown_importer import (
             parse_markdown,

@@ -12,6 +12,7 @@ from app.services.database_report_service import (
     clean_label,
     english_label,
     leading_label_column_indexes,
+    part_caption_from_raw_context,
     remove_unmatched_closing_parentheses,
 )
 from app.validation.blue_review import (
@@ -405,6 +406,15 @@ class TableDisplayParsingTests(unittest.TestCase):
             "Public Prosecutor’s Office",
         )
 
+    def test_numeric_english_phrases_and_ordinals_stay_in_english_labels(self) -> None:
+        age = "14세 이하\n14 years old and under"
+        replacement = "2차 보충\n2nd Replacement Draft"
+
+        self.assertEqual(clean_label(age), "14세 이하")
+        self.assertEqual(english_label(age), "14 years old and under")
+        self.assertEqual(clean_label(replacement), "2차 보충")
+        self.assertEqual(english_label(replacement), "2nd Replacement Draft")
+
     def test_bracketed_type_qualifiers_are_preserved_in_english_headers(self) -> None:
         type_a = "출자기관\nGovernment-funded Organizations\n[Type A]"
         type_b = "출연기관\nGovernment-funded Organizations\n[Type B]"
@@ -499,7 +509,7 @@ class TableDisplayParsingTests(unittest.TestCase):
 
         self.assertEqual(leading_label_column_indexes(matrix, 3), [0])
 
-    def test_public_enterprise_header_shift_is_corrected_for_display(self) -> None:
+    def test_public_enterprise_headers_follow_the_source_without_invented_columns(self) -> None:
         matrix = [
             ["구분", "계", "직영기업 소계", "상수도", "하수도", "공영개발", "운송", "공사·공단 소계", "도시철도", "도시개발", "시설·환경", "기타"],
             ["계", "422", "256", "123", "105", "27", "1", "-", "166", "6", "16", "88"],
@@ -507,9 +517,76 @@ class TableDisplayParsingTests(unittest.TestCase):
 
         columns = build_columns(matrix, 1, [0], table_code="5-1-9-1")
 
-        self.assertEqual(columns[7].label, "직영기업 / 지역개발기금")
-        self.assertEqual(columns[8].label, "공사·공단 등 / 소계")
-        self.assertEqual(columns[11].label, "공사·공단 등 / 시설·환경·경륜 등")
+        self.assertEqual(columns[7].label, "공사·공단 소계")
+        self.assertEqual(columns[8].label, "도시철도")
+        self.assertEqual(columns[11].label, "기타")
+
+    def test_unit_suffixed_measure_columns_are_not_collapsed(self) -> None:
+        matrix = [
+            ["구분", "건 수\nNumber of Properties", "면 적\nAreas", "금 액\nAmount"],
+            ["토지", "5,473,054필지", "8,967,402,344㎡", "546,771"],
+            ["건물", "216,750동", "163,526,282㎡", "157,377"],
+        ]
+
+        label_columns = leading_label_column_indexes(matrix, 1)
+        columns = build_columns(matrix, 1, label_columns)
+
+        self.assertEqual(label_columns, [0])
+        self.assertEqual([column.source_col_indexes for column in columns], [[0], [1], [2], [3]])
+
+    def test_sparse_numeric_county_column_is_not_collapsed_into_region(self) -> None:
+        matrix = [
+            ["지역\nRegion", "도시\nCity", "군\nCounty", "구\nDistrict"],
+            ["서울", "", "-", "25"],
+            ["부산", "", "1", "15"],
+            ["대구", "", "2", "7"],
+            ["광주", "", "-", "5"],
+        ]
+
+        self.assertEqual(leading_label_column_indexes(matrix, 1), [0, 1])
+
+    def test_region_and_type_are_parallel_columns(self) -> None:
+        matrix = [
+            ["지역\nRegion", "유형\nType", "수요량\nDemand"],
+            ["횡성군", "농업", "1,050"],
+            ["삼척시", "생활", "800"],
+        ]
+
+        self.assertEqual(leading_label_column_indexes(matrix, 1), [0])
+
+    def test_sparse_property_and_casualty_columns_are_measures(self) -> None:
+        matrix = [
+            ["지역\nRegion", "우박\n재산\nProperty", "우박\n인명\nCasualty"],
+            ["서울", "-", "-"],
+            ["부산", "-", "1"],
+        ]
+
+        self.assertEqual(leading_label_column_indexes(matrix, 1), [0])
+
+    def test_ratio_formula_stays_with_korean_header_not_english_translation(self) -> None:
+        raw = "국가재정\nA/(A+B)\nNational Finance"
+
+        self.assertEqual(clean_label(raw), "국가재정 A/(A+B)")
+        self.assertEqual(english_label(raw), "National Finance")
+
+    def test_header_footnote_is_exposed_on_column_definition(self) -> None:
+        columns = build_columns(
+            [["연도", "활용처\nUses"], ["2025", "141"]],
+            1,
+            [0],
+            footnote_matrix=[["", "1)"], ["", ""]],
+        )
+
+        self.assertEqual(columns[1].label, "활용처")
+        self.assertEqual(columns[1].footnote_marker, "1)")
+
+    def test_subtable_caption_stops_before_following_header_rows(self) -> None:
+        self.assertEqual(
+            part_caption_from_raw_context(
+                "▫장애인 고용 비율\nRatio of the Disabled\n연도\nYear\n구분\nClassification"
+            ),
+            ("장애인 고용 비율", "Ratio of the Disabled"),
+        )
 
     def test_only_unmatched_closing_parentheses_are_removed(self) -> None:
         self.assertEqual(remove_unmatched_closing_parentheses("Number of Persons)"), "Number of Persons")

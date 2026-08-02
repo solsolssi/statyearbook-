@@ -25,25 +25,36 @@ def append_source_format_review_checks(
     *,
     report_id: int,
     run_id: int,
+    table_ids: list[int] | None = None,
 ) -> int:
     """Store deterministic LLM candidates without changing source values."""
 
     with connect(db_path) as connection:
         init_db(connection)
+        if table_ids is not None and not table_ids:
+            return 0
+        id_filter = (
+            f" AND id IN ({','.join('?' for _ in table_ids)})"
+            if table_ids is not None
+            else ""
+        )
+        params: list[object] = [report_id, *(table_ids or [])]
         tables = connection.execute(
-            "SELECT id, unit FROM stat_tables WHERE report_id = ? ORDER BY table_order, id",
-            (report_id,),
+            f"SELECT id, unit FROM stat_tables WHERE report_id = ?{id_filter} ORDER BY table_order, id",
+            params,
         ).fetchall()
+        cell_filter = id_filter.replace("id IN", "c.table_id IN")
         cells = connection.execute(
-            """
+            f"""
             SELECT c.table_id, c.row_index, c.col_index, c.text_value,
                    c.is_header, c.footnote_marker
             FROM stat_table_cells c
             JOIN stat_tables st ON st.id = c.table_id
             WHERE st.report_id = ?
+              {cell_filter}
             ORDER BY c.table_id, c.row_index, c.col_index
             """,
-            (report_id,),
+            params,
         ).fetchall()
 
         table_units = {int(row["id"]): row["unit"] for row in tables}

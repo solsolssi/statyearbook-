@@ -49,17 +49,28 @@ class ValidationRepository:
                 (report_id,),
             ).fetchone()
 
-    def load_tables(self, report_id: int) -> list[ValidationTable]:
+    def load_tables(
+        self,
+        report_id: int,
+        table_ids: list[int] | None = None,
+    ) -> list[ValidationTable]:
         with connect(self._db_path) as connection:
             init_db(connection)
+            filters = ["report_id = ?"]
+            params: list[object] = [report_id]
+            if table_ids is not None:
+                if not table_ids:
+                    return []
+                filters.append(f"id IN ({','.join('?' for _ in table_ids)})")
+                params.extend(table_ids)
             table_rows = connection.execute(
-                """
+                f"""
                 SELECT id, report_id, code, title, unit, base_date, source, note
                 FROM stat_tables
-                WHERE report_id = ?
+                WHERE {' AND '.join(filters)}
                 ORDER BY table_order, id
                 """,
-                (report_id,),
+                params,
             ).fetchall()
 
             return [self._load_table(connection, table_row) for table_row in table_rows]
