@@ -85,6 +85,7 @@ from app.validation.translation_glossary import (
     normalize_target,
     parse_glossary_context,
 )
+from app.validation.report_lineage import report_lineage_ids
 
 
 DEFAULT_TRANSLATION_MODEL = "gpt-5.4-mini"
@@ -308,7 +309,7 @@ def append_llm_translation_reviews(
                 blue_only=blue_only,
                 standard_language_only=standard_language_only,
             )
-            if pending == 0 and standard_language_only:
+            if pending == 0:
                 with connection:
                     reconcile_standard_language_findings(
                         connection,
@@ -525,7 +526,14 @@ def reconcile_standard_language_findings(
             str(row["review_type"]) == TRANSLATION_CHECK_TYPE
             and signature in spelling_corrections
         )
-        if not duplicated_spelling and not stored_language_finding_is_non_actionable(item, decision):
+        if (
+            not duplicated_spelling
+            and not stored_language_finding_is_non_actionable(item, decision)
+            and not is_presentation_spacing_or_hyphen(
+                str(row["current_value"]),
+                str(decision.get("expected_value") or ""),
+            )
+        ):
             continue
 
         review_type = str(row["review_type"])
@@ -546,12 +554,6 @@ def reconcile_standard_language_findings(
             "UPDATE linguistic_review_candidates SET review_result_json = ? WHERE id = ?",
             (serialized, int(row["id"])),
         )
-        fingerprint = str(row["review_fingerprint"] or "")
-        if fingerprint:
-            connection.execute(
-                "UPDATE linguistic_review_cache SET decision_json = ? WHERE fingerprint = ?",
-                (serialized, fingerprint),
-            )
         rule_id = rule_id_for(review_type)
         update_validation_result_outcome(
             connection,
@@ -958,6 +960,17 @@ def recover_incomplete_bilingual_decision(
     current = normalize_review_text(item.current_value)
     if str(raw.get("status") or "").strip() == "정상":
         recovered = dict(raw)
+        if blue_item_needs_english_replacement(item):
+            recovered.update(
+                {
+                    "status": "확인 필요",
+                    "issue_type": BLUE_REVIEW_TYPE,
+                    "expected_value": current,
+                    "difference": "영문 번역안 생성 실패",
+                    "detail": "국문만 있는 파란색 표기에서 영문 번역안이 생성되지 않았습니다.",
+                }
+            )
+            return recovered
         recovered["expected_value"] = "__UNCHANGED__"
         return recovered
     if not expected or not re.search(r"[가-힣]", current):
@@ -1419,16 +1432,11 @@ def review_decision_needs_retry(raw: dict[str, Any], item: SourceReviewItem) -> 
     issue_type = str(raw.get("issue_type") or "").strip()
     status = str(raw.get("status") or "").strip()
     current = normalize_review_text(item.current_value)
-    requires_english_replacement = bool(
-        (
-            item.requested_review_type == BLUE_REVIEW_TYPE
-            or (item.candidate_kind == "blue_text" and not item.requested_review_type)
-        )
-        and re.search(r"[가-힣]", current)
-        and not re.search(r"[A-Za-z]", current)
-    )
+    requires_english_replacement = blue_item_needs_english_replacement(item)
     if status == "정상" and not requires_english_replacement:
         return False
+    if requires_english_replacement and expected == "__UNCHANGED__":
+        return True
     if decision_should_be_normal(raw, item):
         return False
 
@@ -1439,11 +1447,7 @@ def review_decision_needs_retry(raw: dict[str, Any], item: SourceReviewItem) -> 
     translation_requested = (
         item.requested_review_type == TRANSLATION_CHECK_TYPE
         or (item.candidate_kind == "blue_text" and not item.requested_review_type)
-        or (
-            item.requested_review_type == BLUE_REVIEW_TYPE
-            and re.search(r"[가-힣]", current) is not None
-            and re.search(r"[A-Za-z]", current) is None
-        )
+        or blue_item_needs_english_replacement(item)
     )
     if translation_requested and is_temporal_notation(current):
         return False
@@ -1453,7 +1457,7 @@ def review_decision_needs_retry(raw: dict[str, Any], item: SourceReviewItem) -> 
         translation_requested
         and re.search(r"[가-힣]", current)
         and expected == current
-        and not re.search(r"[A-Za-z]", current)
+        and blue_item_needs_english_replacement(item)
     ):
         return True
     if status == "정상" or issue_type != "번역 검수" or not re.search(r"[가-힣]", current):
@@ -1492,6 +1496,12 @@ def decision_should_be_normal(raw: dict[str, Any], item: SourceReviewItem) -> bo
     expected = normalize_review_text(str(raw.get("expected_value") or ""))
     review_type = item.requested_review_type or str(raw.get("issue_type") or "")
 
+    if review_type in {SPELLING_CHECK_TYPE, TRANSLATION_CHECK_TYPE} and is_presentation_spacing_or_hyphen(
+        current,
+        expected,
+    ):
+        return True
+
     if review_type == SPELLING_CHECK_TYPE:
         return (
             defect_kind not in SPELLING_DEFECT_KINDS
@@ -1504,6 +1514,68 @@ def decision_should_be_normal(raw: dict[str, Any], item: SourceReviewItem) -> bo
             or not is_material_translation_correction(current, expected, raw)
         )
     return False
+
+
+def is_presentation_spacing_or_hyphen(current: str, expected: str) -> bool:
+    """Ignore HWPX layout artifacts rather than presenting them as typos.
+
+    HWPX cells can split an English word at a visual line break
+    (``Classifi-cation``) or space each Korean syllable for visual balance
+    (``지 방``, ``소 방 직``). Neither is an editorial spelling finding.
+    """
+
+    current = normalize_review_text(current)
+    expected = normalize_review_text(expected)
+    if not current or not expected or current == expected:
+        return False
+
+    compact_hyphen = re.sub(r"(?<=[A-Za-z])-+(?=[A-Za-z])", "", current)
+    if compact_hyphen != current and compact_hyphen.casefold() == expected.casefold():
+        return True
+
+    current_korean = "".join(re.findall(r"[가-힣]", current))
+    expected_korean = "".join(re.findall(r"[가-힣]", expected))
+    current_english = " ".join(
+        re.findall(r"[A-Za-z]+", re.sub(r"(?<=[A-Za-z])-+(?=[A-Za-z])", "", current))
+    ).casefold()
+    expected_english = " ".join(
+        re.findall(r"[A-Za-z]+", re.sub(r"(?<=[A-Za-z])-+(?=[A-Za-z])", "", expected))
+    ).casefold()
+    korean_chunks = re.findall(r"[가-힣]+", current)
+    has_syllable_spacing = bool(
+        re.search(r"(?<=[가-힣])\s+(?=[가-힣])", current)
+        and len(korean_chunks) >= 2
+        and all(len(chunk) == 1 for chunk in korean_chunks)
+    )
+    has_partial_syllable_spacing = bool(
+        re.search(r"(?<=[가-힣])\s+[가-힣]\s+[가-힣](?=\s|$|[A-Za-z])", current)
+    )
+    has_internal_english_hyphen = compact_hyphen != current
+    same_words_despite_layout = (
+        current_korean == expected_korean
+        and current_english == expected_english
+    )
+    return same_words_despite_layout and (
+        has_internal_english_hyphen
+        or has_syllable_spacing
+        or has_partial_syllable_spacing
+    )
+
+
+def blue_item_needs_english_replacement(item: SourceReviewItem) -> bool:
+    """A unit such as ``ha`` is not an English translation of Korean text."""
+
+    return bool(
+        (
+            item.requested_review_type == BLUE_REVIEW_TYPE
+            or (
+                item.candidate_kind.startswith("blue_text")
+                and not item.requested_review_type
+            )
+        )
+        and re.search(r"[가-힣]", normalize_review_text(item.current_value))
+        and not translation_context_has_meaningful_english(item)
+    )
 
 
 def is_plausible_spelling_correction(
@@ -1985,24 +2057,48 @@ def reuse_cached_linguistic_reviews(
     reviewed_model: str,
     standard_language_only: bool = False,
 ) -> tuple[int, int, int]:
+    """Reuse reviewed decisions from this report's explicit revision lineage.
+
+    The old database-wide cache made a result from any report look like a
+    reusable answer for another report with the same text.  Review memory now
+    lives in the source report's own candidates and is only visible to a child
+    report that selected it as a base report.
+    """
     items = load_linguistic_review_items(connection, run_id)
     if standard_language_only:
         items = [item for item in items if is_standard_language_item(item)]
-    cache_rows = connection.execute(
-        """
-        SELECT fingerprint, decision_json
-        FROM linguistic_review_cache
-        WHERE reviewed_model = ?
+    run_row = connection.execute(
+        "SELECT report_id FROM validation_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+    if run_row is None:
+        return (0, 0, 0)
+    lineage_ids = report_lineage_ids(connection, int(run_row["report_id"]))
+    if not lineage_ids:
+        return (0, 0, 0)
+    placeholders = ",".join("?" for _ in lineage_ids)
+    decision_rows = connection.execute(
+        f"""
+        SELECT candidate.review_fingerprint, candidate.review_result_json
+        FROM linguistic_review_candidates candidate
+        JOIN validation_runs source_run ON source_run.id = candidate.run_id
+        WHERE source_run.report_id IN ({placeholders})
+          AND candidate.status = 'reviewed'
+          AND candidate.reviewed_model = ?
+          AND candidate.review_fingerprint <> ''
+          AND candidate.review_result_json <> ''
+        ORDER BY source_run.completed_at DESC, source_run.id DESC, candidate.id DESC
         """,
-        (reviewed_model,),
+        (*lineage_ids, reviewed_model),
     ).fetchall()
-    cached_decisions = {
-        str(row["fingerprint"]): str(row["decision_json"])
-        for row in cache_rows
-    }
+    cached_decisions: dict[str, str] = {}
+    for row in decision_rows:
+        cached_decisions.setdefault(
+            str(row["review_fingerprint"]),
+            str(row["review_result_json"]),
+        )
     cached_items: list[SourceReviewItem] = []
     decisions: list[dict[str, Any]] = []
-    fingerprints: list[str] = []
     for item in items:
         fingerprint = linguistic_review_fingerprint(item, reviewed_model=reviewed_model)
         decision_json = cached_decisions.get(fingerprint)
@@ -2016,7 +2112,6 @@ def reuse_cached_linguistic_reviews(
             continue
         cached_items.append(item)
         decisions.append({"id": item.issue_id, **decision})
-        fingerprints.append(fingerprint)
 
     if not decisions:
         return (0, 0, 0)
@@ -2026,15 +2121,7 @@ def reuse_cached_linguistic_reviews(
         cached_items,
         decisions,
         reviewed_model=reviewed_model,
-        resolution_source="cache",
-    )
-    connection.executemany(
-        """
-        UPDATE linguistic_review_cache
-        SET use_count = use_count + 1, last_used_at = CURRENT_TIMESTAMP
-        WHERE fingerprint = ?
-        """,
-        [(fingerprint,) for fingerprint in fingerprints],
+        resolution_source="lineage_reuse",
     )
     return counts
 
@@ -2151,13 +2238,9 @@ def save_llm_review_decisions(
                 decision=decision,
                 reviewed_model=reviewed_model,
             )
-        if resolution_source == "llm" and item.source_record_type == "candidate":
-            store_linguistic_review_cache(
-                connection,
-                item,
-                decision=decision,
-                reviewed_model=reviewed_model,
-            )
+        # The reviewed candidate itself is the reusable record.  Do not append
+        # its decision to a database-wide cache: unrelated uploads must not
+        # inherit a prior report's LLM judgement.
 
     return inserted_issues, inserted_checks, processed
 
@@ -2204,6 +2287,16 @@ def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str,
         issue_type = item.requested_review_type
 
     expected = normalize_review_text(str(raw.get("expected_value") or ""))
+    if expected == "__UNCHANGED__" and blue_item_needs_english_replacement(item):
+        # The sentinel is an internal no-change marker, not an English
+        # translation. It must never become a visible translation proposal.
+        status = "확인 필요"
+        expected = normalize_review_text(item.current_value)
+        raw = {
+            **raw,
+            "difference": "영문 번역안 생성 실패",
+            "detail": "국문만 있는 파란색 표기에서 영문 번역안이 생성되지 않았습니다.",
+        }
     if decision_should_be_normal(raw, item):
         status = "정상"
         expected = normalize_review_text(item.current_value)
@@ -2269,7 +2362,7 @@ def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str,
     generated_translation = (
         issue_type in {TRANSLATION_CHECK_TYPE, BLUE_REVIEW_TYPE}
         and re.search(r"[가-힣]", item.current_value) is not None
-        and re.search(r"[A-Za-z]", item.current_value) is None
+        and not translation_context_has_meaningful_english(item)
         and (
             re.search(r"[A-Za-z]", expected) is not None
             or (
@@ -2436,12 +2529,6 @@ def reconcile_non_actionable_bilingual_reviews(
             "UPDATE linguistic_review_candidates SET review_result_json = ? WHERE id = ?",
             (serialized, int(row["id"])),
         )
-        fingerprint = str(row["review_fingerprint"] or "")
-        if fingerprint:
-            connection.execute(
-                "UPDATE linguistic_review_cache SET decision_json = ? WHERE fingerprint = ?",
-                (serialized, fingerprint),
-            )
         candidate_count += 1
 
     language_rule_ids = (
@@ -2578,56 +2665,6 @@ def mark_linguistic_candidate_reviewed(
             linguistic_review_fingerprint(item, reviewed_model=reviewed_model),
             resolution_source,
             item.source_record_id,
-        ),
-    )
-
-
-def store_linguistic_review_cache(
-    connection: DatabaseConnection,
-    item: SourceReviewItem,
-    *,
-    decision: dict[str, str],
-    reviewed_model: str,
-) -> None:
-    fingerprint = linguistic_review_fingerprint(item, reviewed_model=reviewed_model)
-    glossary_fingerprint = hashlib.sha256(
-        json.dumps(item.glossary_matches or [], ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    context_signature = hashlib.sha256(
-        json.dumps(
-            {
-                "title": item.table_title,
-                "title_en": item.table_title_en,
-                "location": normalized_location_kind(item.location),
-                "row": item.row_label,
-                "column": item.column_label,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
-    connection.execute(
-        """
-        INSERT INTO linguistic_review_cache (
-            fingerprint, review_type, current_value, context_signature,
-            prompt_version, reviewed_model, glossary_fingerprint,
-            decision_json, use_count
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
-        ON CONFLICT(fingerprint) DO UPDATE SET
-            decision_json = excluded.decision_json,
-            glossary_fingerprint = excluded.glossary_fingerprint,
-            last_used_at = CURRENT_TIMESTAMP
-        """,
-        (
-            fingerprint,
-            item.requested_review_type or item.candidate_kind,
-            item.current_value,
-            context_signature,
-            item.prompt_version or LINGUISTIC_PROMPT_VERSION,
-            reviewed_model,
-            glossary_fingerprint,
-            json.dumps(decision, ensure_ascii=False),
         ),
     )
 

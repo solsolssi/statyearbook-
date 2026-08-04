@@ -83,7 +83,7 @@ def append_blue_text_review_checks(
             if not table_ids:
                 return 0
             allowed_codes = {
-                table_code_for_row(row)
+                normalize_table_code(table_code_for_row(row))
                 for row in connection.execute(
                     f"""
                     SELECT code FROM stat_tables
@@ -191,10 +191,19 @@ def synchronize_blue_review_checks(db_path: Path, *, run_id: int) -> int:
             grouped.setdefault(key, []).append(row)
 
         with connection:
+            # The language-review worker writes its immediate result with the
+            # LLM rule id, while this function writes the user-facing blue
+            # review result. Clear all three blue display variants first so a
+            # resumed review cannot leave both the old "대기" row and the new
+            # LLM row for the same blue mark.
             delete_validation_results(
                 connection,
                 run_id=run_id,
-                rule_ids=(BLUE_REVIEW_RULE_ID, BLUE_REVIEW_PREVIEW_RULE_ID),
+                rule_ids=(
+                    BLUE_REVIEW_RULE_ID,
+                    BLUE_REVIEW_PREVIEW_RULE_ID,
+                    BLUE_LLM_RULE_ID,
+                ),
             )
 
             inserted_groups = 0
@@ -954,6 +963,8 @@ def classify_blue_review_value(current_value: str) -> tuple[str, str, str]:
         return "blue_text_bilingual", pair[0], pair[1]
     if re.search(r"[가-힣]", current_value):
         return "blue_text_korean_translation", current_value, ""
+    if is_blue_temporal_notation(current_value):
+        return "blue_text_temporal", "", current_value
     return "blue_text_english", "", current_value
 
 
@@ -1019,7 +1030,12 @@ def repair_blue_candidate_classifications(connection: DatabaseConnection, run_id
 
 def should_skip_blue_review(location: str, current_value: str) -> bool:
     value = normalize_review_text(current_value)
-    if not value or not re.search(r"[가-힣A-Za-z]", value):
+    if not value:
+        return True
+    # A blue date/period is an explicit source-review mark as well. Keep it
+    # even though it has no Korean or English letters; ordinary numbers and
+    # percentages remain excluded below.
+    if not re.search(r"[가-힣A-Za-z]", value) and not is_blue_temporal_notation(value):
         return True
     if normalize_review_text(location) in BLUE_METADATA_LOCATIONS:
         return True
@@ -1033,6 +1049,19 @@ def should_skip_blue_review(location: str, current_value: str) -> bool:
     ):
         return True
     return False
+
+
+def is_blue_temporal_notation(value: str) -> bool:
+    """Recognize date-only blue marks without admitting ordinary numeric data."""
+
+    normalized = normalize_review_text(value)
+    return bool(
+        re.fullmatch(
+            r"[('‘’]?\d{2,4}\.\d{1,2}\.\d{1,2}\."
+            r"(?:[~～\-–—]\d{1,2}\.)?[)'‘’]?",
+            normalized,
+        )
+    )
 
 
 def blue_review_reason(*, has_korean: bool, has_english: bool) -> str:

@@ -42,6 +42,16 @@ HANGUL_RE = re.compile(r"[가-힣]")
 LATIN_RE = re.compile(r"[A-Za-z]")
 LATIN_WORD_RE = re.compile(r"[A-Za-z]{2,}")
 LATIN_TERM_RE = re.compile(r"[A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*)*")
+KOREAN_TEMPORAL_TERM_RE = re.compile(
+    r"(?:\(\d+차\)\s*)?[’'‘]\d{2}\.\d{1,2}\.\d{1,2}\.?"
+    r"(?:~\d{1,2}\.?)?(?:\s*\(\d+차\))?"
+)
+ENGLISH_TEMPORAL_TERM_RE = re.compile(
+    r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?"
+    r"\s+\d{1,2}(?:\s*[–-]\s*\d{1,2})?,?\s+\d{4}"
+    r"(?:\s*\(#\d+\))?",
+    re.IGNORECASE,
+)
 MAX_REVIEW_CHARS = 1400
 EXCLUDED_METADATA_REVIEW_LOCATIONS = frozenset({"분야", "단위", "기준일", "주석", "출처"})
 
@@ -270,9 +280,7 @@ def hydrate_pending_glossary_context(
             current_value,
             current_report_id=report_id,
         )
-        pair = extract_bilingual_pair(current_value)
-        korean_text = pair[0] if pair else korean_only_text(current_value)
-        english_text = pair[1] if pair else english_only_text(current_value)
+        korean_text, english_text = review_language_parts(current_value)
         connection.execute(
             """
             UPDATE linguistic_review_candidates
@@ -320,19 +328,10 @@ def review_text_value(
 
     pair = extract_bilingual_pair(current_value)
     mixed_pair = mixed_bilingual_context(current_value) if pair is None else None
-    korean_text = (
-        pair[0]
-        if pair
-        else mixed_pair[0]
-        if mixed_pair
-        else korean_only_text(current_value)
-    )
-    english_text = (
-        pair[1]
-        if pair
-        else mixed_pair[1]
-        if mixed_pair
-        else english_only_text(current_value)
+    korean_text, english_text = review_language_parts(
+        current_value,
+        pair=pair,
+        mixed_pair=mixed_pair,
     )
     entries = glossary_entries_for_text(
         connection,
@@ -487,6 +486,9 @@ def mixed_bilingual_context(value: str) -> tuple[str, str] | None:
 
     if not HANGUL_RE.search(value):
         return None
+    temporal_pair = temporal_bilingual_context(value)
+    if temporal_pair is not None:
+        return temporal_pair
     korean_parts = [
         normalize_review_text(part)
         for part in re.findall(r"[가-힣][가-힣\s·/()~%+-]*", value)
@@ -513,6 +515,39 @@ def mixed_bilingual_context(value: str) -> tuple[str, str] | None:
         token in NON_TRANSLATION_LATIN_TOKENS or len(token) == 1
         for token in latin_tokens
     ):
+        return None
+    return " / ".join(korean_parts), " / ".join(english_parts)
+
+
+def review_language_parts(
+    value: str,
+    *,
+    pair: tuple[str, str] | None = None,
+    mixed_pair: tuple[str, str] | None = None,
+) -> tuple[str, str]:
+    pair = pair if pair is not None else extract_bilingual_pair(value)
+    if pair is not None:
+        return pair
+    mixed_pair = mixed_pair if mixed_pair is not None else mixed_bilingual_context(value)
+    if mixed_pair is not None:
+        return mixed_pair
+    return korean_only_text(value), english_only_text(value)
+
+
+def temporal_bilingual_context(value: str) -> tuple[str, str] | None:
+    """Keep date/round markers intact instead of reducing them to ``차)``."""
+
+    korean_parts = [
+        normalize_review_text(part)
+        for part in KOREAN_TEMPORAL_TERM_RE.findall(value)
+        if normalize_review_text(part)
+    ]
+    english_parts = [
+        normalize_review_text(part)
+        for part in ENGLISH_TEMPORAL_TERM_RE.findall(value)
+        if normalize_review_text(part)
+    ]
+    if not korean_parts or not english_parts:
         return None
     return " / ".join(korean_parts), " / ".join(english_parts)
 

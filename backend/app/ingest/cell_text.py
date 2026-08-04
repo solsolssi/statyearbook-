@@ -7,6 +7,7 @@ import re
 YEAR_FOOTNOTE_CAPTURE_RE = re.compile(r"^(\d{4})\s*(\d+\))$")
 LEADING_ZERO_THOUSANDS_RE = re.compile(r"^([+-]?)0,(\d{3})(\.\d+)?$")
 FOOTNOTE_DEFINITION_RE = re.compile(r"(?:^|\s)#?\s*주\s*(\d+)\)")
+INLINE_FOOTNOTE_RE = re.compile(r"(?<=[가-힣A-Za-z)])(\d+\))(?=\s*(?:$|\(|[A-Z]))")
 
 
 def normalize_cell_text(value: str) -> str:
@@ -32,12 +33,24 @@ def split_cell_text(
     found_markers: list[str] = []
     for line_index, line in enumerate(lines):
         stripped_line = line.rstrip()
-        if stripped_line.count("(") > 0 and stripped_line.count("(") == stripped_line.count(")"):
-            continue
         for marker in markers:
-            if not marker or not stripped_line.endswith(marker):
+            if not marker:
                 continue
-            body_text = stripped_line[: -len(marker)].rstrip()
+            marker_match = re.search(
+                rf"{re.escape(marker)}(?=\s*(?:$|\(|[A-Z]))",
+                stripped_line,
+            )
+            if marker_match is None:
+                continue
+            prefix = stripped_line[: marker_match.start()]
+            if prefix.count("(") > prefix.count(")"):
+                # The suffix closes a numeric/text parenthesis such as
+                # ``47.3(42.4)``; it is data, not a footnote marker.
+                continue
+            body_text = (
+                prefix
+                + stripped_line[marker_match.end() :]
+            ).strip()
             if not body_text:
                 continue
             lines[line_index] = body_text
@@ -51,6 +64,12 @@ def split_cell_text(
     if year_footnote:
         return year_footnote.group(1), year_footnote.group(2)
     return normalize_numeric_display_text(cleaned), ""
+
+
+def inline_footnote_markers(value: str) -> set[str]:
+    """Find footnote-like markers in header text when rich style is absent."""
+
+    return {match.group(1) for match in INLINE_FOOTNOTE_RE.finditer(value)}
 
 
 def normalize_numeric_display_text(value: str) -> str:

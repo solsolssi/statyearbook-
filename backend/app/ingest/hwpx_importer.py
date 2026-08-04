@@ -8,13 +8,20 @@ from typing import Iterable
 import xml.etree.ElementTree as ET
 from zipfile import ZipFile
 
-from app.core.contact_metadata import clean_source_text
+from app.core.contact_metadata import clean_source_text, is_contact_source_text
 from app.db.connection import DB_PATH
 from app.core.numeric_text import parse_numeric_value
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
 from app.ingest.cell_text import footnote_markers_from_texts, split_cell_text
 from app.ingest.repository import ImportedTable, ReportImportRepository
 from app.ingest.table_repairs import repair_region_split_rows
+from app.ingest.table_shape import wide_row_oriented_text_table_header_count
+from app.ingest.text_canonicalization import (
+    ENGLISH_ONLY_RE,
+    ENGLISH_TITLE_RE,
+    separate_bilingual_lines,
+    split_bilingual,
+)
 from app.validation.models import restore_hyphenated_line_breaks
 
 
@@ -29,11 +36,6 @@ TABLE_CODE_RE = re.compile(
     rf"|{APPENDIX_TABLE_CODE_PATTERN}(?![-\d])"
     rf")"
 )
-ENGLISH_TITLE_CHARS = r"A-Za-z0-9 ,:&/().%\[\]·･+=\-'’‘′ʼ~"
-ENGLISH_TITLE_RE = re.compile(
-    rf"(?<![A-Za-z0-9])([A-Za-z][{ENGLISH_TITLE_CHARS}]{{2,}}|\d+-[A-Za-z][{ENGLISH_TITLE_CHARS}]{{2,}})$"
-)
-ENGLISH_ONLY_RE = re.compile(rf"(?=[{ENGLISH_TITLE_CHARS}]*[A-Za-z])[{ENGLISH_TITLE_CHARS}]+")
 KOREAN_HEADER_LABELS = {
     "구분",
     "분류",
@@ -188,38 +190,6 @@ def element_text(element: ET.Element) -> str:
     if visible:
         return "\n".join(visible)
     return join_text_fragments(visible_text_fragments(element))
-
-
-def split_bilingual(text: str) -> tuple[str, str]:
-    cleaned = re.sub(r"\s+", " ", text).replace("\\~", "~").replace("᭼", "･").strip(" :;?")
-    if not cleaned:
-        return "", ""
-
-    if ENGLISH_ONLY_RE.fullmatch(cleaned):
-        return "", cleaned
-
-    match = ENGLISH_TITLE_RE.search(cleaned)
-    if match and match.start() > 0:
-        prefix = cleaned[: match.start()]
-        if prefix.endswith("(") and re.fullmatch(
-            r"(?:[A-Za-z]/[A-Za-z]|[A-Za-z](?:[+\-][A-Za-z])+|[A-Za-z]=[A-Za-z](?:[+\-][A-Za-z])+)\)",
-            match.group(1),
-        ):
-            return cleaned, ""
-        return cleaned[: match.start()].strip(), match.group(1).strip()
-
-    return cleaned, ""
-
-
-def separate_bilingual_lines(text: str) -> str:
-    separated: list[str] = []
-    for line in text.splitlines():
-        korean, english = split_bilingual(line)
-        if korean and english:
-            separated.extend((korean, english))
-        elif korean or english:
-            separated.append(korean or english)
-    return "\n".join(separated)
 
 
 def normalize_table_code(value: str) -> str:
@@ -395,6 +365,7 @@ def normalize_table_sources(code: str, sources: list[str]) -> list[str]:
 def parse_hwpx(source_path: Path) -> list[LogicalTable]:
     tables: list[LogicalTable] = []
     current: LogicalTable | None = None
+    pending_subtable_caption = ""
     title_context_by_code: dict[str, tuple[str, str]] = {}
 
     with ZipFile(source_path) as archive:
@@ -421,6 +392,7 @@ def parse_hwpx(source_path: Path) -> list[LogicalTable]:
                         title = parse_title_block(text)
 
                         if title and is_title_table(matrix, text):
+                            pending_subtable_caption = ""
                             section_title, section_title_en = resolve_title_section(
                                 title,
                                 title_context_by_code,
@@ -443,14 +415,18 @@ def parse_hwpx(source_path: Path) -> list[LogicalTable]:
                                         current.sources,
                                         " ".join(cell.strip() for cell in row if cell.strip()),
                                     )
+                            part_raw_text = text
+                            if pending_subtable_caption:
+                                part_raw_text = f"▫{pending_subtable_caption}\n{text}"
                             current.parts.append(
                                 TablePart(
                                     section_file=section_name,
                                     matrix=matrix,
-                                    raw_text=text,
+                                    raw_text=part_raw_text,
                                     footnote_matrix=footnote_matrix,
                                 )
                             )
+                            pending_subtable_caption = ""
 
                     table_depth -= 1
                     element.clear()
@@ -459,7 +435,14 @@ def parse_hwpx(source_path: Path) -> list[LogicalTable]:
                 if event == "end" and tag_name == "p" and table_depth == 0:
                     text = element_text(element)
                     if current and text:
-                        if text.startswith("#") or is_note_continuation_text(text, current.notes):
+                        caption_ko, caption_en = (
+                            split_bilingual(text.removeprefix("※").strip())
+                            if text.startswith("※")
+                            else ("", "")
+                        )
+                        if caption_ko and caption_en:
+                            pending_subtable_caption = f"{caption_ko} {caption_en}"
+                        elif text.startswith("#") or is_note_continuation_text(text, current.notes):
                             append_unique(current.notes, text)
                         elif is_metadata_text(text):
                             current.metadata_context = " ".join(
@@ -467,7 +450,7 @@ def parse_hwpx(source_path: Path) -> list[LogicalTable]:
                                 for value in (current.metadata_context, text)
                                 if value
                             )
-                        elif text.startswith("*") or "주무관" in text or "사무관" in text:
+                        elif is_contact_source_text(text):
                             append_unique(current.sources, text)
                         elif "출처" in text:
                             append_unique(current.notes, text)
@@ -617,10 +600,7 @@ def is_embedded_source_row(row: list[str]) -> bool:
     if not non_empty_cells:
         return False
     joined = " ".join(non_empty_cells)
-    return bool(
-        re.search(r"(?:주무관|사무관|담당자)", joined)
-        and re.search(r"\d{2,4}[-)]\d{3,4}-\d{4}", joined)
-    )
+    return is_contact_source_text(joined)
 
 
 def merge_footnote_markers(*values: str) -> str:
@@ -687,7 +667,15 @@ def part_content_rows(part: TablePart) -> list[list[str]]:
 
 def is_subtable_caption_row(row: list[str]) -> bool:
     non_empty = [cell.strip() for cell in row if cell.strip()]
-    return len(non_empty) == 1 and non_empty[0].startswith("▫")
+    if len(non_empty) != 1:
+        return False
+    value = non_empty[0]
+    if value.startswith("▫"):
+        return True
+    if not value.startswith("※"):
+        return False
+    title, title_en = split_bilingual(value.removeprefix("※").strip())
+    return bool(title and title_en)
 
 
 def subtable_caption(part: TablePart) -> str:
@@ -989,6 +977,9 @@ def looks_like_header_label(value: str) -> bool:
 
 
 def guess_header_count(matrix: list[list[str]]) -> int:
+    row_oriented_header_count = wide_row_oriented_text_table_header_count(matrix)
+    if row_oriented_header_count is not None:
+        return row_oriented_header_count
     for index, row in enumerate(matrix[:8]):
         if looks_like_data_row(row):
             return max(index, 1)
@@ -1056,6 +1047,9 @@ def prepare_hwpx_import_tables(
         )
         if not matrix or max((len(row) for row in matrix), default=0) < 2:
             continue
+        # HWPX already contains the authored paragraph and bilingual line
+        # boundaries.  Re-running generic bilingual normalization here can
+        # move a leading English number or a formula to the Korean line.
         stored_matrix = [
             [restore_hyphenated_line_breaks(value) for value in row]
             for row in matrix

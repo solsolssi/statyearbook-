@@ -810,6 +810,54 @@ class LLMTranslationReviewTest(unittest.TestCase):
         self.assertEqual(decision["expected_value"], "Organization")
         self.assertRegex(decision["detail"], "[가-힣]")
 
+    def test_blue_korean_value_with_unit_must_not_pass_without_translation(self) -> None:
+        item = self.source_item(
+            requested_review_type="파란색 표기 확인",
+            candidate_kind="blue_text_korean_translation",
+            current_value="산림작물 3,419ha 등 복구지원액",
+            korean_text="산림작물 3,419ha 등 복구지원액",
+            english_text="",
+        )
+        raw = {
+            "status": "정상",
+            "issue_type": "파란색 표기 확인",
+            "expected_value": "__UNCHANGED__",
+            "difference": "문제 없음",
+            "detail": "문제가 없습니다.",
+        }
+
+        self.assertTrue(review_decision_needs_retry(raw, item))
+        decision = normalize_decision(raw, item)
+        self.assertEqual(decision["status"], "확인 필요")
+        self.assertEqual(decision["expected_value"], item.current_value)
+        self.assertNotIn("__UNCHANGED__", decision["expected_value"])
+
+    def test_presentation_hyphen_and_korean_syllable_spacing_are_not_typos(self) -> None:
+        for current, expected, review_type in (
+            ("구분 Classifi-cation", "구분 Classification", "번역 검수"),
+            ("구분 Classifi-cation 연도 Year", "구분 / 연도 Classification / Year", "오탈자 검수"),
+            ("소 방 직 Fire Service", "소방직 Fire Service", "오탈자 검수"),
+            ("급경사지 현 황 Status of Steep Slope", "급경사지 현황 Status of Steep Slope", "오탈자 검수"),
+        ):
+            item = self.source_item(
+                source_rule_id="source.linguistic_review",
+                candidate_kind="language_spelling",
+                requested_review_type=review_type,
+                current_value=current,
+            )
+            decision = normalize_decision(
+                {
+                    "status": "오류 의심",
+                    "issue_type": review_type,
+                    "defect_kind": "spacing" if review_type == "오탈자 검수" else "wrong_meaning",
+                    "expected_value": expected,
+                    "difference": "표기 교정",
+                    "detail": "띄어쓰기와 하이픈을 교정했습니다.",
+                },
+                item,
+            )
+            self.assertEqual(decision["status"], "정상")
+
     def test_incomplete_batch_is_retried_by_cell_context(self) -> None:
         first = self.source_item(
             issue_id=1,
@@ -1271,7 +1319,86 @@ class LLMTranslationReviewTest(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(counts, (0, 1, 1))
                 self.assertEqual(row["status"], "reviewed")
-                self.assertEqual(row["resolution_source"], "cache")
+                self.assertEqual(row["resolution_source"], "lineage_reuse")
+
+    def test_unrelated_report_cannot_reuse_llm_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "lineage.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+
+                def add_report(title: str, base_report_id: int | None = None) -> tuple[int, int]:
+                    report_id = int(connection.execute(
+                        """
+                        INSERT INTO annual_reports (
+                            year, title, source_file_name, source_file_path,
+                            file_hash, imported_at, base_report_id
+                        ) VALUES (2026, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                        """,
+                        (title, f"{title}.hwpx", f"/{title}.hwpx", f"hash-{title}", base_report_id),
+                    ).lastrowid)
+                    table_id = int(connection.execute(
+                        "INSERT INTO stat_tables (report_id, code, title, title_en) VALUES (?, '1-1', '지역', 'Region')",
+                        (report_id,),
+                    ).lastrowid)
+                    connection.execute(
+                        """
+                        INSERT INTO stat_table_cells (table_id, row_index, col_index, text_value, is_header)
+                        VALUES (?, 0, 0, '서울 Seoul', 1)
+                        """,
+                        (table_id,),
+                    )
+                    return report_id, table_id
+
+                base_report_id, base_table_id = add_report("기준")
+                base_run_id = self.insert_run(connection, base_report_id)
+                self.insert_candidate(connection, base_run_id, base_table_id)
+                source_item = load_linguistic_review_items(connection, base_run_id)[0]
+                save_llm_review_decisions(
+                    connection,
+                    base_run_id,
+                    [source_item],
+                    [{
+                        "id": source_item.issue_id,
+                        "context_token": review_context_token(source_item),
+                        "status": "정상",
+                        "issue_type": "오탈자 검수",
+                        "current_value": "서울 Seoul",
+                        "expected_value": "서울 Seoul",
+                        "difference": "오탈자 없음",
+                        "detail": "검수 완료",
+                    }],
+                    reviewed_model="model-a",
+                )
+
+                child_report_id, child_table_id = add_report("수정본", base_report_id)
+                child_run_id = self.insert_run(connection, child_report_id)
+                child_candidate_id = self.insert_candidate(connection, child_run_id, child_table_id)
+                self.assertEqual(
+                    reuse_cached_linguistic_reviews(connection, child_run_id, reviewed_model="model-a"),
+                    (0, 1, 1),
+                )
+
+                unrelated_report_id, unrelated_table_id = add_report("독립본")
+                unrelated_run_id = self.insert_run(connection, unrelated_report_id)
+                unrelated_candidate_id = self.insert_candidate(
+                    connection, unrelated_run_id, unrelated_table_id
+                )
+                self.assertEqual(
+                    reuse_cached_linguistic_reviews(connection, unrelated_run_id, reviewed_model="model-a"),
+                    (0, 0, 0),
+                )
+                child_status = connection.execute(
+                    "SELECT status FROM linguistic_review_candidates WHERE id = ?",
+                    (child_candidate_id,),
+                ).fetchone()["status"]
+                unrelated_status = connection.execute(
+                    "SELECT status FROM linguistic_review_candidates WHERE id = ?",
+                    (unrelated_candidate_id,),
+                ).fetchone()["status"]
+
+            self.assertEqual(child_status, "reviewed")
+            self.assertEqual(unrelated_status, "pending")
 
     def test_stored_english_only_bilingual_finding_is_reconciled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

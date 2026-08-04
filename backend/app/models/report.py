@@ -301,10 +301,27 @@ class ValidationRunResult(BaseModel):
     reused_check_count: int = 0
 
 
+class ValidationReuseRunOption(BaseModel):
+    """One completed validation execution that may be selected as a reuse source."""
+
+    id: int
+    report_id: int
+    report_year: int
+    report_title: str
+    completed_at: str
+    issue_count: int = 0
+    normal_count: int = 0
+    needs_review_count: int = 0
+    suspected_error_count: int = 0
+    scope_kind: str = "full"
+    selected_rule_keys: list[str] = Field(default_factory=list)
+
+
 class ValidationRunRequest(BaseModel):
     selected_rule_keys: list[str] = Field(default_factory=list)
     reuse_existing: bool = True
     include_llm: bool = False
+    source_validation_run_id: int | None = Field(default=None, gt=0)
 
 
 class ReportProcessingJob(BaseModel):

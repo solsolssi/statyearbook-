@@ -46,12 +46,79 @@ class LinguisticReviewTest(unittest.TestCase):
             ("지역 / 합계", "Region / Total"),
         )
 
+    def test_temporal_bilingual_context_keeps_dates_and_footnote_rounds(self) -> None:
+        self.assertEqual(
+            mixed_bilingual_context(
+                "’07.12.11.(1차) Dec. 11, 2007 (#1) "
+                "’08.1.18.(2차) Jan. 18, 2008 (#2)"
+            ),
+            (
+                "’07.12.11.(1차) / ’08.1.18.(2차)",
+                "Dec. 11, 2007 (#1) / Jan. 18, 2008 (#2)",
+            ),
+        )
+
+        self.assertEqual(
+            mixed_bilingual_context(
+                "’23.4.2~4.(1차) Apr. 2–4, 2023 (#1) "
+                "’23.4.11.(2차) Apr. 11, 2023 (#2)"
+            ),
+            (
+                "’23.4.2~4.(1차) / ’23.4.11.(2차)",
+                "Apr. 2–4, 2023 (#1) / Apr. 11, 2023 (#2)",
+            ),
+        )
+
     def test_subtable_caption_is_reviewed_as_its_own_title(self) -> None:
         raw_context = "▫ 공용차량 정수 Government Vehicles (2025. 12. 31. 기준) 구분\nClassification"
         self.assertEqual(
             extract_subtable_caption(raw_context),
             "공용차량 정수 Government Vehicles",
         )
+
+    def test_report_glossary_evidence_requires_explicit_base_lineage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "glossary.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                base_report_id = self.insert_report(connection, 2026, "base")
+                child_report_id = int(connection.execute(
+                    """
+                    INSERT INTO annual_reports (
+                        year, title, source_file_name, source_file_path,
+                        file_hash, imported_at, base_report_id
+                    ) VALUES (2026, '수정본', 'child.md', '/child.md', 'hash-child',
+                              CURRENT_TIMESTAMP, ?)
+                    """,
+                    (base_report_id,),
+                ).lastrowid)
+                unrelated_report_id = self.insert_report(connection, 2026, "unrelated")
+                connection.execute(
+                    """
+                    INSERT INTO translation_glossary (
+                        origin_key, source_text, source_normalized, target_text,
+                        target_normalized, source_kind, source_report_id, status
+                    ) VALUES (
+                        'report:base:test', '테스트 기관', '테스트기관', 'Test Agency',
+                        'testagency', 'yearbook', ?, 'reference'
+                    )
+                    """,
+                    (base_report_id,),
+                )
+
+                child_entries = glossary_entries_for_source(
+                    connection,
+                    "테스트 기관",
+                    current_report_id=child_report_id,
+                )
+                unrelated_entries = glossary_entries_for_source(
+                    connection,
+                    "테스트 기관",
+                    current_report_id=unrelated_report_id,
+                )
+
+            self.assertEqual([entry.target_text for entry in child_entries], ["Test Agency"])
+            self.assertEqual(unrelated_entries, [])
 
     def test_language_reviews_use_minimal_required_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

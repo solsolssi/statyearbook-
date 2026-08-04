@@ -31,6 +31,7 @@ describe("ValidationRunDialog", () => {
     const onClose = vi.fn();
     render(
       <ValidationRunDialog
+        reportId={100}
         reportTitle="2026 수정 연보"
         catalog={catalog}
         state="idle"
@@ -47,6 +48,7 @@ describe("ValidationRunDialog", () => {
         selectedRuleKeys: ["sum"],
         reuseExisting: true,
         includeLlm: false,
+        sourceValidationRunId: undefined,
       });
     });
     expect(onClose).toHaveBeenCalled();

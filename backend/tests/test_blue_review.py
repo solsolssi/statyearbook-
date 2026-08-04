@@ -10,10 +10,12 @@ from app.services.database_report_service import (
     build_columns,
     build_rows,
     clean_label,
+    display_header_count_from_matrix,
     english_label,
     leading_label_column_indexes,
     part_caption_from_raw_context,
     remove_unmatched_closing_parentheses,
+    split_bilingual_display_value,
 )
 from app.validation.blue_review import (
     BLUE_REVIEW_TYPE,
@@ -169,6 +171,8 @@ class BlueReviewExtractionTests(unittest.TestCase):
     def test_numeric_and_metadata_blue_marks_are_not_candidates(self) -> None:
         self.assertTrue(should_skip_blue_review("4행 2열", "3,456"))
         self.assertTrue(should_skip_blue_review("4행 2열", "12.5%"))
+        self.assertFalse(should_skip_blue_review("4행 2열", "‘25.3.6."))
+        self.assertFalse(should_skip_blue_review("4행 2열", "‘25.3.21.~30."))
         self.assertTrue(should_skip_blue_review("출처", "안전정책과 주무관 홍길동"))
         self.assertTrue(should_skip_blue_review("주석", "잠정치임"))
         self.assertFalse(should_skip_blue_review("4행 2열", "전자메가폰 Electronic Megaphone"))
@@ -395,6 +399,16 @@ class TableDisplayParsingTests(unittest.TestCase):
     def test_bilingual_labels_support_decades_curly_apostrophes_and_suffix_hyphens(self) -> None:
         self.assertEqual(clean_label("20대\n20s"), "20대")
         self.assertEqual(english_label("20대\n20s"), "20s")
+        self.assertEqual(
+            english_label("50만 명 이상\n500,000 Persons or more"),
+            "500,000 Persons or more",
+        )
+        self.assertEqual(
+            clean_label("50만 명 이상\n500,000 Persons or more"),
+            "50만 명 이상",
+        )
+        self.assertEqual(clean_label("DB 관리 DB Management"), "DB 관리")
+        self.assertEqual(english_label("DB 관리 DB Management"), "DB Management")
         self.assertEqual(clean_label("대로\n-daero"), "대로")
         self.assertEqual(english_label("대로\n-daero"), "-daero")
         self.assertEqual(
@@ -405,6 +419,11 @@ class TableDisplayParsingTests(unittest.TestCase):
             english_label("검찰청\nPublic\nProsecutor’s Office"),
             "Public Prosecutor’s Office",
         )
+        self.assertEqual(clean_label("주민소송\nResident′s Lawsuits"), "주민소송")
+        self.assertEqual(
+            english_label("주민소송\nResident′s Lawsuits"),
+            "Resident′s Lawsuits",
+        )
 
     def test_numeric_english_phrases_and_ordinals_stay_in_english_labels(self) -> None:
         age = "14세 이하\n14 years old and under"
@@ -414,6 +433,37 @@ class TableDisplayParsingTests(unittest.TestCase):
         self.assertEqual(english_label(age), "14 years old and under")
         self.assertEqual(clean_label(replacement), "2차 보충")
         self.assertEqual(english_label(replacement), "2nd Replacement Draft")
+
+    def test_date_round_footnotes_stay_in_english_display_text(self) -> None:
+        value = "’07.12.11.(1차)\nDec. 11, 2007 (#1)\n’08.1.18.(2차)\nJan. 18, 2008 (#2)"
+
+        self.assertEqual(
+            split_bilingual_display_value(value),
+            (
+                "’07.12.11.(1차) ’08.1.18.(2차)",
+                "Dec. 11, 2007 (#1) Jan. 18, 2008 (#2)",
+            ),
+        )
+
+    def test_stacked_region_footnotes_stay_in_english_display_text(self) -> None:
+        value = (
+            "충남 태안･서산･보령･서천･홍성･당진(1차)\n"
+            "전남 신안･무안･영광\n"
+            "전북 군산･부안(2차)\n"
+            "Taean, Seosan, Boryeong, Seocheon, Hongseong, and Dangjin in Chungnam (#1)\n"
+            "Sinan, Muan, and Yeonggwang in Jeonnam Gunsan and Buan in Jeonbuk (#2)"
+        )
+
+        self.assertEqual(
+            split_bilingual_display_value(value),
+            (
+                "충남 태안･서산･보령･서천･홍성･당진(1차) 전남 신안･무안･영광 전북 군산･부안(2차)",
+                (
+                    "Taean, Seosan, Boryeong, Seocheon, Hongseong, and Dangjin in Chungnam (#1) "
+                    "Sinan, Muan, and Yeonggwang in Jeonnam Gunsan and Buan in Jeonbuk (#2)"
+                ),
+            ),
+        )
 
     def test_bracketed_type_qualifiers_are_preserved_in_english_headers(self) -> None:
         type_a = "출자기관\nGovernment-funded Organizations\n[Type A]"
@@ -587,6 +637,81 @@ class TableDisplayParsingTests(unittest.TestCase):
             ),
             ("장애인 고용 비율", "Ratio of the Disabled"),
         )
+
+    def test_subtable_caption_excludes_inline_bilingual_unit_metadata(self) -> None:
+        self.assertEqual(
+            part_caption_from_raw_context(
+                "▫시(75개) Cities(단위 : 개)(Unit : Number)\n"
+                "50만 명 이상\n500,000 Persons or more"
+            ),
+            ("시(75개)", "Cities"),
+        )
+        self.assertEqual(
+            part_caption_from_raw_context(
+                "※ 2025년 민방위 경보 발령현황 Civil Defense Alerts in 2025\n"
+                "구분\nClassification"
+            ),
+            ("2025년 민방위 경보 발령현황", "Civil Defense Alerts in 2025"),
+        )
+        self.assertEqual(
+            part_caption_from_raw_context(
+                "▫ 공용차량 정수 Government Vehicles "
+                "(2025. 12. 31. 기준)(As of December 31, 2025) "
+                "(단위 : 대)(Unit : Vehicle) 구분\nClassification"
+            ),
+            ("공용차량 정수", "Government Vehicles"),
+        )
+        self.assertEqual(
+            part_caption_from_raw_context(
+                "※ 주민소송 상세내역 List of Resident’s Lawsuits "
+                "구분\nClassification\n지역\nRegion"
+            ),
+            ("주민소송 상세내역", "List of Resident’s Lawsuits"),
+        )
+
+    def test_wide_row_oriented_text_table_uses_only_first_header_row(self) -> None:
+        matrix = [
+            [
+                "구분\nClassification",
+                "실제 경보 발령\nActual Alert",
+                "훈련 경보발령\nDrill Alert",
+                "기타(묵념사이렌)\nOthers (Siren to signal silent tribute)",
+                "",
+            ],
+            [
+                "울림사유\nReason for alert",
+                "-",
+                "을지연습\nUlchi Freedom Shield",
+                "4･3 희생자 추념식\nCommemoration ceremony of 4･3 incident",
+                "세월호 참사 기억식\nSewol ferry memorial",
+            ],
+            [
+                "울림횟수\nNumber of alerts",
+                "-",
+                "1회\n(8.20)\n1 time\n(August 20)",
+                "1회\n(4.3)\n1 time\n(Apr. 3)",
+                "1회\n(4.16)\n1 time\n(Apr. 16)",
+            ],
+            [
+                "울림지역\nAlerted area",
+                "-",
+                "전국\nNational",
+                "제주\nJeju",
+                "안산\nAnsan",
+            ],
+        ]
+
+        header_count = display_header_count_from_matrix(matrix, 3)
+        label_columns = leading_label_column_indexes(matrix, header_count)
+        columns = build_columns(matrix, header_count, label_columns)
+        rows = build_rows(matrix, columns, header_count, label_column_indexes=label_columns)
+
+        self.assertEqual(header_count, 1)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(columns[4].label, "기타(묵념사이렌)")
+        self.assertEqual(rows[0]["c0"], "울림사유")
+        self.assertEqual(rows[0]["c0_en"], "Reason for alert")
+        self.assertEqual(rows[2]["c4"], "안산")
 
     def test_only_unmatched_closing_parentheses_are_removed(self) -> None:
         self.assertEqual(remove_unmatched_closing_parentheses("Number of Persons)"), "Number of Persons")

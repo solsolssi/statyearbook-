@@ -30,6 +30,7 @@ from app.models.report import (
     Visualization,
     VisualizationSeries,
 )
+from app.ingest.table_shape import wide_row_oriented_text_table_header_count
 from app.validation.models import restore_hyphenated_line_breaks
 from app.validation.presentation import validation_issue_from_row
 from app.validation.spec_repository import load_rule_specs_by_id
@@ -1225,18 +1226,39 @@ def part_label_from_code(code: str) -> str | None:
 def part_caption_from_raw_context(raw_context: str) -> tuple[str, str | None]:
     lines = [line.strip() for line in raw_context.splitlines() if line.strip()]
     caption_index = next(
-        (index for index, line in enumerate(lines) if line.startswith("▫")),
+        (index for index, line in enumerate(lines) if line.startswith(("▫", "※"))),
         None,
     )
     if caption_index is None:
         return "", None
-    caption_lines = [lines[caption_index].removeprefix("▫").strip()]
-    if caption_index + 1 < len(lines):
+    first_caption_line = lines[caption_index].lstrip("▫※").strip()
+    # Legacy Markdown rows flatten the caption, base date, unit and first
+    # header into one line.  Stop at the first metadata/header boundary.
+    boundary = re.search(
+        r"\s+(?=(?:\(\s*\d{4}[^)]*기준\)|\(\s*단위\s*:|"
+        r"(?:구\s*분|연도|지역|국가|규\s*모)(?:\s*\n|\s*$)))",
+        first_caption_line,
+    )
+    caption_was_trimmed = boundary is not None
+    if boundary is not None:
+        first_caption_line = first_caption_line[: boundary.start()].strip()
+    caption_lines = [first_caption_line]
+    if not caption_was_trimmed and caption_index + 1 < len(lines):
         next_line = lines[caption_index + 1]
         if re.search(r"[A-Za-z]", next_line) and not re.search(r"[가-힣]", next_line):
             caption_lines.append(next_line)
     caption = re.sub(r"\s+", " ", " ".join(caption_lines)).strip()
     caption = restore_hyphenated_line_breaks(caption)
+    # Unit metadata can share the same HWPX paragraph as the visible part
+    # caption.  Remove the paired Korean/English unit expressions before the
+    # bilingual title split so ``Cities(Unit...)`` does not become a broken
+    # English title such as ``Cities( (Unit...)``.
+    caption = re.sub(
+        r"\(\s*단위\s*:[^)]*\)\s*\(\s*Unit\s*:[^)]*\)\s*$",
+        "",
+        caption,
+        flags=re.IGNORECASE,
+    ).strip()
     title = clean_label(caption)
     title_en = english_label(caption)
     return title or caption, title_en
@@ -1469,6 +1491,9 @@ def header_count_from_cells(cells: list[DatabaseRow], matrix: list[list[str]]) -
 
 
 def display_header_count_from_matrix(matrix: list[list[str]], stored_header_count: int) -> int:
+    row_oriented_header_count = wide_row_oriented_text_table_header_count(matrix)
+    if row_oriented_header_count is not None:
+        return row_oriented_header_count
     header_count = stored_header_count
     max_header_count = min(len(matrix), 5)
     while header_count < max_header_count and row_looks_like_header_continuation(matrix[header_count]):
@@ -1505,12 +1530,16 @@ def row_is_caption_metadata(row: list[str]) -> bool:
     return first.startswith("▫") or first.startswith("※")
 
 
-ENGLISH_LABEL_BODY = r"A-Za-z0-9 /&().,%·･+=:\-'’‘㎡㎢㎞㎏㎘㎖㎥"
+# Include every apostrophe/prime glyph emitted by HWPX.  In particular, HWPX
+# uses ``′`` for contractions in a few English translations (for example
+# ``Resident′s Lawsuits``).  Leaving it out makes the glyph survive in the
+# Korean label while disappearing from the English label.
+ENGLISH_LABEL_BODY = r"A-Za-z0-9 /&().,%·･+=:\-'’‘′ʼ㎡㎢㎞㎏㎘㎖㎥"
 ENGLISH_LABEL_SPAN_RE = re.compile(
     rf"\[\s*[A-Za-z][{ENGLISH_LABEL_BODY}]*\s*\]"
     rf"|\((?=[^)]*[A-Za-z]{{2}})(?=[^)]*\s)[{ENGLISH_LABEL_BODY}]+\)"
     rf"|(?<![A-Za-z0-9가-힣(/=+\-])(?:-\s*)?"
-    rf"(?:\d+(?:st|nd|rd|th)?(?:~\d+)?(?=\s+[A-Za-z])|\d+s|(?=[A-Za-z][{ENGLISH_LABEL_BODY}]*[A-Za-z])[A-Za-z])"
+    rf"(?:\d[\d,]*(?:\.\d+)?(?:st|nd|rd|th)?(?:~\d+)?(?=\s+[A-Za-z])|\d+s|(?=[A-Za-z][{ENGLISH_LABEL_BODY}]*[A-Za-z])[A-Za-z])"
     rf"[{ENGLISH_LABEL_BODY}]*"
 )
 HEADER_FORMULA_RE = re.compile(
@@ -1518,6 +1547,16 @@ HEADER_FORMULA_RE = re.compile(
     r"[A-Za-z]/(?:\([A-Za-z](?:[+\-][A-Za-z])+\)|[A-Za-z])"
     r"|[A-Za-z]\s*=\s*[A-Za-z](?:\s*[+\-]\s*[A-Za-z])+"
     r")(?![A-Za-z])"
+)
+KOREAN_TEMPORAL_DISPLAY_RE = re.compile(
+    r"(?:\(\d+차\)\s*)?[’'‘]\d{2}\.\d{1,2}\.\d{1,2}\.?"
+    r"(?:~\d{1,2}\.?)?(?:\s*\(\d+차\))?"
+)
+ENGLISH_TEMPORAL_DISPLAY_RE = re.compile(
+    r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?"
+    r"\s+\d{1,2}(?:\s*[–-]\s*\d{1,2})?,?\s+\d{4}"
+    r"(?:\s*\(#\d+\))?",
+    re.IGNORECASE,
 )
 
 
@@ -1537,13 +1576,18 @@ def pure_english_label_line_index(lines: list[str]) -> int | None:
 
 
 def clean_label(text: str) -> str:
-    restored = restore_hyphenated_line_breaks(text)
+    restored = restore_hyphenated_line_breaks(text).replace("Classifi-cation", "Classification")
     lines = [line.strip() for line in restored.splitlines() if line.strip()]
     cleaned = re.sub(r"\s+", " ", " ".join(lines)).strip()
     if not cleaned:
         return ""
 
     formulas: list[str] = []
+    leading_acronym = ""
+    acronym_match = re.match(r"^([A-Z]{2,})\s+(?=[가-힣])", cleaned)
+    if acronym_match:
+        leading_acronym = acronym_match.group(1)
+        cleaned = f"¤A¤{cleaned[acronym_match.end():]}"
 
     def protect_formula(match: re.Match[str]) -> str:
         formula = re.sub(r"\s+", "", match.group(0))
@@ -1560,6 +1604,8 @@ def clean_label(text: str) -> str:
             tail = koreanish[first_index + len(token) :].replace(token, "")
             koreanish = koreanish[: first_index + len(token)] + tail
         koreanish = koreanish.replace(token, formula)
+    if leading_acronym:
+        koreanish = koreanish.replace("¤A¤", f"{leading_acronym} ")
     koreanish = re.sub(r"\s+", " ", koreanish).strip(" /")
     koreanish = re.sub(r"\(\s+", "(", koreanish)
     koreanish = re.sub(r"\s+\)", ")", koreanish)
@@ -1574,7 +1620,7 @@ def clean_label(text: str) -> str:
 
 
 def english_label(text: str) -> str | None:
-    restored = restore_hyphenated_line_breaks(text)
+    restored = restore_hyphenated_line_breaks(text).replace("Classifi-cation", "Classification")
     lines = [line.strip() for line in restored.splitlines() if line.strip()]
     english_line_index = pure_english_label_line_index(lines)
     english_source = lines[english_line_index:] if english_line_index is not None else lines
@@ -1582,7 +1628,16 @@ def english_label(text: str) -> str | None:
     if diagonal_region_header_label(clean_label_korean_only(restored), restored):
         return "Region"
     matches = ENGLISH_LABEL_SPAN_RE.findall(text)
-    value = " ".join(item.strip() for item in matches if item.strip())
+    english_parts: list[str] = []
+    for match in matches:
+        item = match.strip()
+        if not item:
+            continue
+        if english_parts and item.startswith(f"{english_parts[-1]} "):
+            english_parts[-1] = item
+        elif item not in english_parts:
+            english_parts.append(item)
+    value = " ".join(english_parts)
     value = HEADER_FORMULA_RE.sub(
         lambda match: re.sub(r"\s+", "", match.group(0)),
         value,
@@ -1614,7 +1669,11 @@ def remove_unmatched_closing_parentheses(value: str, *, preserve_numbered_marker
 
 
 def clean_label_korean_only(text: str) -> str:
-    cleaned = re.sub(r"\s+", " ", restore_hyphenated_line_breaks(text)).strip()
+    cleaned = re.sub(
+        r"\s+",
+        " ",
+        restore_hyphenated_line_breaks(text).replace("Classifi-cation", "Classification"),
+    ).strip()
     koreanish = ENGLISH_LABEL_SPAN_RE.sub("", cleaned)
     return re.sub(r"\s+", " ", koreanish).strip(" /")
 
@@ -1855,10 +1914,21 @@ def label_path_for_row(row: list[str], label_column_indexes: list[int], target_c
     for col_index in label_column_indexes:
         if col_index > target_col_index or col_index >= len(row):
             continue
-        label = clean_label(row[col_index])
+        label = clean_label_for_label_path(row[col_index], split_label_columns=len(label_column_indexes) > 1)
         if label and label not in parts:
             parts.append(label)
     return " / ".join(parts)
+
+
+def clean_label_for_label_path(value: str, *, split_label_columns: bool) -> str:
+    if (
+        split_label_columns
+        and not re.search(r"[가-힣]", value)
+        and re.search(r"[A-Za-z]", value)
+        and parse_numeric(value) is None
+    ):
+        return ""
+    return clean_label(value)
 
 
 def english_label_path_for_row(row: list[str], label_column_indexes: list[int], target_col_index: int) -> str | None:
@@ -1870,6 +1940,62 @@ def english_label_path_for_row(row: list[str], label_column_indexes: list[int], 
         if label and label not in parts:
             parts.append(label)
     return " / ".join(parts) if parts else None
+
+
+def split_bilingual_display_value(value: str) -> tuple[str, str | None]:
+    if (
+        not value.strip()
+        or parse_numeric(value) is not None
+        or not re.search(r"[가-힣]", value)
+        or not re.search(r"[A-Za-z]", value)
+    ):
+        return value, None
+    temporal_value = split_temporal_bilingual_display_value(value)
+    if temporal_value is not None:
+        return temporal_value
+    stacked_value = split_stacked_bilingual_display_value(value)
+    if stacked_value is not None:
+        return stacked_value
+    label_en = english_label(value)
+    if not label_en:
+        return value, None
+    return clean_label(value), label_en
+
+
+def split_temporal_bilingual_display_value(value: str) -> tuple[str, str] | None:
+    korean_parts = [
+        re.sub(r"\s+", " ", part).strip()
+        for part in KOREAN_TEMPORAL_DISPLAY_RE.findall(value)
+        if part.strip()
+    ]
+    english_parts = [
+        re.sub(r"\s+", " ", part).strip()
+        for part in ENGLISH_TEMPORAL_DISPLAY_RE.findall(value)
+        if part.strip()
+    ]
+    if not korean_parts or not english_parts:
+        return None
+    return " ".join(korean_parts), " ".join(english_parts)
+
+
+def split_stacked_bilingual_display_value(value: str) -> tuple[str, str] | None:
+    lines = [
+        re.sub(r"\s+", " ", line).strip()
+        for line in restore_hyphenated_line_breaks(value).splitlines()
+        if line.strip()
+    ]
+    english_line_index = pure_english_label_line_index(lines)
+    if english_line_index is None or english_line_index <= 0:
+        return None
+    english_lines = lines[english_line_index:]
+    if any(re.search(r"[가-힣]", line) for line in english_lines):
+        return None
+    korean_lines = lines[:english_line_index]
+    korean = clean_label("\n".join(korean_lines))
+    english = remove_unmatched_closing_parentheses(" ".join(english_lines))
+    if not korean or not english:
+        return None
+    return korean, english
 
 
 def inferred_label_column_text(
@@ -2097,15 +2223,12 @@ def build_rows(
         ) or ""
         for column in columns:
             col_index = column.source_col_index if column.source_col_index is not None else int(column.key[1:])
-            is_collapsed_label_column = (
-                len(column.source_col_indexes) > 1
-                and column.source_col_indexes == label_column_indexes
-            )
+            is_label_column = column.source_col_indexes == label_column_indexes
             is_bilingual_descriptor_column = (
-                len(column.source_col_indexes) > 1 and not is_collapsed_label_column
+                len(column.source_col_indexes) > 1 and not is_label_column
             )
             combined_value = ""
-            if is_collapsed_label_column:
+            if is_label_column:
                 value = row["_row_label"]
             elif is_bilingual_descriptor_column:
                 source_values = [
@@ -2117,8 +2240,11 @@ def build_rows(
                 value = clean_label(combined_value) or (source_values[0] if source_values else "")
             else:
                 value = source_row[col_index] if col_index < len(source_row) else ""
+                value, label_en = split_bilingual_display_value(value)
+                if label_en:
+                    row[f"{column.key}_en"] = label_en
             row[column.key] = coerce_display_value(value)
-            if is_collapsed_label_column and row["_row_label_en"]:
+            if is_label_column and row["_row_label_en"]:
                 row[f"{column.key}_en"] = row["_row_label_en"]
             elif is_bilingual_descriptor_column:
                 label_en = english_label(combined_value)

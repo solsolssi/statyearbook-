@@ -179,6 +179,125 @@ class HwpxImporterTest(unittest.TestCase):
         )
         self.assertEqual(imported[0].header_count, 1)
 
+    def test_authored_bilingual_and_formula_line_boundaries_are_preserved(self) -> None:
+        table = LogicalTable(
+            code="5-1-1-1",
+            title="지방자치단체 예산 총괄",
+            title_en="Summary of Local Government Budget",
+            section_title="",
+            section_title_en="",
+            section_file="Contents/section1.xml",
+            table_order=1,
+            parts=[
+                TablePart(
+                    section_file="Contents/section1.xml",
+                    matrix=[
+                        [
+                            "구 분\nClassification",
+                            "2026년도\nYear 2026\n(A)",
+                            "증 감 (A-B)\nChange",
+                        ],
+                        ["총규모\nTotal", "3,418,710", "158,561"],
+                    ],
+                    raw_text="",
+                )
+            ],
+        )
+
+        imported = prepare_hwpx_import_tables([table])
+
+        self.assertEqual(
+            imported[0].matrix[0],
+            [
+                "구 분\nClassification",
+                "2026년도\nYear 2026\n(A)",
+                "증 감 (A-B)\nChange",
+            ],
+        )
+
+    def test_wide_row_oriented_text_table_keeps_descriptor_rows_as_data(self) -> None:
+        table = LogicalTable(
+            code="6-3-3-3 표2",
+            title="지역별 재난경보 및 재난예방 방송",
+            title_en="Disaster Alert and Disaster Prevention Broadcasting by Region",
+            section_title="",
+            section_title_en="",
+            section_file="Contents/section1.xml",
+            table_order=1,
+            parts=[
+                TablePart(
+                    section_file="Contents/section1.xml",
+                    matrix=[
+                        [
+                            "구분\nClassification",
+                            "실제 경보 발령\nActual Alert",
+                            "훈련 경보발령\nDrill Alert",
+                            "기타(묵념사이렌)\nOthers (Siren to signal silent tribute)",
+                            "",
+                        ],
+                        [
+                            "울림사유\nReason for alert",
+                            "-",
+                            "을지연습\nUlchi Freedom Shield",
+                            "4･3 희생자 추념식\nCommemoration ceremony of 4･3 incident",
+                            "세월호 참사 기억식\nSewol ferry memorial",
+                        ],
+                        [
+                            "울림횟수\nNumber of alerts",
+                            "-",
+                            "1회\n(8.20)\n1 time\n(August 20)",
+                            "1회\n(4.3)\n1 time\n(Apr. 3)",
+                            "1회\n(4.16)\n1 time\n(Apr. 16)",
+                        ],
+                        [
+                            "울림지역\nAlerted area",
+                            "-",
+                            "전국\nNational",
+                            "제주\nJeju",
+                            "안산\nAnsan",
+                        ],
+                    ],
+                    raw_text="",
+                )
+            ],
+        )
+
+        imported = prepare_hwpx_import_tables([table])
+
+        self.assertEqual(imported[0].header_count, 1)
+
+    def test_leading_english_number_stays_on_the_english_line(self) -> None:
+        table = LogicalTable(
+            code="4-1-1-6",
+            title="인구 규모별 행정구역",
+            title_en="Administrative District Statistics by Population Size",
+            section_title="",
+            section_title_en="",
+            section_file="Contents/section1.xml",
+            table_order=1,
+            parts=[
+                TablePart(
+                    section_file="Contents/section1.xml",
+                    matrix=[
+                        [
+                            "50만 명 이상\n500,000 Persons or more",
+                            "30 ~ 50만 명\n300,000 up to 500,000 Persons",
+                        ],
+                        ["17", "10"],
+                    ],
+                    raw_text="",
+                )
+            ],
+        )
+
+        imported = prepare_hwpx_import_tables([table])
+
+        self.assertEqual(imported[0].matrix[0][0], "50만 명 이상\n500,000 Persons or more")
+        self.assertEqual(
+            imported[0].matrix[0][1],
+            "30 ~ 50만 명\n300,000 up to 500,000 Persons",
+        )
+
     def test_text_only_first_row_on_next_page_is_data_not_an_extra_header(self) -> None:
         table = LogicalTable(
             code="7-2-10",
@@ -456,6 +575,34 @@ class HwpxImporterTest(unittest.TestCase):
         self.assertEqual([item.code for item in imported], ["4-1-8-8 표1", "4-1-8-8 표2"])
         self.assertEqual(imported[0].matrix[0], ["연도", "2024", "2025"])
         self.assertEqual(imported[1].matrix[0], ["연도", "2024", "2025"])
+
+    def test_bilingual_reference_caption_is_not_stored_as_a_header_row(self) -> None:
+        table = LogicalTable(
+            code="5-2-1-5",
+            title="조세부담률",
+            title_en="Tax Burden Ratio",
+            section_title="",
+            section_title_en="",
+            section_file="Contents/section1.xml",
+            table_order=1,
+            parts=[
+                TablePart(
+                    section_file="Contents/section1.xml",
+                    matrix=[
+                        ["※ 2023년 외국의 조세부담률 Tax Burden Ratio of Foreign Countries", ""],
+                        ["국가\nNation", "미국\nUSA"],
+                        ["조세부담률", "19.1"],
+                    ],
+                    raw_text="",
+                    footnote_matrix=[["1)", ""], ["", ""], ["", ""]],
+                )
+            ],
+        )
+
+        imported = prepare_hwpx_import_tables([table])
+
+        self.assertEqual(imported[0].matrix[0], ["국가\nNation", "미국\nUSA"])
+        self.assertEqual(imported[0].footnote_matrix[0], ["", ""])
 
     def test_multiple_subtables_inside_one_hwpx_table_are_split(self) -> None:
         table = LogicalTable(

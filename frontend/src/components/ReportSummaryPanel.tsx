@@ -32,6 +32,7 @@ interface ReportSummaryPanelProps {
     selectedRuleKeys: string[];
     reuseExisting: boolean;
     includeLlm: boolean;
+    sourceValidationRunId?: number;
   }) => Promise<boolean>;
   onDeleteReport: (report: ReportOption) => Promise<boolean>;
 }
@@ -275,6 +276,7 @@ export function ReportSummaryPanel({
 
       {validationDialogOpen && selectedReport ? (
         <ValidationRunDialog
+          reportId={selectedReport.id}
           reportTitle={selectedReport.title}
           catalog={validationCatalog}
           state={validationRunState}

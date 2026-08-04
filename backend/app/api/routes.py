@@ -23,6 +23,7 @@ from app.models.report import (
     ValidationProfileApprovalRequest,
     ValidationProfileSummary,
     ValidationCatalogItem,
+    ValidationReuseRunOption,
     ValidationRunRequest,
     ValidationRunResult,
 )
@@ -237,9 +238,17 @@ def run_validation(
             selected_rule_keys=request.selected_rule_keys,
             reuse_existing=request.reuse_existing,
             include_llm=request.include_llm,
+            source_validation_run_id=request.source_validation_run_id,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/validation/reuse-runs", response_model=list[ValidationReuseRunOption])
+def list_validation_reuse_runs(
+    report_id: int = Query(gt=0),
+) -> list[ValidationReuseRunOption]:
+    return ValidationApplicationService().reusable_runs(report_id)
 
 
 @router.post(

@@ -11,14 +11,19 @@ from app.services.validation_execution_service import ValidationExecutionService
 
 
 class ValidationExecutionServiceTest(unittest.TestCase):
-    def test_selected_checks_reuse_only_identical_tables_from_same_year(self) -> None:
+    def test_selected_checks_reuse_only_identical_tables_from_explicit_base(self) -> None:
         with TemporaryDirectory() as directory:
             db_path = Path(directory) / "report.sqlite"
             with connect(db_path) as connection:
                 init_db(connection)
                 with connection:
                     donor_report = insert_report(connection, year=2026, title="검수 기준")
-                    target_report = insert_report(connection, year=2026, title="업로드 수정본")
+                    target_report = insert_report(
+                        connection,
+                        year=2026,
+                        title="업로드 수정본",
+                        base_report_id=donor_report,
+                    )
                     donor_same = insert_table(
                         connection,
                         report_id=donor_report,
@@ -115,17 +120,191 @@ class ValidationExecutionServiceTest(unittest.TestCase):
             )
             self.assertEqual(repeated["run_id"], result["run_id"])
 
+    def test_same_year_unrelated_report_never_reuses_validation(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                with connection:
+                    donor_report = insert_report(connection, year=2026, title="다른 연보")
+                    target_report = insert_report(connection, year=2026, title="독립 연보")
+                    donor_table = insert_table(
+                        connection, report_id=donor_report, code="1-1", values=("구분", "합계", "계", "3")
+                    )
+                    insert_table(
+                        connection, report_id=target_report, code="1-1", values=("구분", "합계", "계", "3")
+                    )
+                    donor_run = int(connection.execute(
+                        """
+                        INSERT INTO validation_runs (
+                            report_id, rules_version, started_at, completed_at, selected_rules_json
+                        ) VALUES (?, 'test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
+                        """,
+                        (donor_report, json.dumps(["sum"])),
+                    ).lastrowid)
+                    insert_check(connection, run_id=donor_run, table_id=donor_table, check_type="합계 검수")
 
-def insert_report(connection, *, year: int, title: str) -> int:  # type: ignore[no-untyped-def]
+            result = ValidationExecutionService(db_path).run(
+                report_id=target_report,
+                selected_rule_keys=["sum"],
+                reuse_existing=True,
+            )
+            self.assertEqual(result["reused_report_count"], 0)
+            self.assertEqual(result["reused_table_count"], 0)
+
+    def test_explicit_validation_run_reuses_visible_report_when_compatible(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                with connection:
+                    donor_report = insert_report(connection, year=2026, title="2026 기준 연보")
+                    target_report = insert_report(connection, year=2027, title="2027 수정 연보")
+                    donor_table = insert_table(
+                        connection,
+                        report_id=donor_report,
+                        code="1-1",
+                        values=("구분", "합계", "계", "3"),
+                    )
+                    insert_table(
+                        connection,
+                        report_id=target_report,
+                        code="1-1",
+                        values=("구분", "합계", "계", "3"),
+                    )
+                    donor_run = int(connection.execute(
+                        """
+                        INSERT INTO validation_runs (
+                            report_id, rules_version, started_at, completed_at, selected_rules_json
+                        ) VALUES (?, 'test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
+                        """,
+                        (donor_report, json.dumps(["sum", "ratio"])),
+                    ).lastrowid)
+                    insert_check(connection, run_id=donor_run, table_id=donor_table, check_type="합계 검수")
+                    target_run = int(connection.execute(
+                        """
+                        INSERT INTO validation_runs (
+                            report_id, rules_version, started_at, completed_at, selected_rules_json
+                        ) VALUES (?, 'test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
+                        """,
+                        (target_report, json.dumps(["sum", "ratio"])),
+                    ).lastrowid)
+
+            service = ValidationExecutionService(db_path)
+            reusable_runs = service.list_reusable_runs(target_report)
+            self.assertEqual([item["id"] for item in reusable_runs], [target_run, donor_run])
+
+            result = service.run(
+                report_id=target_report,
+                selected_rule_keys=["sum"],
+                reuse_existing=True,
+                source_validation_run_id=donor_run,
+            )
+            self.assertEqual(result["reused_report_count"], 1)
+            self.assertEqual(result["reused_table_count"], 1)
+            with connect(db_path) as connection:
+                run = connection.execute(
+                    "SELECT base_run_id FROM validation_runs WHERE id = ?",
+                    (result["run_id"],),
+                ).fetchone()
+            self.assertEqual(int(run["base_run_id"]), donor_run)
+
+            with self.assertRaisesRegex(ValueError, "모두 포함"):
+                service.run(
+                    report_id=target_report,
+                    selected_rule_keys=["spelling"],
+                    reuse_existing=True,
+                    source_validation_run_id=donor_run,
+                )
+
+    def test_explicit_validation_run_can_reuse_same_report_previous_run(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                with connection:
+                    report_id = insert_report(connection, year=2026, title="2026 연보")
+                    table_id = insert_table(
+                        connection,
+                        report_id=report_id,
+                        code="1-1",
+                        values=("구분", "합계", "계", "3"),
+                    )
+                    source_run = int(connection.execute(
+                        """
+                        INSERT INTO validation_runs (
+                            report_id, rules_version, started_at, completed_at, selected_rules_json
+                        ) VALUES (?, 'test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
+                        """,
+                        (report_id, json.dumps(["sum", "ratio"])),
+                    ).lastrowid)
+                    insert_check(connection, run_id=source_run, table_id=table_id, check_type="합계 검수")
+                    insert_check(
+                        connection,
+                        run_id=source_run,
+                        table_id=table_id,
+                        check_type="비율 검수",
+                        status="확인 필요",
+                    )
+                    duplicate_run = int(connection.execute(
+                        """
+                        INSERT INTO validation_runs (
+                            report_id, rules_version, started_at, completed_at, selected_rules_json
+                        ) VALUES (?, 'test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
+                        """,
+                        (report_id, json.dumps(["sum", "ratio"])),
+                    ).lastrowid)
+                    insert_check(connection, run_id=duplicate_run, table_id=table_id, check_type="합계 검수")
+                    insert_check(
+                        connection,
+                        run_id=duplicate_run,
+                        table_id=table_id,
+                        check_type="비율 검수",
+                        status="확인 필요",
+                    )
+
+            service = ValidationExecutionService(db_path)
+            reusable_runs = service.list_reusable_runs(report_id)
+            self.assertEqual([item["id"] for item in reusable_runs], [source_run])
+            self.assertEqual(reusable_runs[0]["normal_count"], 0)
+            self.assertEqual(reusable_runs[0]["needs_review_count"], 1)
+            self.assertEqual(reusable_runs[0]["suspected_error_count"], 0)
+
+            result = service.run(
+                report_id=report_id,
+                selected_rule_keys=["sum"],
+                reuse_existing=True,
+                source_validation_run_id=source_run,
+            )
+            self.assertEqual(result["reused_report_count"], 1)
+            self.assertEqual(result["reused_table_count"], 1)
+            self.assertGreater(result["reused_check_count"], 0)
+
+            exact_result = service.run(
+                report_id=report_id,
+                selected_rule_keys=["sum", "ratio"],
+                reuse_existing=True,
+                source_validation_run_id=source_run,
+            )
+            self.assertEqual(exact_result["run_id"], source_run)
+
+
+def insert_report(
+    connection,
+    *,
+    year: int,
+    title: str,
+    base_report_id: int | None = None,
+) -> int:  # type: ignore[no-untyped-def]
     return int(
         connection.execute(
             """
             INSERT INTO annual_reports (
                 year, title, source_file_name, source_file_path,
-                file_hash, imported_at
-            ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                file_hash, imported_at, base_report_id
+            ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
             """,
-            (year, title, f"{title}.xlsx", f"/tmp/{title}.xlsx", f"hash-{title}"),
+            (year, title, f"{title}.xlsx", f"/tmp/{title}.xlsx", f"hash-{title}", base_report_id),
         ).lastrowid
     )
 
@@ -168,15 +347,17 @@ def insert_check(  # type: ignore[no-untyped-def]
     run_id: int,
     table_id: int,
     check_type: str,
+    status: str = "정상",
 ) -> None:
+    severity = "info" if status == "정상" else "warning" if status == "확인 필요" else "critical"
     connection.execute(
         """
         INSERT INTO validation_checks (
             run_id, table_id, rule_id, check_type, check_label,
             location, current_value, status, severity, detail
-        ) VALUES (?, ?, ?, ?, ?, '2행 2열', '3', '정상', 'info', '테스트')
+        ) VALUES (?, ?, ?, ?, ?, '2행 2열', '3', ?, ?, '테스트')
         """,
-        (run_id, table_id, f"test.{check_type}", check_type, check_type),
+        (run_id, table_id, f"test.{check_type}", check_type, check_type, status, severity),
     )
 
 

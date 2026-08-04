@@ -6,6 +6,10 @@ import xml.etree.ElementTree as ET
 from app.ingest.cell_text import footnote_markers_from_texts, split_cell_text
 from app.ingest.hwpx_importer import cell_text_with_footnote
 from app.ingest.markdown_importer import line_is_note
+from app.ingest.text_canonicalization import (
+    canonicalize_cell_text,
+    canonicalize_note_text,
+)
 
 
 class CellTextTest(unittest.TestCase):
@@ -42,6 +46,12 @@ class CellTextTest(unittest.TestCase):
             split_cell_text("303회\n(중앙 89, 지자체 214)", markers),
             ("303회\n(중앙 89, 지자체 214)", ""),
         )
+
+    def test_parenthesized_numeric_value_is_not_a_footnote(self) -> None:
+        markers = {"1)", "2)", "3)", "4)"}
+
+        self.assertEqual(split_cell_text("47.3(42.4)", markers), ("47.3(42.4)", ""))
+        self.assertEqual(split_cell_text("1회 (8.20)", markers), ("1회 (8.20)", ""))
 
     def test_hwpx_superscript_run_is_stored_as_footnote_marker(self) -> None:
         cell = ET.fromstring(
@@ -80,6 +90,24 @@ class CellTextTest(unittest.TestCase):
         self.assertEqual(
             split_cell_text("출자기관\nGovernment-funded Organizations\n[Type A]"),
             ("출자기관\nGovernment-funded Organizations\n[Type A]", ""),
+        )
+
+    def test_common_cell_normalization_preserves_lexical_hyphens(self) -> None:
+        self.assertEqual(
+            canonicalize_cell_text("무동력 Non-powered"),
+            "무동력\nNon-powered",
+        )
+        self.assertEqual(
+            canonicalize_cell_text("구분 Classifi-\ncation"),
+            "구분\nClassification",
+        )
+
+    def test_note_pagination_is_removed_without_losing_note_boundaries(self) -> None:
+        self.assertEqual(
+            canonicalize_note_text(
+                "#주1) 첫 문장\n페이지에서 이어진 문장\n#주2) 두 번째 문장"
+            ),
+            "#주1) 첫 문장 페이지에서 이어진 문장\n#주2) 두 번째 문장",
         )
 
 

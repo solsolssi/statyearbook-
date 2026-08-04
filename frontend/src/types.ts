@@ -218,6 +218,20 @@ export interface ReportDeleteResult {
   validation_run_count: number;
 }
 
+export interface ValidationReuseRunOption {
+  id: number;
+  report_id: number;
+  report_year: number;
+  report_title: string;
+  completed_at: string;
+  issue_count: number;
+  normal_count: number;
+  needs_review_count: number;
+  suspected_error_count: number;
+  scope_kind: string;
+  selected_rule_keys: string[];
+}
+
 export interface PressInsight {
   id: string;
   title: string;

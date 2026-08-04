@@ -63,6 +63,7 @@ interface ReportWorkspaceProps {
     selectedRuleKeys: string[];
     reuseExisting: boolean;
     includeLlm: boolean;
+    sourceValidationRunId?: number;
   }) => Promise<boolean>;
   onDeleteReport: (report: ReportOption) => Promise<boolean>;
   onSelect: (tableId: string) => void;

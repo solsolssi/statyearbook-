@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from app.models.report import ValidationCatalogItem, ValidationProfileSummary, ValidationRunResult
+from app.models.report import (
+    ValidationCatalogItem,
+    ValidationProfileSummary,
+    ValidationReuseRunOption,
+    ValidationRunResult,
+)
 from app.validation.catalog import validation_catalog_payload
 from app.validation.profile_repository import ValidationProfileRepository
 from app.validation.profiles import ValidationProfile
@@ -21,6 +26,7 @@ class ValidationApplicationService:
         selected_rule_keys: list[str] | None = None,
         reuse_existing: bool = True,
         include_llm: bool = False,
+        source_validation_run_id: int | None = None,
     ) -> ValidationRunResult:
         if report_id is None:
             return ValidationRunResult(**run_validations(report_id=report_id))
@@ -30,8 +36,15 @@ class ValidationApplicationService:
                 selected_rule_keys=selected_rule_keys,
                 reuse_existing=reuse_existing,
                 include_llm=include_llm,
+                source_validation_run_id=source_validation_run_id,
             )
         )
+
+    def reusable_runs(self, report_id: int) -> list[ValidationReuseRunOption]:
+        return [
+            ValidationReuseRunOption(**item)
+            for item in ValidationExecutionService().list_reusable_runs(report_id)
+        ]
 
     def catalog(self) -> list[ValidationCatalogItem]:
         return [ValidationCatalogItem(**item) for item in validation_catalog_payload()]

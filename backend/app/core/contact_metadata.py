@@ -67,7 +67,20 @@ def clean_source_text(value: str) -> str:
     cleaned = cleaned.replace("\\", "")
     cleaned = cleaned.replace("＊", "*")
     cleaned = re.sub(r"^\s*[*※ㆍ·-]\s*", "", cleaned)
+    cleaned = re.sub(r"(?<!\s)(\[출처\s*[:：])", r" \1", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip(" *")
+
+
+def is_contact_source_text(value: str) -> bool:
+    """Return true only for a contact-bearing source line.
+
+    A leading asterisk alone is not sufficient: yearbooks also use it for
+    explanatory bullets.  Requiring both a known role/name and a telephone
+    number preserves real contacts while keeping those bullets in notes.
+    """
+
+    cleaned = clean_source_text(value)
+    return bool(CONTACT_RE.search(cleaned) and PHONE_RE.search(cleaned))
 
 
 def clean_department(value: str) -> str:

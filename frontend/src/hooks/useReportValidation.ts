@@ -20,6 +20,7 @@ export function useReportValidation(
         selectedRuleKeys: string[];
         reuseExisting: boolean;
         includeLlm: boolean;
+        sourceValidationRunId?: number;
       },
     ) => {
       setValidationRunState("running");

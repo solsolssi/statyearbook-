@@ -8,6 +8,7 @@ import re
 
 from app.db.connection import DatabaseConnection, DatabaseRow
 from app.validation.linguistic_policy import BASE_TRANSLATIONS
+from app.validation.report_lineage import report_lineage_ids
 
 
 HANGUL_RE = re.compile(r"[가-힣]")
@@ -764,6 +765,10 @@ def glossary_entries_for_source(
     normalized = normalize_source(source_text)
     if not normalized:
         return []
+    scope_clause, scope_params = report_glossary_scope(
+        connection,
+        current_report_id=current_report_id,
+    )
     rows = connection.execute(
         """
         SELECT DISTINCT tg.*, ar.year AS source_year
@@ -772,7 +777,9 @@ def glossary_entries_for_source(
         LEFT JOIN translation_glossary_aliases tga ON tga.glossary_id = tg.id
         WHERE (tg.source_normalized = ? OR tga.alias_normalized = ?)
           AND tg.status NOT IN ('rejected', 'quarantined')
-          AND (tg.source_report_id IS NULL OR tg.source_report_id <> ?)
+        """
+        + scope_clause
+        + """
         ORDER BY
             CASE tg.status
                 WHEN 'rejected' THEN 0
@@ -790,7 +797,7 @@ def glossary_entries_for_source(
             tg.id DESC
         LIMIT ?
         """,
-        (normalized, normalized, current_report_id or -1, limit),
+        (normalized, normalized, *scope_params, limit),
     ).fetchall()
     return [row_to_glossary_entry(row) for row in rows]
 
@@ -819,14 +826,20 @@ def glossary_entries_for_text(
     normalized_target = normalize_target(value)
     if not normalized_source and not normalized_target:
         return exact
+    scope_clause, scope_params = report_glossary_scope(
+        connection,
+        current_report_id=current_report_id,
+    )
     rows = connection.execute(
         """
         SELECT DISTINCT tg.*, ar.year AS source_year
         FROM translation_glossary tg
         LEFT JOIN annual_reports ar ON ar.id = tg.source_report_id
         LEFT JOIN translation_glossary_aliases tga ON tga.glossary_id = tg.id
-        WHERE (tg.source_report_id IS NULL OR tg.source_report_id <> ?)
-          AND tg.status NOT IN ('rejected', 'quarantined')
+        WHERE tg.status NOT IN ('rejected', 'quarantined')
+        """
+        + scope_clause
+        + """
           AND (
               (length(tg.source_normalized) >= 2 AND instr(?, tg.source_normalized) > 0)
               OR (length(tga.alias_normalized) >= 2 AND instr(?, tga.alias_normalized) > 0)
@@ -851,7 +864,7 @@ def glossary_entries_for_text(
         LIMIT ?
         """,
         (
-            current_report_id or -1,
+            *scope_params,
             normalized_source,
             normalized_source,
             normalized_target,
@@ -865,6 +878,34 @@ def glossary_entries_for_text(
         if len(by_id) >= limit:
             break
     return list(by_id.values())
+
+
+def report_glossary_scope(
+    connection: DatabaseConnection,
+    *,
+    current_report_id: int | None,
+) -> tuple[str, tuple[int, ...]]:
+    """Keep report-derived glossary evidence inside its selected lineage.
+
+    Curated and official entries are shared reference data.  Entries extracted
+    from an uploaded yearbook or produced by an LLM remain evidence only for
+    that report and its explicit revisions; they must not silently influence an
+    unrelated uploaded report.
+    """
+
+    lineage_ids = (
+        report_lineage_ids(connection, current_report_id)
+        if current_report_id is not None
+        else []
+    )
+    if not lineage_ids:
+        return " AND tg.source_kind NOT IN ('yearbook', 'llm')", ()
+    placeholders = ",".join("?" for _ in lineage_ids)
+    return (
+        " AND (tg.source_kind NOT IN ('yearbook', 'llm') "
+        f"OR tg.source_report_id IN ({placeholders}))",
+        tuple(lineage_ids),
+    )
 
 
 def preferred_glossary_entry(entries: list[GlossaryEntry]) -> GlossaryEntry | None:

@@ -8,6 +8,7 @@ import type {
   SourceStatisticsOverview,
   StatTable,
   ValidationCatalogItem,
+  ValidationReuseRunOption,
   YearbookReproductionOverview,
 } from "../types";
 
@@ -75,6 +76,16 @@ export async function fetchValidationCatalog(): Promise<ValidationCatalogItem[]>
     "/api/validation/catalog",
     undefined,
     "검수 항목 정보를 불러오지 못했습니다.",
+  );
+}
+
+export async function fetchValidationReuseRuns(
+  reportId: number,
+): Promise<ValidationReuseRunOption[]> {
+  return requestJson<ValidationReuseRunOption[]>(
+    apiPath("/api/validation/reuse-runs", { report_id: String(reportId) }),
+    undefined,
+    "재사용할 검수 실행 목록을 불러오지 못했습니다.",
   );
 }
 
@@ -198,6 +209,7 @@ export async function runReportValidation(
     selectedRuleKeys: string[];
     reuseExisting: boolean;
     includeLlm?: boolean;
+    sourceValidationRunId?: number;
   },
 ): Promise<ValidationRunResult> {
   return requestJson<ValidationRunResult>(
@@ -209,6 +221,7 @@ export async function runReportValidation(
         selected_rule_keys: options.selectedRuleKeys,
         reuse_existing: options.reuseExisting,
         include_llm: options.includeLlm ?? false,
+        source_validation_run_id: options.sourceValidationRunId,
       }),
     },
     "연보 검수를 실행하지 못했습니다.",

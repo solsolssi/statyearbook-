@@ -8,14 +8,22 @@ import re
 from typing import Iterable
 
 from app.db.connection import DB_PATH
+from app.core.contact_metadata import is_contact_source_text
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
-from app.ingest.cell_text import footnote_markers_from_texts, split_cell_text
+from app.ingest.cell_text import (
+    footnote_markers_from_texts,
+    inline_footnote_markers,
+    split_cell_text,
+)
 from app.ingest.repository import ImportedTable, ReportImportRepository
 from app.ingest.table_repairs import repair_region_split_rows
-from app.validation.models import restore_hyphenated_line_breaks
-from app.ingest.hwpx_importer import (
+from app.ingest.text_canonicalization import (
     ENGLISH_ONLY_RE,
     ENGLISH_TITLE_RE,
+    split_bilingual,
+)
+from app.validation.models import restore_hyphenated_line_breaks
+from app.ingest.hwpx_importer import (
     TABLE_CODE_RE,
     append_unique,
     domain_from_code,
@@ -27,7 +35,6 @@ from app.ingest.hwpx_importer import (
     normalize_table_sources,
     numeric_value,
     parse_title_block,
-    split_bilingual,
 )
 
 
@@ -327,14 +334,25 @@ def extract_part_caption(matrix: list[list[str]]) -> tuple[list[list[str]], str,
 
     first_row = matrix[0]
     non_empty = [cell.strip() for cell in first_row if cell.strip()]
-    if not non_empty or not non_empty[0].startswith("▫"):
+    if not non_empty or not non_empty[0].startswith(("▫", "※")):
         return matrix, "", ""
 
-    caption_text = re.sub(r"^▫\s*", "", non_empty[0]).strip()
+    marker = non_empty[0][0]
+    caption_text = re.sub(r"^[▫※]\s*", "", non_empty[0]).strip()
     caption_text = re.sub(r"\(\s*단위\s*:.*$", "", caption_text).strip()
     title, title_en = split_bilingual_loose(caption_text)
-    remaining = drop_empty_columns(matrix[1:])
-    return remaining, title or caption_text, title_en
+    if marker == "※" and not title_en:
+        # A Korean-only ※ row is generally an explanatory data row, not a
+        # subtable caption (for example the natural-disaster summary row).
+        return matrix, "", ""
+    if len(non_empty) == 1:
+        # A standalone caption is represented by the part title and should
+        # not become a data row.  HWPX applies the same rule.
+        return drop_empty_columns(matrix[1:]), title or caption_text, title_en
+
+    # When a unit or another visible value shares the row, retain the whole
+    # row so no content or colspan information is lost (for example 8-1-3-2).
+    return matrix, title or caption_text, title_en
 
 
 def split_bilingual_loose(text: str) -> tuple[str, str]:
@@ -497,7 +515,7 @@ def line_is_title_candidate(line: str) -> bool:
 
 
 def line_is_source(line: str) -> bool:
-    return line.startswith("*") or "주무관" in line or "사무관" in line or "전문관" in line
+    return is_contact_source_text(line)
 
 
 def line_is_note(line: str) -> bool:
@@ -576,6 +594,9 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
     current: LogicalTable | None = None
     appendix_section: AppendixSection | None = None
     outline: dict[str, OutlineTitle] = {}
+    pending_part_title = ""
+    pending_part_title_en = ""
+    note_continuation_active = False
     index = 0
 
     while index < len(lines):
@@ -595,6 +616,12 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
             if current and is_importable_table_matrix(matrix) and not is_publication_info_table(matrix):
                 for part_matrix in split_embedded_caption_sections(matrix):
                     append_table_part(current, part_matrix, source_kind="html")
+                    if pending_part_title and current.parts:
+                        current.parts[-1].title = pending_part_title
+                        current.parts[-1].title_en = pending_part_title_en
+                pending_part_title = ""
+                pending_part_title_en = ""
+            note_continuation_active = False
             index += 1
             continue
 
@@ -607,6 +634,12 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
             if current and is_importable_table_matrix(matrix) and not is_publication_info_table(matrix):
                 for part_matrix in split_embedded_caption_sections(matrix):
                     append_table_part(current, part_matrix, source_kind="markdown")
+                    if pending_part_title and current.parts:
+                        current.parts[-1].title = pending_part_title
+                        current.parts[-1].title_en = pending_part_title_en
+                pending_part_title = ""
+                pending_part_title_en = ""
+            note_continuation_active = False
             continue
 
         if line_is_title_candidate(line):
@@ -629,15 +662,38 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
                     table_order=len(tables) + 1,
                 )
                 tables.append(current)
+                note_continuation_active = False
         elif current and line:
             if line_is_source(line):
                 append_unique(current.sources, line)
+                note_continuation_active = False
+            elif line.startswith("※") and next_nonempty_line_starts_table(lines, index + 1):
+                pending_part_title, pending_part_title_en = split_bilingual_loose(
+                    line.removeprefix("※").strip()
+                )
+                note_continuation_active = False
             elif line_is_note(line):
                 append_unique(current.notes, line)
+                note_continuation_active = True
+            elif note_continuation_active:
+                append_unique(current.notes, line)
+                note_continuation_active = True
+
+        if not line:
+            note_continuation_active = False
 
         index += 1
 
     return [table for table in tables if table.parts]
+
+
+def next_nonempty_line_starts_table(lines: list[str], start: int) -> bool:
+    for candidate in lines[start:]:
+        stripped = candidate.strip()
+        if not stripped:
+            continue
+        return stripped.startswith("<table") or stripped.startswith("|")
+    return False
 
 
 def table_raw_text(matrix: list[list[str]]) -> str:
@@ -698,28 +754,62 @@ def normalize_matrix_with_footnotes(
     rows: list[list[str]] = []
     footnote_rows: list[list[str]] = []
     max_cols = 0
-    header_signatures: set[tuple[str, ...]] = set()
     seen_data_signatures: set[tuple[str, ...]] = set()
     data_started = False
     known_markers = set(footnote_markers)
+    canonical_header: tuple[tuple[str, ...], ...] | None = None
 
     for part in parts:
-        for source_row in part.matrix:
-            parsed_cells = [split_cell_text(cell, known_markers) for cell in source_row]
+        preliminary_rows = [
+            list(source_row)
+            for source_row in part.matrix
+            if any(cell.strip() for cell in source_row)
+            and not is_metadata_row(source_row)
+        ]
+        header_guess_rows = [
+            [split_cell_text(cell, known_markers)[0] for cell in source_row]
+            for source_row in preliminary_rows
+        ]
+        preliminary_header_count = guess_header_count(header_guess_rows)
+        current_rows: list[tuple[list[str], list[str]]] = []
+        for row_index, source_row in enumerate(preliminary_rows):
+            row_markers = set(known_markers)
+            if row_index < preliminary_header_count:
+                row_markers.update(
+                    marker
+                    for cell in source_row
+                    for marker in inline_footnote_markers(cell)
+                )
+            parsed_cells = [split_cell_text(cell, row_markers) for cell in source_row]
             cleaned_row = [text for text, _ in parsed_cells]
             footnote_row = [marker for _, marker in parsed_cells]
-            if not any(cleaned_row) or is_metadata_row(cleaned_row):
-                continue
+            current_rows.append((cleaned_row, footnote_row))
 
-            row_signature = tuple(cleaned_row)
-            if data_started and row_signature in header_signatures:
+        current_matrix = [row for row, _ in current_rows]
+        current_header_count = guess_header_count(current_matrix)
+        current_header = tuple(tuple(row) for row in current_matrix[:current_header_count])
+        repeated_header_count = 0
+        if current_header:
+            if canonical_header is None:
+                canonical_header = current_header
+            elif rows_start_with_canonical_header(current_matrix, canonical_header):
+                repeated_header_count = len(canonical_header)
+            elif current_header == canonical_header:
+                repeated_header_count = len(current_header)
+            elif (
+                len(current_header) <= len(canonical_header)
+                and canonical_header[-len(current_header) :] == current_header
+            ):
+                repeated_header_count = len(current_header)
+
+        for row_index, (cleaned_row, footnote_row) in enumerate(current_rows):
+            if row_index < repeated_header_count:
                 continue
+            row_signature = tuple(cleaned_row)
             if data_started and row_signature in seen_data_signatures:
                 continue
 
             has_numeric_data = any(numeric_value(cell) is not None for cell in cleaned_row[1:])
-            if not data_started:
-                header_signatures.add(row_signature)
             if has_numeric_data:
                 data_started = True
             if data_started:
@@ -735,9 +825,17 @@ def normalize_matrix_with_footnotes(
         padded_rows,
         padded_footnote_rows,
     )
-    repaired_rows, repaired_footnotes = merge_split_bilingual_label_column(normalized_rows, normalized_footnotes)
-    repair_region_split_rows(repaired_rows, repaired_footnotes)
-    return repaired_rows, repaired_footnotes
+    repair_region_split_rows(normalized_rows, normalized_footnotes)
+    return normalized_rows, normalized_footnotes
+
+
+def rows_start_with_canonical_header(
+    rows: list[list[str]],
+    header: tuple[tuple[str, ...], ...],
+) -> bool:
+    if not header or len(rows) < len(header):
+        return False
+    return tuple(tuple(row) for row in rows[: len(header)]) == header
 
 
 def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
@@ -757,8 +855,7 @@ def normalized_part_rows(part: TablePart) -> list[list[str]]:
         rows.append(cleaned_row)
 
     normalized_rows = drop_empty_columns([row + [""] * (max_cols - len(row)) for row in rows])
-    merged_rows, _ = merge_split_bilingual_label_column(normalized_rows)
-    return merged_rows
+    return normalized_rows
 
 
 def compact_signature_cell(value: str) -> str:
@@ -847,6 +944,10 @@ def split_table_by_part_structure(table: LogicalTable) -> list[LogicalTable]:
             last_parts.append(part)
             continue
 
+        if parts_share_first_header(last_parts[0], part):
+            last_parts.append(part)
+            continue
+
         if signature == last_signature or signature == last_continuation_signature:
             last_parts.append(part)
             continue
@@ -873,6 +974,18 @@ def split_table_by_part_structure(table: LogicalTable) -> list[LogicalTable]:
             )
         )
     return split_tables
+
+
+def parts_share_first_header(left: TablePart, right: TablePart) -> bool:
+    left_rows = normalized_part_rows(left)
+    right_rows = normalized_part_rows(right)
+    if not left_rows or not right_rows:
+        return False
+    if not row_looks_like_header(left_rows[0]) or not row_looks_like_header(right_rows[0]):
+        return False
+    return tuple(compact_signature_cell(cell) for cell in left_rows[0]) == tuple(
+        compact_signature_cell(cell) for cell in right_rows[0]
+    )
 
 
 def part_caption_starts_distinct_subtable(previous: TablePart, current: TablePart) -> bool:
@@ -930,6 +1043,17 @@ def prepare_markdown_import_tables(parsed_tables: list[LogicalTable]) -> list[Im
             continue
 
         raw_text = table_parts_raw_text(table.parts)
+        raw_context = raw_text
+        caption_part = next((part for part in table.parts if part.title), None)
+        if caption_part is not None:
+            # The HTML/Markdown table serializer flattens the caption,
+            # metadata and first header row into one physical line.  Prefix
+            # the already parsed caption so the screen projection does not
+            # accidentally absorb the base date, unit or first header.
+            caption = " ".join(
+                value for value in (caption_part.title, caption_part.title_en) if value
+            )
+            raw_context = f"▫{caption}\n{raw_text}"
         metadata_text = table.metadata_context or raw_text
         unit, base_date = extract_unit_and_base_date(raw_text)
         shared_unit, shared_base_date = extract_unit_and_base_date(metadata_text)
@@ -965,7 +1089,7 @@ def prepare_markdown_import_tables(parsed_tables: list[LogicalTable]) -> list[Im
                 table_order=table.table_order,
                 note=note,
                 source=source,
-                raw_context=raw_text,
+                raw_context=raw_context,
                 matrix=matrix,
                 header_count=header_count,
                 footnote_matrix=footnote_matrix,

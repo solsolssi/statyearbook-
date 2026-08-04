@@ -6,6 +6,10 @@ from pathlib import Path
 
 from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
 from app.db.schema import init_db
+from app.ingest.text_canonicalization import (
+    canonicalize_note_text,
+    cell_text_comparison_key,
+)
 from app.models.report_updates import (
     ReportCellDifference,
     ReportComparisonSummary,
@@ -334,19 +338,31 @@ def compare_table_rows(
         return "added", True, all_cells_as_diffs(connection, right, left_missing=True)
     if right is None:
         return "deleted", True, all_cells_as_diffs(connection, left, left_missing=False)
-    metadata_changed = any(str(left[field] or "") != str(right[field] or "") for field in TABLE_METADATA_FIELDS)
+    metadata_changed = any(
+        metadata_comparison_key(field, left[field])
+        != metadata_comparison_key(field, right[field])
+        for field in TABLE_METADATA_FIELDS
+    )
     left_cells = cells_by_coordinate(connection, int(left["id"]))
     right_cells = cells_by_coordinate(connection, int(right["id"]))
     cell_diffs = [
         (row, col, left_cells.get((row, col), ""), right_cells.get((row, col), ""))
         for row, col in sorted(set(left_cells) | set(right_cells))
-        if left_cells.get((row, col), "") != right_cells.get((row, col), "")
+        if cell_text_comparison_key(left_cells.get((row, col), ""))
+        != cell_text_comparison_key(right_cells.get((row, col), ""))
     ]
     return (
         "modified" if metadata_changed or cell_diffs else "matching",
         metadata_changed,
         cell_diffs,
     )
+
+
+def metadata_comparison_key(field: str, value: object) -> str:
+    text = str(value or "")
+    if field == "note":
+        return canonicalize_note_text(text)
+    return text
 
 
 def cells_by_coordinate(

@@ -14,6 +14,77 @@ from app.validation.repository import ValidationRepository
 
 
 class ReportUpdateServiceTest(unittest.TestCase):
+    def test_comparison_ignores_format_only_whitespace(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                with connection:
+                    left_report_id = insert_report(connection, 2026, "left")
+                    right_report_id = insert_report(connection, 2026, "right")
+                    insert_table(
+                        connection,
+                        left_report_id,
+                        "A",
+                        "같은 표",
+                        [["구분", "값"], ["취 득 세", "47.3(42.4)"]],
+                    )
+                    insert_table(
+                        connection,
+                        right_report_id,
+                        "A",
+                        "같은 표",
+                        [["구 분", "값"], ["취득세", "47.3(42.4)"]],
+                    )
+
+            comparison = ReportComparisonService(db_path).compare(
+                left_report_id=left_report_id,
+                right_report_id=right_report_id,
+            )
+
+            self.assertEqual(comparison.matching_table_count, 1)
+            self.assertEqual(comparison.changed_table_count, 0)
+            self.assertEqual(comparison.changed_cell_count, 0)
+
+    def test_comparison_ignores_note_page_wrapping_only(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                with connection:
+                    left_report_id = insert_report(connection, 2026, "left-note")
+                    right_report_id = insert_report(connection, 2026, "right-note")
+                    left_table_id = insert_table(
+                        connection,
+                        left_report_id,
+                        "A",
+                        "같은 표",
+                        [["항목", "값"], ["계", "1"]],
+                    )
+                    right_table_id = insert_table(
+                        connection,
+                        right_report_id,
+                        "A",
+                        "같은 표",
+                        [["항목", "값"], ["계", "1"]],
+                    )
+                    connection.execute(
+                        "UPDATE stat_tables SET note = ? WHERE id = ?",
+                        ("#주1) 첫 문장 이어진 문장", left_table_id),
+                    )
+                    connection.execute(
+                        "UPDATE stat_tables SET note = ? WHERE id = ?",
+                        ("#주1) 첫 문장\n이어진 문장", right_table_id),
+                    )
+
+            comparison = ReportComparisonService(db_path).compare(
+                left_report_id=left_report_id,
+                right_report_id=right_report_id,
+            )
+
+            self.assertEqual(comparison.matching_table_count, 1)
+            self.assertEqual(comparison.changed_table_count, 0)
+
     def test_diff_comparison_and_unchanged_validation_reuse(self) -> None:
         with TemporaryDirectory() as directory:
             db_path = Path(directory) / "report.sqlite"
