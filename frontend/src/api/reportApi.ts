@@ -34,7 +34,7 @@ export type SourceDataUploadMode = "append_year";
 export interface ReportUploadOptions {
   year?: number;
   title?: string;
-  mode?: "completed_report_new" | "completed_report_update";
+  mode?: "completed_report_new";
   baseReportId?: number;
 }
 

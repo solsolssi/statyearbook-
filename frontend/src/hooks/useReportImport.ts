@@ -17,13 +17,6 @@ export type UploadSubmission =
       file: File;
     }
   | {
-      mode: "completed_report_update";
-      baseReportId: number;
-      targetYear: number;
-      title: string;
-      file: File;
-    }
-  | {
       mode: SourceDataUploadMode;
       baseReportId: number;
       targetYear: number;
@@ -42,10 +35,7 @@ export function useReportImport(onCompleted: (job: ReportImportJob) => void) {
     async (submission: UploadSubmission) => {
       setUploadState("uploading");
       try {
-        if (
-          submission.mode === "completed_report_new" ||
-          submission.mode === "completed_report_update"
-        ) {
+        if (submission.mode === "completed_report_new") {
           const queued = await uploadReport(submission.file, {
             year: submission.targetYear,
             title: submission.title,

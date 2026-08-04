@@ -264,9 +264,7 @@ async def create_report_import(
     title: str | None = Query(default=None),
     include_llm: bool | None = Query(default=None),
     refresh_profiles: bool = Query(default=False),
-    mode: Literal["completed_report_new", "completed_report_update"] = Query(
-        default="completed_report_new"
-    ),
+    mode: Literal["completed_report_new"] = Query(default="completed_report_new"),
     base_report_id: int | None = Query(default=None, gt=0),
 ) -> ReportProcessingJob:
     """Stream one workbook/document into a queued import and validation job."""

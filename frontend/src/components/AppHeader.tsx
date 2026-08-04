@@ -4,7 +4,6 @@ import {
   Database,
   FileText,
   LoaderCircle,
-  RefreshCcw,
   Scale,
   Upload,
   X,
@@ -48,22 +47,16 @@ const navItems: Array<{ id: AppSection; label: string }> = [
 
 const uploadModes: UploadModeOption[] = [
   {
+    id: "completed_report_new",
+    title: "완성 연보 새로 업로드",
+    detail: "HWPX, MD 연보를 새 연보로 저장합니다.",
+    icon: FileText,
+  },
+  {
     id: "append_year",
     title: "기준 연보에 새 연도 원장 추가",
     detail: "선택한 연보의 형식을 기준으로 다음 연도 원장 데이터를 반영합니다.",
     icon: Database,
-  },
-  {
-    id: "completed_report_new",
-    title: "완성 연보 새로 업로드",
-    detail: "HWPX, MD, 완성 엑셀 연보를 새 연보로 저장합니다.",
-    icon: FileText,
-  },
-  {
-    id: "completed_report_update",
-    title: "완성 연보 수정본 반영",
-    detail: "기준 연보와 달라진 표를 찾을 수 있도록 수정본을 별도 연보로 저장합니다.",
-    icon: RefreshCcw,
   },
 ];
 
@@ -171,7 +164,7 @@ function UploadDecisionDialog({
   const fallbackReport = baseReports[0];
   const selectedReport =
     baseReports.find((report) => String(report.id) === selectedReportId) ?? fallbackReport;
-  const [mode, setMode] = useState<UploadMode>("append_year");
+  const [mode, setMode] = useState<UploadMode>("completed_report_new");
   const [baseReportId, setBaseReportId] = useState(
     selectedReport ? String(selectedReport.id) : "",
   );
@@ -195,9 +188,7 @@ function UploadDecisionDialog({
       String(
         mode === "append_year"
           ? baseReport.year + 1
-          : mode === "completed_report_new"
-            ? new Date().getFullYear()
-            : baseReport.year,
+          : new Date().getFullYear(),
       ),
     );
   }, [baseReport, mode]);
@@ -206,12 +197,8 @@ function UploadDecisionDialog({
     const year = /^\d{4}$/.test(targetYear)
       ? targetYear
       : String(new Date().getFullYear());
-    setReportTitle(
-      mode === "completed_report_update" && baseReport
-        ? `${baseReport.title} 수정본`
-        : `${year} 행정안전통계연보`,
-    );
-  }, [baseReport, mode, targetYear]);
+    setReportTitle(`${year} 행정안전통계연보`);
+  }, [mode, targetYear]);
 
   const needsBaseReport = mode !== "completed_report_new";
   const sourceFileSet = classifySourceFiles(sourceFiles);
@@ -219,7 +206,7 @@ function UploadDecisionDialog({
     (!needsBaseReport || Boolean(baseReport)) &&
     /^\d{4}$/.test(targetYear) &&
     Boolean(reportTitle.trim()) &&
-    (mode === "completed_report_new" || mode === "completed_report_update"
+    (mode === "completed_report_new"
       ? Boolean(completedFile)
       : Boolean(sourceFileSet.infoFile && sourceFileSet.itemFile && sourceFileSet.valueFile));
 
@@ -234,19 +221,6 @@ function UploadDecisionDialog({
       }
       onUpload({
         mode,
-        targetYear: parsedYear,
-        title: reportTitle.trim(),
-        file: completedFile,
-      });
-      return;
-    }
-    if (mode === "completed_report_update") {
-      if (!completedFile || !baseReport) {
-        return;
-      }
-      onUpload({
-        mode,
-        baseReportId: baseReport.id,
         targetYear: parsedYear,
         title: reportTitle.trim(),
         file: completedFile,
@@ -319,19 +293,25 @@ function UploadDecisionDialog({
                 onChange={(event) => setTargetYear(event.target.value)}
               />
             </label>
-            {needsBaseReport ? (
-              <label>
-                <span>기준 연보</span>
-                <select value={baseReportId} onChange={(event) => setBaseReportId(event.target.value)}>
-                  {baseReports.map((report) => (
+            <label>
+              <span>기준 연보</span>
+              <select
+                value={baseReportId}
+                disabled={!needsBaseReport || baseReports.length === 0}
+                onChange={(event) => setBaseReportId(event.target.value)}
+              >
+                {baseReports.length > 0 ? (
+                  baseReports.map((report) => (
                     <option key={report.id} value={report.id}>
                       {report.year}년 · {report.file_name || report.title}
                       {report.kind === "template" ? " (숨김 템플릿)" : ""}
                     </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
+                  ))
+                ) : (
+                  <option value="">선택 가능한 기준 연보 없음</option>
+                )}
+              </select>
+            </label>
           </div>
           <div className="upload-dialog__form-row upload-dialog__form-row--title">
             <label>
@@ -347,20 +327,20 @@ function UploadDecisionDialog({
           </div>
         </div>
 
-        {mode === "completed_report_new" || mode === "completed_report_update" ? (
+        {mode === "completed_report_new" ? (
           <div className="upload-file-picker">
             <input
               ref={completedInputRef}
               className="visually-hidden"
               type="file"
-              accept=".xlsx,.hwpx,.md"
+              accept=".hwpx,.md"
               onChange={(event) => setCompletedFile(event.target.files?.[0] ?? null)}
             />
             <button type="button" onClick={() => completedInputRef.current?.click()}>
               <Upload aria-hidden="true" size={18} />
               <span>연보 파일 선택</span>
             </button>
-            <p>{completedFile ? completedFile.name : "HWPX, MD, XLSX 파일 1개를 선택하세요."}</p>
+            <p>{completedFile ? completedFile.name : "HWPX, MD 파일 1개를 선택하세요."}</p>
           </div>
         ) : (
           <div className="upload-file-picker">
@@ -374,7 +354,7 @@ function UploadDecisionDialog({
             />
             <button type="button" onClick={() => sourceInputRef.current?.click()}>
               <Upload aria-hidden="true" size={18} />
-              <span>원장 엑셀 3개 선택</span>
+              <span>연보 파일 선택</span>
             </button>
             <SourceFileStatus files={sourceFileSet} />
           </div>

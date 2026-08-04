@@ -187,14 +187,16 @@ button {
 
 .upload-mode-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
 }
 
 .upload-mode-card {
   display: grid;
   justify-items: start;
   gap: 8px;
+  width: 100%;
   min-height: 144px;
   padding: 16px;
   color: var(--text);
@@ -257,6 +259,13 @@ button {
   background: var(--surface);
   border: 1px solid var(--line);
   font-weight: 800;
+}
+
+.upload-dialog__form select:disabled {
+  color: var(--muted);
+  background: var(--surface-muted);
+  cursor: not-allowed;
+  opacity: 1;
 }
 
 .upload-file-picker {
