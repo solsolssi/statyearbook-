@@ -81,6 +81,15 @@ async def import_source_statistics(
 ) -> SourceDataImportResult:
     """Import normalized source-system Excel exports for a selected report context."""
 
+    ledger_service = LedgerYearbookService()
+    try:
+        ledger_service.validate_request(
+            base_report_id=base_report_id,
+            target_year=target_year,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
     with TemporaryDirectory() as directory:
         root = Path(directory)
         info_path = await save_uploaded_excel(info_file, root)
@@ -103,19 +112,27 @@ async def import_source_statistics(
                 value_path=value_path,
                 target_year=target_year,
             )
-        generated = LedgerYearbookService().generate(
-            base_report_id=base_report_id,
-            target_year=target_year,
-            source_batch_id=result.batch_id,
-            mode=mode,
-            title=title,
-        )
+        try:
+            generated = ledger_service.generate(
+                base_report_id=base_report_id,
+                target_year=target_year,
+                source_batch_id=result.batch_id,
+                mode=mode,
+                title=title,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
     return SourceDataImportResult(
         mode=mode,
         base_report_id=base_report_id,
         target_year=target_year,
         generated_report_id=generated.report_id,
         reproduction_run_id=generated.reproduction_run_id,
+        source_snapshot_id=generated.source_snapshot_id,
+        generated_table_count=generated.generated_table_count,
+        review_table_count=generated.review_table_count,
+        deleted_table_count=generated.deleted_table_count,
+        new_table_count=generated.new_table_count,
         **result.__dict__,
     )
 

@@ -18,6 +18,7 @@ class ConfirmedSourceMapping:
     effective_to_year: int | None = None
     target_period: str = ""
     instructions: str = ""
+    item_projection: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,67 @@ class ConfirmedManifestDecision:
 # Keep physical table codes here because one logical statistic can change source
 # and layout at different points in its displayed time series.
 CONFIRMED_SOURCE_MAPPINGS: tuple[ConfirmedSourceMapping, ...] = (
+    # Explicit projections for source trees that feed a different physical
+    # yearbook layout.  These are source-item rules, not values copied from a
+    # completed annual report, so the same recipe applies to later increments.
+    ConfirmedSourceMapping(
+        "2-2-12-3 표1",
+        ("M218233129571867",),
+        materializer="current_period_rows",
+        item_projection=((1, 10003), (2, 10007), (3, 10006), (4, 10005), (5, 10004)),
+        instructions="원장 공용차량 수 하위 항목을 연보의 계·승용·승합·화물·특수 열로 재배치",
+    ),
+    ConfirmedSourceMapping(
+        "3-2-1-1",
+        ("M215063129202904",),
+        materializer="period_rows",
+        instructions="5개 기관 구분을 유지한 7개년 롤링 기간창",
+    ),
+    ConfirmedSourceMapping(
+        "3-2-1-2",
+        ("M217263129216944",),
+        materializer="period_rows",
+        instructions="5개 기관 구분을 유지한 7개년 롤링 기간창",
+    ),
+    ConfirmedSourceMapping(
+        "4-1-1-3",
+        ("M213233129859083",),
+        materializer="period_rows",
+        instructions="기준일별 행정구역 수를 10개년 롤링 기간창으로 이동",
+    ),
+    ConfirmedSourceMapping(
+        "4-1-4-2",
+        ("M214393129958981",),
+        materializer="current_period_rows",
+        instructions="인용·기각·각하 행은 원장에서, 계 행은 세 행의 합으로 산출",
+    ),
+    ConfirmedSourceMapping(
+        "8-1-3-2 표1",
+        ("M212113130877979",),
+        materializer="period_rows",
+        item_projection=((1, 10010), (3, 10012)),
+        instructions="사이버교육 운영 하위 과정수·수료인원을 10개년 기간창에 반영",
+    ),
+    ConfirmedSourceMapping(
+        "8-1-3-2 표2",
+        ("M212113130877979",),
+        materializer="period_rows",
+        item_projection=((1, 10007), (2, 10008), (4, 10009)),
+        instructions="연계 운영 하위 과정수·횟수·수료인원을 10개년 기간창에 반영",
+    ),
+    ConfirmedSourceMapping(
+        "8-1-3-2 표3",
+        ("M212113130877979",),
+        materializer="period_rows",
+        item_projection=((1, 10004), (3, 10006)),
+        instructions="공동활용 하위 과정수·수료인원을 10개년 기간창에 반영",
+    ),
+    ConfirmedSourceMapping(
+        "8-1-4 표1",
+        ("M214083130887319",),
+        materializer="period_rows",
+        instructions="교육 훈련 구분별 수치를 표시 기간창에 반영",
+    ),
     ConfirmedSourceMapping("2-1-1-6", ("M214863128953220",)),
     ConfirmedSourceMapping(
         "3-1-10-1",
@@ -592,6 +654,10 @@ def apply_mapping(
         "instructions": mapping.instructions,
         "target_period": mapping.target_period,
         "value_authority": "source_ledger",
+        "item_projection": {
+            str(column): item
+            for column, item in mapping.item_projection
+        },
     }
     config_json = json.dumps(config, ensure_ascii=False)
     primary_source_id = int(source_rows[-1]["id"]) if source_rows else None

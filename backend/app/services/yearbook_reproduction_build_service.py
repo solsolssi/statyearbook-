@@ -5,7 +5,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 
-from app.db.connection import DB_PATH, connect
+from app.db.connection import DB_PATH, DatabaseConnection, connect
 from app.db.schema import init_db
 from app.models.yearbook_reproduction import ReproductionBuildSummary
 from app.services.confirmed_source_mapping_service import (
@@ -17,6 +17,7 @@ from app.services.yearbook_reproduction_service import (
 )
 from app.services.yearbook_update_policy_service import YearbookUpdatePolicyService
 from app.yearbook_data.relational_materializer import RelationalTableMaterializer
+from app.yearbook_data.source_snapshots import activate_source_snapshot, snapshot_for_report
 
 
 class YearbookReproductionBuildService:
@@ -31,20 +32,49 @@ class YearbookReproductionBuildService:
         report_id: int,
         report_year: int | None = None,
         target_data_year: int | None = None,
+        source_snapshot_id: int | None = None,
     ) -> ReproductionBuildSummary:
+        effective_source_snapshot_id = source_snapshot_id
+        if effective_source_snapshot_id is None:
+            with connect(self._db_path) as connection:
+                init_db(connection)
+                snapshot = snapshot_for_report(connection, report_id)
+                if snapshot is not None:
+                    effective_source_snapshot_id = snapshot.id
         confirmed_mapping_service = ConfirmedSourceMappingService(self._db_path)
         confirmed_mapping_service.synchronize()
-        policy_service = YearbookUpdatePolicyService(self._db_path)
-        policy_service.synchronize(report_id=report_id)
-        confirmed_mapping_service.synchronize_manifest_decisions()
-        overview = YearbookReproductionService(self._db_path).overview(report_id=report_id)
+        overview = YearbookReproductionService(self._db_path).overview(
+            report_id=report_id,
+            source_snapshot_id=effective_source_snapshot_id,
+        )
         effective_report_year = report_year or overview.report_year
         effective_target_year = target_data_year or int(overview.target_data_period)
+        if (
+            effective_report_year != overview.report_year
+            or effective_target_year != int(overview.target_data_period)
+        ):
+            overview = YearbookReproductionService(self._db_path).overview(
+                report_id=report_id,
+                source_snapshot_id=effective_source_snapshot_id,
+                target_data_year=effective_target_year,
+                recipe_year=effective_report_year,
+            )
+        policy_service = YearbookUpdatePolicyService(self._db_path)
+        policy_service.synchronize(
+            report_id=report_id,
+            source_snapshot_id=effective_source_snapshot_id,
+            edition_year=effective_report_year,
+            target_data_year=effective_target_year,
+        )
+        confirmed_mapping_service.synchronize_manifest_decisions()
         materializer = RelationalTableMaterializer(self._db_path)
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with connect(self._db_path) as connection:
             init_db(connection)
-            with connection:
+            with connection, activate_source_snapshot(
+                connection,
+                effective_source_snapshot_id,
+            ):
                 policies = policy_service.policies(connection)
                 manifest = policy_service.manifest(
                     connection,
@@ -54,13 +84,14 @@ class YearbookReproductionBuildService:
                     """
                     INSERT INTO yearbook_reproduction_runs (
                         baseline_report_id, report_year, target_data_year,
-                        status, created_at
-                    ) VALUES (?, ?, ?, 'running', ?)
+                        source_snapshot_id, status, created_at
+                    ) VALUES (?, ?, ?, ?, 'running', ?)
                     """,
                     (
                         overview.report_id,
                         effective_report_year,
                         effective_target_year,
+                        effective_source_snapshot_id,
                         created_at,
                     ),
                 )
@@ -84,6 +115,30 @@ class YearbookReproductionBuildService:
                         and manifest_entry.source_dataset_id is not None
                         else table.source_dataset_id
                     )
+                    source_lifecycle_status = latest_source_lifecycle_status(
+                        connection,
+                        snapshot_id=effective_source_snapshot_id,
+                        dataset_id=source_dataset_id,
+                    )
+                    if (
+                        lifecycle_status == "no_change"
+                        and has_target_period_incremental_values(
+                            connection,
+                            snapshot_id=effective_source_snapshot_id,
+                            dataset_id=source_dataset_id,
+                            target_year=effective_target_year,
+                        )
+                    ):
+                        # A former "no change" decision only applies while
+                        # the increment has no value for this table's target
+                        # period.  The presence of an actual incremental
+                        # value must always reactivate source materialization.
+                        lifecycle_status = "updated"
+                    if (
+                        source_lifecycle_status == "deleted"
+                        and (manifest_entry is None or manifest_entry.is_inferred)
+                    ):
+                        lifecycle_status = "deleted"
                     recipe = connection.execute(
                         """
                         SELECT id
@@ -173,6 +228,7 @@ class YearbookReproductionBuildService:
                                 and policy.structure_change_action
                                 == "source_native_preview"
                             ),
+                            update_mode=policy.update_mode if policy else "",
                         )
                         status = result.status
                         error = result.error
@@ -260,3 +316,56 @@ class YearbookReproductionBuildService:
             completed_at=completed_at,
             **summary,
         )
+
+
+def latest_source_lifecycle_status(
+    connection: DatabaseConnection,
+    *,
+    snapshot_id: int | None,
+    dataset_id: int | None,
+) -> str:
+    if snapshot_id is None or dataset_id is None:
+        return ""
+    row = connection.execute(
+        """
+        SELECT event.lifecycle_status
+        FROM statistical_dataset_lifecycle_events event
+        JOIN source_snapshot_batches batch
+          ON batch.source_batch_id = event.source_batch_id
+         AND batch.snapshot_id = ?
+        WHERE event.dataset_id = ?
+        ORDER BY batch.precedence DESC, event.id DESC
+        LIMIT 1
+        """,
+        (snapshot_id, dataset_id),
+    ).fetchone()
+    return str(row["lifecycle_status"] or "") if row is not None else ""
+
+
+def has_target_period_incremental_values(
+    connection: DatabaseConnection,
+    *,
+    snapshot_id: int | None,
+    dataset_id: int | None,
+    target_year: int,
+) -> bool:
+    if snapshot_id is None or dataset_id is None:
+        return False
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM statistical_values value
+        JOIN source_snapshot_batches membership
+          ON membership.source_batch_id = value.source_batch_id
+         AND membership.snapshot_id = ?
+        JOIN series_import_batches batch
+          ON batch.id = membership.source_batch_id
+         AND batch.import_kind = 'relational_incremental'
+        WHERE value.dataset_id = ?
+          AND CAST(SUBSTR(value.period, 1, 4) AS INTEGER) = ?
+          AND ? <= COALESCE(membership.visible_through_year, ?)
+        LIMIT 1
+        """,
+        (snapshot_id, dataset_id, target_year, target_year, target_year),
+    ).fetchone()
+    return row is not None

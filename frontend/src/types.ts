@@ -337,6 +337,11 @@ export interface SourceDataImportResult {
   reused: boolean;
   generated_report_id: number;
   reproduction_run_id: number;
+  source_snapshot_id: number;
+  generated_table_count: number;
+  review_table_count: number;
+  deleted_table_count: number;
+  new_table_count: number;
 }
 
 export interface ReportTableDifference {

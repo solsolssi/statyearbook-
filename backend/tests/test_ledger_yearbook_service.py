@@ -8,9 +8,111 @@ import unittest
 from app.db.connection import connect
 from app.db.schema import init_db
 from app.services.ledger_yearbook_service import LedgerYearbookService
+from app.services.database_report_service import DatabaseReportService
 
 
 class LedgerYearbookServiceTest(unittest.TestCase):
+    def test_completed_target_report_is_ignored_for_generation(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                with connection:
+                    batch = connection.execute(
+                        """
+                        INSERT INTO series_import_batches (
+                            source_file_name, file_hash, import_kind, target_year
+                        ) VALUES ('full.xlsx', 'full-layout', 'relational_full', 0)
+                        """
+                    )
+                    batch_id = int(batch.lastrowid)
+                    delta_batch = connection.execute(
+                        """
+                        INSERT INTO series_import_batches (
+                            source_file_name, file_hash, import_kind, target_year
+                        ) VALUES ('increment.xlsx', 'increment', 'relational_incremental', 2026)
+                        """
+                    )
+                    delta_batch_id = int(delta_batch.lastrowid)
+                    base = connection.execute(
+                        """
+                        INSERT INTO annual_reports (
+                            year, title, source_file_name, source_file_path,
+                            file_hash, imported_at, origin_kind
+                        ) VALUES (2025, '기준', 'base.hwpx', '', 'base-layout',
+                                  '2025-01-01', 'uploaded')
+                        """
+                    )
+                    base_report_id = int(base.lastrowid)
+                    target = connection.execute(
+                        """
+                        INSERT INTO annual_reports (
+                            year, title, source_file_name, source_file_path,
+                            file_hash, imported_at, origin_kind
+                        ) VALUES (2026, '확정 형식', 'target.hwpx', '', 'target-layout',
+                                  '2026-01-01', 'uploaded')
+                        """
+                    )
+                    target_report_id = int(target.lastrowid)
+                    for report_id, definitions in (
+                        (base_report_id, (("X", "10"), ("DEL", "20"))),
+                        (target_report_id, (("X", "999"), ("NEW", "888"))),
+                    ):
+                        for table_order, (code, value) in enumerate(definitions, 1):
+                            table = connection.execute(
+                                """
+                                INSERT INTO stat_tables (
+                                    report_id, code, title, table_order
+                                ) VALUES (?, ?, ?, ?)
+                                """,
+                                (report_id, code, code, table_order),
+                            )
+                            table_id = int(table.lastrowid)
+                            connection.executemany(
+                                """
+                                INSERT INTO stat_table_cells (
+                                    table_id, row_index, col_index,
+                                    text_value, is_header
+                                ) VALUES (?, ?, ?, ?, ?)
+                                """,
+                                [
+                                    (table_id, 0, 0, "구분", 1),
+                                    (table_id, 0, 1, "값", 1),
+                                    (table_id, 1, 0, "항목", 0),
+                                    (table_id, 1, 1, value, 0),
+                                ],
+                            )
+
+            generated = LedgerYearbookService(db_path).generate(
+                base_report_id=base_report_id,
+                target_year=2026,
+                source_batch_id=batch_id,
+                mode="append_year",
+                title="형식 학습 결과",
+            )
+            with connect(db_path) as connection:
+                cells = connection.execute(
+                    """
+                    SELECT table_row.code, cell.text_value
+                    FROM stat_tables table_row
+                    JOIN stat_table_cells cell ON cell.table_id = table_row.id
+                    WHERE table_row.report_id = ?
+                      AND cell.row_index = 1 AND cell.col_index = 1
+                    ORDER BY table_row.code
+                    """,
+                    (generated.report_id,),
+                ).fetchall()
+
+            # The uploaded 2026 report is only a comparison oracle.  The
+            # generated report must retain the selected 2025 predecessor's
+            # structure and must not inherit NEW/DEL decisions from it.
+            self.assertEqual(generated.new_table_count, 0)
+            self.assertEqual(generated.deleted_table_count, 0)
+            self.assertEqual(
+                {str(row["code"]): str(row["text_value"] or "") for row in cells},
+                {"DEL": "20", "X": "10"},
+            )
+
     def test_generates_next_report_snapshot_with_a_shifted_year_window(self) -> None:
         with TemporaryDirectory() as directory:
             db_path = Path(directory) / "report.sqlite"
@@ -55,6 +157,14 @@ class LedgerYearbookServiceTest(unittest.TestCase):
                         """
                     )
                     batch_id = int(batch.lastrowid)
+                    delta_batch = connection.execute(
+                        """
+                        INSERT INTO series_import_batches (
+                            source_file_name, file_hash, import_kind, target_year
+                        ) VALUES ('increment.xlsx', 'increment-window', 'relational_incremental', 2026)
+                        """
+                    )
+                    delta_batch_id = int(delta_batch.lastrowid)
                     dataset = connection.execute(
                         """
                         INSERT INTO statistical_datasets (
@@ -72,7 +182,11 @@ class LedgerYearbookServiceTest(unittest.TestCase):
                         """,
                         (dataset_id, batch_id),
                     )
-                    for period, value in (("202300", "10"), ("202400", "20"), ("202500", "30")):
+                    for period, value, value_batch_id in (
+                        ("202300", "10", batch_id),
+                        ("202400", "20", batch_id),
+                        ("202500", "30", delta_batch_id),
+                    ):
                         connection.execute(
                             """
                             INSERT INTO statistical_values (
@@ -80,7 +194,7 @@ class LedgerYearbookServiceTest(unittest.TestCase):
                                 item_data_no, class_data_no, data_value, source_batch_id
                             ) VALUES (?, 'YY', ?, 'OD', 1, -1, ?, ?)
                             """,
-                            (dataset_id, period, value, batch_id),
+                            (dataset_id, period, value, value_batch_id),
                         )
                     connection.execute(
                         """
@@ -104,7 +218,7 @@ class LedgerYearbookServiceTest(unittest.TestCase):
                             source_key, external_id, title, introduced_batch_id
                         ) VALUES ('m-new', 'M-NEW', '새 통계', ?)
                         """,
-                        (batch_id,),
+                        (delta_batch_id,),
                     )
                     new_dataset_id = int(new_dataset.lastrowid)
                     connection.execute(
@@ -114,7 +228,7 @@ class LedgerYearbookServiceTest(unittest.TestCase):
                             display_order, source_batch_id
                         ) VALUES (?, 1, '신규 값', '신규 값', 1, ?)
                         """,
-                        (new_dataset_id, batch_id),
+                        (new_dataset_id, delta_batch_id),
                     )
                     connection.execute(
                         """
@@ -123,16 +237,25 @@ class LedgerYearbookServiceTest(unittest.TestCase):
                             item_data_no, class_data_no, data_value, source_batch_id
                         ) VALUES (?, 'YY', '202500', 'OD', 1, -1, '99', ?)
                         """,
-                        (new_dataset_id, batch_id),
+                        (new_dataset_id, delta_batch_id),
                     )
 
             generated = LedgerYearbookService(db_path).generate(
                 base_report_id=report_id,
                 target_year=2026,
-                source_batch_id=batch_id,
+                source_batch_id=delta_batch_id,
                 mode="append_year",
                 title="직접 입력한 2026 연보",
             )
+            repeated = LedgerYearbookService(db_path).generate(
+                base_report_id=report_id,
+                target_year=2026,
+                source_batch_id=delta_batch_id,
+                mode="append_year",
+                title="직접 입력한 2026 연보",
+            )
+            self.assertNotEqual(generated.report_id, repeated.report_id)
+            self.assertNotEqual(generated.source_snapshot_id, repeated.source_snapshot_id)
             with connect(db_path) as connection:
                 report_row = connection.execute(
                     "SELECT year, title, origin_kind, base_report_id FROM annual_reports WHERE id = ?",
@@ -171,6 +294,34 @@ class LedgerYearbookServiceTest(unittest.TestCase):
             self.assertIsNotNone(preview)
             self.assertEqual(preview["title"], "새 통계")
             self.assertEqual(preview["generation_status"], "new_table")
+
+            with connect(db_path) as connection:
+                snapshot = connection.execute(
+                    "SELECT id, parent_snapshot_id FROM source_data_snapshots WHERE report_id = ?",
+                    (generated.report_id,),
+                ).fetchone()
+            self.assertIsNotNone(snapshot)
+            assert snapshot is not None
+            child_snapshot_id = int(snapshot["id"])
+            parent_snapshot_id = int(snapshot["parent_snapshot_id"])
+
+            deleted = DatabaseReportService(db_path).delete_report(generated.report_id)
+            self.assertIsNotNone(deleted)
+            with connect(db_path) as connection:
+                child_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) AS count FROM source_data_snapshots WHERE id = ?",
+                        (child_snapshot_id,),
+                    ).fetchone()["count"]
+                )
+                parent_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) AS count FROM source_data_snapshots WHERE id = ?",
+                        (parent_snapshot_id,),
+                    ).fetchone()["count"]
+                )
+            self.assertEqual(child_count, 0)
+            self.assertEqual(parent_count, 1)
 
 
 if __name__ == "__main__":

@@ -54,6 +54,22 @@ export function useReportImport(onCompleted: (job: ReportImportJob) => void) {
             itemFile: submission.itemFile,
             valueFile: submission.valueFile,
           });
+          window.alert(
+            [
+              `${submission.targetYear}년 연보를 생성했습니다.`,
+              `원장 값: 신규 ${result.inserted_values.toLocaleString()}건 · 갱신 ${result.updated_values.toLocaleString()}건 · 동일 ${result.unchanged_values.toLocaleString()}건`,
+              `표 생성: 완료 ${result.generated_table_count.toLocaleString()}개 · 확인 필요 ${result.review_table_count.toLocaleString()}개`,
+              "기준 연보 스냅샷과 저장된 갱신 정책만 사용했습니다.",
+              result.new_table_count > 0
+                ? `신규 통계 임시 표 ${result.new_table_count.toLocaleString()}개`
+                : "",
+              result.deleted_table_count > 0
+                ? `삭제 명세 반영 ${result.deleted_table_count.toLocaleString()}개`
+                : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          );
           onCompleted({
             id: 0,
             report_id: result.generated_report_id,

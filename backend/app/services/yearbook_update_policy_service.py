@@ -43,16 +43,39 @@ class YearbookUpdatePolicyService:
     def __init__(self, db_path: Path = DB_PATH) -> None:
         self._db_path = db_path
 
-    def synchronize(self, *, report_id: int) -> None:
-        overview = YearbookReproductionService(self._db_path).overview(report_id=report_id)
+    def synchronize(
+        self,
+        *,
+        report_id: int,
+        source_snapshot_id: int | None = None,
+        edition_year: int | None = None,
+        target_data_year: int | None = None,
+    ) -> None:
+        overview = YearbookReproductionService(self._db_path).overview(
+            report_id=report_id,
+            source_snapshot_id=source_snapshot_id,
+            target_data_year=target_data_year,
+            recipe_year=edition_year,
+        )
+        effective_edition_year = edition_year or overview.report_year
+        effective_target_period = str(
+            target_data_year
+            if target_data_year is not None
+            else int(overview.target_data_period)
+        )
         with connect(self._db_path) as connection:
             init_db(connection)
             with connection:
                 for table in overview.tables:
                     update_mode = infer_update_mode(connection, table)
+                    # Policy inference is based only on the selected
+                    # predecessor.  Do not inspect a completed report for the
+                    # edition being generated: that report is a post-build
+                    # comparison oracle, never a generation template.
+                    inferred_window_size = max(1, table.period_rule.count)
                     existing_policy = connection.execute(
                         """
-                        SELECT table_code, no_update_action
+                        SELECT table_code, no_update_action, policy_source
                         FROM yearbook_table_update_policies
                         WHERE table_code = ?
                         """,
@@ -65,18 +88,39 @@ class YearbookUpdatePolicyService:
                                 table_code, update_mode, window_size,
                                 no_update_action, structure_change_action,
                                 text_update_action, source_report_id,
-                                source_table_id, notes
+                                source_table_id, policy_source,
+                                learned_from_report_id, notes
                             ) VALUES (?, ?, ?, 'require_manifest',
                                       'source_native_preview',
-                                      'source_then_template', ?, ?, ?)
+                                      'source_then_template', ?, ?, ?, ?, ?)
                             """,
                             (
                                 table.code,
                                 update_mode,
-                                max(1, table.period_rule.count),
+                                inferred_window_size,
                                 overview.report_id,
                                 table.table_id,
+                                "inferred_from_predecessor",
+                                None,
                                 automatic_policy_note(update_mode),
+                            ),
+                        )
+                    elif str(existing_policy["policy_source"] or "") == "learned_from_completed_reports":
+                        # Migrate policies created by the former target-layout
+                        # shortcut.  Manually approved policies are untouched.
+                        connection.execute(
+                            """
+                            UPDATE yearbook_table_update_policies
+                            SET update_mode = ?, window_size = ?,
+                                policy_source = 'inferred_from_predecessor',
+                                learned_from_report_id = NULL,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE table_code = ?
+                            """,
+                            (
+                                update_mode,
+                                inferred_window_size,
+                                table.code,
                             ),
                         )
 
@@ -93,11 +137,11 @@ class YearbookUpdatePolicyService:
                         FROM yearbook_edition_manifest
                         WHERE edition_year = ? AND table_code = ?
                         """,
-                        (overview.report_year, table.code),
+                        (effective_edition_year, table.code),
                     ).fetchone()
                     values = (
                         lifecycle_status,
-                        table.period_rule.target_period,
+                        effective_target_period,
                         table.source_dataset_id,
                         table.title,
                         table.table_order,
@@ -112,7 +156,7 @@ class YearbookUpdatePolicyService:
                                 table_order, notes, is_inferred
                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
                             """,
-                            (overview.report_year, table.code, *values),
+                            (effective_edition_year, table.code, *values),
                         )
                     elif bool(existing_manifest["is_inferred"]):
                         connection.execute(

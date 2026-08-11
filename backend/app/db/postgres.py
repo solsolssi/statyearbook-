@@ -12,6 +12,7 @@ LASTROWID_TABLES = {
     "report_processing_jobs",
     "validation_profiles",
     "series_import_batches",
+    "source_data_snapshots",
     "statistical_datasets",
     "statistical_dataset_versions",
     "statistical_observations",

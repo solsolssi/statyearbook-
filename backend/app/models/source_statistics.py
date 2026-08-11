@@ -84,3 +84,8 @@ class SourceDataImportResult(BaseModel):
     reused: bool = False
     generated_report_id: int
     reproduction_run_id: int
+    source_snapshot_id: int = 0
+    generated_table_count: int = 0
+    review_table_count: int = 0
+    deleted_table_count: int = 0
+    new_table_count: int = 0

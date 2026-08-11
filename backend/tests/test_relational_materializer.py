@@ -283,6 +283,70 @@ class RelationalTableMaterializerTest(unittest.TestCase):
             self.assertEqual(result.status, "exact")
             self.assertEqual(result.mismatch_count, 0)
 
+    def test_rolling_period_columns_shift_retained_values_when_source_history_is_missing(self) -> None:
+        """Older values stay paired with their year when a window moves."""
+
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                with connection:
+                    report_id = insert_report(connection)
+                    table_id = insert_table(
+                        connection,
+                        report_id,
+                        "1-5-rolling",
+                        "이동 연도 열 테스트",
+                        1,
+                    )
+                    insert_cells(
+                        connection,
+                        table_id,
+                        [
+                            (0, 0, "구분", 1),
+                            (0, 1, "2023", 1),
+                            (0, 2, "2024", 1),
+                            (1, 0, "접수", 0),
+                            (1, 1, "10", 0),
+                            (1, 2, "20", 0),
+                        ],
+                    )
+                    dataset_id = insert_dataset(
+                        connection,
+                        "M-PERIOD-COLUMNS-ROLLING",
+                        "이동 연도 열 테스트",
+                    )
+                    batch_id = insert_batch(connection, "period-columns-rolling")
+                    insert_item(connection, dataset_id, batch_id, 10001, "접수")
+                    # The new increment has only the new 2025 value.  The
+                    # retained 2024 value therefore has to shift from the
+                    # predecessor rather than remain in the old first column.
+                    insert_value(
+                        connection,
+                        dataset_id,
+                        batch_id,
+                        "202500",
+                        10001,
+                        1,
+                        "30",
+                    )
+
+            result = RelationalTableMaterializer(db_path).materialize(
+                table_id=table_id,
+                dataset_id=dataset_id,
+                materializer="period_columns",
+                target_year=2025,
+                update_mode="rolling_window",
+            )
+            values = {
+                (cell.row_index, cell.col_index): cell.generated_value
+                for cell in result.cells
+            }
+            self.assertEqual(values[(0, 1)], "2024")
+            self.assertEqual(values[(0, 2)], "2025")
+            self.assertEqual(values[(1, 1)], "20")
+            self.assertEqual(values[(1, 2)], "30")
+
     def test_full_snapshot_can_preview_added_rows_without_changing_baseline(self) -> None:
         with TemporaryDirectory() as directory:
             db_path = Path(directory) / "report.sqlite"

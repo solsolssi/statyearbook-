@@ -22,6 +22,12 @@ from app.models.yearbook_reproduction import (
     ReproductionTableAnalysis,
     YearbookReproductionOverview,
 )
+from app.yearbook_data.source_snapshots import (
+    activate_source_snapshot,
+    snapshot_for_report,
+    source_items_relation,
+    source_values_relation,
+)
 
 
 YEAR_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
@@ -83,65 +89,94 @@ class YearbookReproductionService:
         *,
         report_id: int | None = None,
         report_year: int | None = None,
+        source_snapshot_id: int | None = None,
+        target_data_year: int | None = None,
+        recipe_year: int | None = None,
     ) -> YearbookReproductionOverview:
-        with connect(self._db_path) as connection:
+        connection = connect(self._db_path)
+        try:
             init_db(connection)
-            reports = self._reports(connection)
-            report = resolve_report(reports, report_id=report_id, report_year=report_year)
-            if report is None:
-                raise ValueError("재현 기준으로 사용할 연보가 없습니다.")
-
-            target_year = int(report["year"]) - 1
-            tables = self._table_snapshots(connection, int(report["id"]))
-            table_target_years = {
-                int(infer_period_rule(table, target_year)[0].target_period)
-                for table in tables
-            }
-            sources = self._source_snapshots(connection, table_target_years)
-            recipes = latest_recipes(
-                connection,
-                [str(table.row["code"]) for table in tables],
-                effective_year=int(report["year"]),
-            )
-            analyses = [
-                analyze_table(
-                    table,
-                    sources,
-                    target_year=target_year,
-                    recipe=recipes.get(str(table.row["code"])),
+            effective_snapshot_id = source_snapshot_id
+            if effective_snapshot_id is None and report_id is not None:
+                snapshot = snapshot_for_report(connection, report_id)
+                if snapshot is not None:
+                    effective_snapshot_id = snapshot.id
+            with connection, activate_source_snapshot(connection, effective_snapshot_id):
+                return self._overview_with_connection(
+                    connection,
+                    report_id=report_id,
+                    report_year=report_year,
+                    target_data_year=target_data_year,
+                    recipe_year=recipe_year,
                 )
-                for table in tables
+        finally:
+            connection.close()
+
+    def _overview_with_connection(
+        self,
+        connection: DatabaseConnection,
+        *,
+        report_id: int | None,
+        report_year: int | None,
+        target_data_year: int | None,
+        recipe_year: int | None,
+    ) -> YearbookReproductionOverview:
+        reports = self._reports(connection)
+        report = resolve_report(reports, report_id=report_id, report_year=report_year)
+        if report is None:
+            raise ValueError("재현 기준으로 사용할 연보가 없습니다.")
+
+        target_year = target_data_year or int(report["year"]) - 1
+        tables = self._table_snapshots(connection, int(report["id"]))
+        table_target_years = {
+            int(infer_period_rule(table, target_year)[0].target_period)
+            for table in tables
+        }
+        sources = self._source_snapshots(connection, table_target_years)
+        recipes = latest_recipes(
+            connection,
+            [str(table.row["code"]) for table in tables],
+            effective_year=recipe_year or int(report["year"]),
+        )
+        analyses = [
+            analyze_table(
+                table,
+                sources,
+                target_year=target_year,
+                recipe=recipes.get(str(table.row["code"])),
+            )
+            for table in tables
+        ]
+        latest_build, comparison_by_table = latest_build_for_report(
+            connection,
+            int(report["id"]),
+        )
+        if comparison_by_table:
+            analyses = [
+                table.model_copy(
+                    update=comparison_by_table.get(table.table_id, {})
+                )
+                for table in analyses
             ]
-            latest_build, comparison_by_table = latest_build_for_report(
-                connection,
-                int(report["id"]),
-            )
-            if comparison_by_table:
-                analyses = [
-                    table.model_copy(
-                        update=comparison_by_table.get(table.table_id, {})
-                    )
-                    for table in analyses
-                ]
-            summary = reproduction_summary(analyses)
-            return YearbookReproductionOverview(
-                report_id=int(report["id"]),
-                report_year=int(report["year"]),
-                report_title=str(report["title"]),
-                target_data_period=str(target_year),
-                summary=summary,
-                latest_build=latest_build,
-                available_reports=[
-                    ReproductionReportOption(
-                        id=int(row["id"]),
-                        year=int(row["year"]),
-                        title=str(row["title"]),
-                        is_archived=bool(row["is_archived"]),
-                    )
-                    for row in reports
-                ],
-                tables=analyses,
-            )
+        summary = reproduction_summary(analyses)
+        return YearbookReproductionOverview(
+            report_id=int(report["id"]),
+            report_year=int(report["year"]),
+            report_title=str(report["title"]),
+            target_data_period=str(target_year),
+            summary=summary,
+            latest_build=latest_build,
+            available_reports=[
+                ReproductionReportOption(
+                    id=int(row["id"]),
+                    year=int(row["year"]),
+                    title=str(row["title"]),
+                    is_archived=bool(row["is_archived"]),
+                )
+                for row in reports
+            ],
+            tables=analyses,
+        )
 
     def bootstrap_draft_recipes(self, *, report_id: int) -> RecipeBootstrapResult:
         overview = self.overview(report_id=report_id)
@@ -328,9 +363,9 @@ class YearbookReproductionService:
             lambda: defaultdict(Counter)
         )
         for row in connection.execute(
-            """
+            f"""
             SELECT dataset_id, period
-            FROM statistical_values
+            FROM {source_values_relation()}
             GROUP BY dataset_id, period
             """
         ):
@@ -342,7 +377,7 @@ class YearbookReproductionService:
             value_rows = connection.execute(
                 f"""
                 SELECT dataset_id, period, data_value, string_value
-                FROM statistical_values
+                FROM {source_values_relation()}
                 WHERE {where_clause}
                 """,
                 year_patterns,
@@ -360,9 +395,9 @@ class YearbookReproductionService:
 
         labels_by_dataset: dict[int, set[str]] = defaultdict(set)
         item_rows = connection.execute(
-            """
+            f"""
             SELECT dataset_id, item_name, full_name
-            FROM statistical_dataset_items
+            FROM {source_items_relation()}
             ORDER BY dataset_id, display_order, item_data_no
             """
         )
@@ -425,6 +460,26 @@ def analyze_table(
             for source in sources
             if int(source.row["id"]) in recipe.source_dataset_ids
         ]
+        # A confirmed source binding without an explicitly fixed period is an
+        # annual binding.  The predecessor table can still print last year's
+        # period, but a supplied increment for the requested target year must
+        # be considered before declaring the recipe missing.  Fixed-history
+        # recipes retain their explicit ``target_period`` above.
+        if not str(recipe.config.get("target_period") or ""):
+            requested_candidates = [
+                candidate_projection(
+                    table,
+                    source,
+                    target_year=target_year,
+                    exact_title=False,
+                )
+                for source in confirmed_sources
+            ]
+            if any(candidate.has_target_period for candidate in requested_candidates):
+                period_rule = period_rule.model_copy(
+                    update={"target_period": str(target_year), "anchor": "source_increment"}
+                )
+                table_target_year = target_year
         candidates = sorted(
             (
                 candidate_projection(

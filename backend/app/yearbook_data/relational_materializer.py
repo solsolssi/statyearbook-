@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import re
+import json
 
 from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
 from app.services.yearbook_reproduction_service import (
@@ -13,6 +14,10 @@ YEAR_PATTERN,
     comparable_value,
 )
 from app.yearbook_data.materializer import format_like_exemplar
+from app.yearbook_data.source_snapshots import (
+    source_items_relation,
+    source_values_relation,
+)
 
 
 TOTAL_LABELS = {"계", "합계", "총계", "소계"}
@@ -70,6 +75,7 @@ class RelationalTableMaterializer:
         materializer: str,
         target_year: int,
         allow_shape_change: bool = False,
+        update_mode: str = "",
     ) -> RelationalMaterialization:
         with connect(self._db_path) as connection:
             return self.materialize_with_connection(
@@ -79,6 +85,7 @@ class RelationalTableMaterializer:
                 materializer=materializer,
                 target_year=target_year,
                 allow_shape_change=allow_shape_change,
+                update_mode=update_mode,
             )
 
     def materialize_with_connection(
@@ -90,6 +97,7 @@ class RelationalTableMaterializer:
         materializer: str,
         target_year: int,
         allow_shape_change: bool = False,
+        update_mode: str = "",
     ) -> RelationalMaterialization:
         cells = connection.execute(
             """
@@ -120,6 +128,11 @@ class RelationalTableMaterializer:
             )
 
         generated = [list(row) for row in matrix]
+        item_projection = approved_item_projection(
+            connection,
+            table_id=table_id,
+            target_year=target_year,
+        )
         if materializer == "copy":
             error = ""
         elif materializer == "empty_values":
@@ -135,6 +148,8 @@ class RelationalTableMaterializer:
                 data_start=data_start,
                 dataset_id=dataset_id,
                 target_year=target_year,
+                update_mode=update_mode,
+                item_projection=item_projection,
             )
         elif materializer == "current_period_rows":
             error = apply_current_period_rows(
@@ -145,6 +160,7 @@ class RelationalTableMaterializer:
                 dataset_id=dataset_id,
                 target_year=target_year,
                 allow_shape_change=allow_shape_change,
+                item_projection=item_projection,
             )
         elif materializer == "period_columns":
             error = apply_period_columns(
@@ -154,6 +170,7 @@ class RelationalTableMaterializer:
                 data_start=data_start,
                 dataset_id=dataset_id,
                 target_year=target_year,
+                update_mode=update_mode,
             )
         else:
             return RelationalMaterialization(
@@ -190,6 +207,51 @@ class RelationalTableMaterializer:
         )
 
 
+def approved_item_projection(
+    connection: DatabaseConnection,
+    *,
+    table_id: int,
+    target_year: int,
+) -> dict[int, int]:
+    """Return an approved, explicit source-item projection for one table.
+
+    A few source statistics contain several physical yearbook tables or use a
+    hierarchy whose leaf labels repeat (for example three different
+    ``과정수`` fields).  Name matching alone is intentionally not allowed to
+    guess those mappings.  The projection is stored on the reusable recipe,
+    scoped by edition year, and uses one-based source item identifiers and
+    zero-based rendered column indexes.
+    """
+    row = connection.execute(
+        """
+        SELECT recipe.config_json
+        FROM stat_tables table_row
+        JOIN yearbook_table_recipes recipe
+          ON recipe.table_code = table_row.code
+         AND recipe.status = 'approved'
+         AND recipe.effective_from_year <= ?
+         AND (recipe.effective_to_year IS NULL OR recipe.effective_to_year >= ?)
+        WHERE table_row.id = ?
+        ORDER BY recipe.revision DESC, recipe.id DESC
+        LIMIT 1
+        """,
+        (target_year, target_year, table_id),
+    ).fetchone()
+    if row is None:
+        return {}
+    try:
+        raw = json.loads(str(row["config_json"] or "{}"))
+        projection = raw.get("item_projection") or {}
+        return {
+            int(column): int(item)
+            for column, item in dict(projection).items()
+            if str(column).lstrip("-").isdigit()
+            and str(item).lstrip("-").isdigit()
+        }
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
 def apply_period_rows(
     connection: DatabaseConnection,
     generated: list[list[str]],
@@ -198,6 +260,8 @@ def apply_period_rows(
     data_start: int,
     dataset_id: int,
     target_year: int,
+    update_mode: str = "",
+    item_projection: dict[int, int] | None = None,
 ) -> str:
     data_rows = list(range(data_start, len(template)))
     summary_rows = [
@@ -222,10 +286,65 @@ def apply_period_rows(
     if (
         years
         and max(years) == target_year - 1
-        and len(set(years)) == len(years)
         and years == sorted(years)
     ):
-        years = [year + 1 for year in years]
+        if update_mode == "append_period" and period_data_rows:
+            insert_at = max(period_data_rows) + 1
+            exemplar = [
+                replace_display_years(value, {years[-1]: target_year})
+                for value in template[period_data_rows[-1]]
+            ]
+            template.insert(insert_at, list(exemplar))
+            generated.insert(insert_at, list(exemplar))
+            summary_rows = [
+                row_index + 1 if row_index >= insert_at else row_index
+                for row_index in summary_rows
+            ]
+            period_data_rows.append(insert_at)
+            years.append(target_year)
+        elif update_mode == "rolling_window" and period_data_rows:
+            # A rolling multi-year table keeps its shape.  Remove the oldest
+            # displayed period group, retain the intervening rows verbatim,
+            # and append a clone of the former final group for the new year.
+            # This is deliberately based on the predecessor template and the
+            # incremental ledger only; no completed next-year report is used.
+            grouped_rows: dict[int, list[int]] = defaultdict(list)
+            for row_index, year in zip(period_data_rows, years, strict=True):
+                grouped_rows[year].append(row_index)
+            oldest_year = min(grouped_rows)
+            final_year = max(grouped_rows)
+            oldest_rows = grouped_rows[oldest_year]
+            final_rows = grouped_rows[final_year]
+            if len(oldest_rows) != len(final_rows):
+                return "기간별 행 수가 달라 롤링 기간창을 안전하게 이동할 수 없습니다."
+            insert_at = len(template)
+            for row_index in reversed(oldest_rows):
+                del template[row_index]
+                del generated[row_index]
+            # Original indexes after the removed group move left by this count.
+            offset = sum(1 for row_index in oldest_rows if row_index < final_rows[0])
+            for row_index in final_rows:
+                exemplar = [
+                    replace_display_years(value, {final_year: target_year})
+                    for value in template[row_index - offset]
+                ]
+                template.append(list(exemplar))
+                generated.append(list(exemplar))
+            data_rows = list(range(data_start, len(template)))
+            period_data_rows = [
+                row_index
+                for row_index in data_rows
+                if len(YEAR_PATTERN.findall(first_line(template[row_index][0]))) == 1
+            ]
+            years = [
+                int(YEAR_PATTERN.search(first_line(template[row_index][0])).group(1))
+                for row_index in period_data_rows
+            ]
+            summary_rows = [
+                row_index for row_index in data_rows if is_total_label(template[row_index][0])
+            ]
+        else:
+            years = [year + 1 for year in years]
     if (
         len(years) >= 2
         and years[-1] < max(years[:-1])
@@ -264,7 +383,7 @@ def apply_period_rows(
             f"{years[-1]}년 원장 행이 {len(first_source_rows)}개여서 "
             "연도 행에 바로 배치할 수 없습니다."
         )
-    column_mapping = match_items_to_columns(
+    column_mapping = item_projection or match_items_to_columns(
         connection,
         dataset_id=dataset_id,
         template=template,
@@ -535,6 +654,7 @@ def apply_current_period_rows(
     dataset_id: int,
     target_year: int,
     allow_shape_change: bool = False,
+    item_projection: dict[int, int] | None = None,
 ) -> str:
     source_rows = source_matrix(connection, dataset_id, target_year)
     data_rows = list(range(data_start, len(template)))
@@ -567,7 +687,7 @@ def apply_current_period_rows(
         if len(source_rows) == 1
         else list(range(len(template[0])))
     )
-    column_mapping = match_items_to_columns(
+    column_mapping = item_projection or match_items_to_columns(
         connection,
         dataset_id=dataset_id,
         template=template,
@@ -834,6 +954,7 @@ def apply_period_columns(
     data_start: int,
     dataset_id: int,
     target_year: int,
+    update_mode: str = "",
 ) -> str:
     year_columns: dict[int, int] = {}
     for col_index in range(len(template[0])):
@@ -881,20 +1002,50 @@ def apply_period_columns(
     if max(year_columns.values()) != target_year:
         displayed_last_year = max(year_columns.values())
         if displayed_last_year == target_year - 1:
-            original_year_columns = dict(year_columns)
-            year_columns = {
-                col_index: year + 1
-                for col_index, year in year_columns.items()
-            }
-            replacements = {
-                year: year + 1 for year in set(original_year_columns.values())
-            }
-            for row_index in range(data_start):
-                for col_index in range(len(generated[row_index])):
-                    generated[row_index][col_index] = replace_display_years(
-                        generated[row_index][col_index],
-                        replacements,
-                    )
+            if update_mode == "append_period":
+                latest_columns = sorted(
+                    col_index
+                    for col_index, year in year_columns.items()
+                    if year == displayed_last_year
+                )
+                if not latest_columns:
+                    return "최신 연도 열을 찾지 못했습니다."
+                original_width = len(template[0])
+                for row_index in range(len(template)):
+                    copied = [template[row_index][column] for column in latest_columns]
+                    if row_index < data_start:
+                        copied = [
+                            replace_display_years(
+                                value,
+                                {displayed_last_year: target_year},
+                            )
+                            for value in copied
+                        ]
+                    template[row_index].extend(copied)
+                    generated[row_index].extend(copied)
+                for offset in range(len(latest_columns)):
+                    year_columns[original_width + offset] = target_year
+            else:
+                original_year_columns = dict(year_columns)
+                shift_rolling_period_column_values(
+                    generated,
+                    template,
+                    data_start=data_start,
+                    original_year_columns=original_year_columns,
+                )
+                year_columns = {
+                    col_index: year + 1
+                    for col_index, year in year_columns.items()
+                }
+                replacements = {
+                    year: year + 1 for year in set(original_year_columns.values())
+                }
+                for row_index in range(data_start):
+                    for col_index in range(len(generated[row_index])):
+                        generated[row_index][col_index] = replace_display_years(
+                            generated[row_index][col_index],
+                            replacements,
+                        )
         elif (
             source_matrix(connection, dataset_id, target_year)
             and not source_matrix(connection, dataset_id, displayed_last_year)
@@ -1003,6 +1154,47 @@ def apply_period_columns(
                 template[row_index][col_index],
             )
     return ""
+
+
+def shift_rolling_period_column_values(
+    generated: list[list[str]],
+    template: list[list[str]],
+    *,
+    data_start: int,
+    original_year_columns: dict[int, int],
+) -> None:
+    """Move retained period values with a rolling column window.
+
+    A source ledger can legitimately start later than the period range printed
+    in an annual table.  When, for example, a 2015–2024 table becomes
+    2016–2025, the values for 2016–2018 cannot be re-read from the increment.
+    They must move with their year labels until a source value is available to
+    replace them.  This operates per ordinal column within a year group, so it
+    also supports repeated measurement columns beneath each period header.
+    """
+
+    columns_by_year: dict[int, list[int]] = defaultdict(list)
+    for column, year in original_year_columns.items():
+        columns_by_year[year].append(column)
+    for columns in columns_by_year.values():
+        columns.sort()
+
+    source_column_by_destination: dict[int, int] = {}
+    for year, destination_columns in columns_by_year.items():
+        source_columns = columns_by_year.get(year + 1, [])
+        if not source_columns:
+            continue
+        for offset, destination_column in enumerate(destination_columns):
+            if offset < len(source_columns):
+                source_column_by_destination[destination_column] = source_columns[
+                    offset
+                ]
+
+    for row_index in range(data_start, len(generated)):
+        original = list(template[row_index])
+        for destination_column, source_column in source_column_by_destination.items():
+            if source_column < len(original):
+                generated[row_index][destination_column] = original[source_column]
 
 
 def replace_display_years(value: str, replacements: dict[int, int]) -> str:
@@ -1222,10 +1414,10 @@ def source_matrix(
     if not period:
         return []
     rows = connection.execute(
-        """
+        f"""
         SELECT data_cycle, data_division, class_data_no, item_data_no,
                data_value, string_value
-        FROM statistical_values
+        FROM {source_values_relation()}
         WHERE dataset_id = ? AND period = ?
         ORDER BY data_cycle, data_division, class_data_no, item_data_no
         """,
@@ -1261,9 +1453,9 @@ def preferred_dataset_period(
 ) -> str:
     preferred = f"{year}00"
     row = connection.execute(
-        """
+        f"""
         SELECT period
-        FROM statistical_values
+        FROM {source_values_relation()}
         WHERE dataset_id = ? AND period LIKE ?
         GROUP BY period
         ORDER BY CASE WHEN period = ? THEN 0 ELSE 1 END, period DESC
@@ -1651,7 +1843,7 @@ def source_item_value_counters(
     rows = connection.execute(
         f"""
         SELECT item_data_no, data_value, string_value
-        FROM statistical_values
+        FROM {source_values_relation()}
         WHERE dataset_id = ?
           AND ({period_clauses})
           AND item_data_no IN ({item_placeholders})
@@ -1677,9 +1869,9 @@ def source_items(
     dataset_id: int,
 ) -> dict[int, SourceItem]:
     rows = connection.execute(
-        """
+        f"""
         SELECT item_data_no, item_name, full_name
-        FROM statistical_dataset_items
+        FROM {source_items_relation()}
         WHERE dataset_id = ?
         ORDER BY display_order, item_data_no
         """,
@@ -1707,7 +1899,7 @@ def active_source_items_for_years(
     rows = connection.execute(
         f"""
         SELECT DISTINCT item_data_no
-        FROM statistical_values
+        FROM {source_values_relation()}
         WHERE dataset_id = ? AND ({clauses})
         """,
         [dataset_id, *(f"{year}%" for year in sorted(years))],

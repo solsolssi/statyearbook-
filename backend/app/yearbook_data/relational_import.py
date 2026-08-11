@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from app.db.connection import DB_PATH, DatabaseConnection, connect
@@ -68,6 +69,18 @@ VALUE_UPDATE_FIELDS = (
     "check_code",
     "verified",
     "verification_result",
+)
+ITEM_UPDATE_FIELDS = (
+    "item_id",
+    "level",
+    "item_name",
+    "data_type",
+    "is_dummy",
+    "input_required",
+    "max_level",
+    "is_leaf",
+    "full_name",
+    "display_order",
 )
 
 
@@ -168,6 +181,16 @@ class RelationalSourceDataImporter:
                     target_year=target_year,
                 )
                 if reused is not None:
+                    # A previous implementation deduplicated equal values
+                    # without retaining that the incremental file contained
+                    # them.  Reassert equal rows on repeat upload so an
+                    # existing incremental batch becomes a valid provenance
+                    # source without overwriting a later different value.
+                    self._claim_reused_delta_value_provenance(
+                        connection,
+                        batch_id=reused.batch_id,
+                        value_path=value_path,
+                    )
                     return reused
                 batch_id = self._create_batch(
                     connection,
@@ -260,11 +283,24 @@ class RelationalSourceDataImporter:
             if external_id in known
         }
         metadata_rows: list[tuple[object, ...]] = []
+        lifecycle_by_dataset: dict[int, tuple[str, str]] = {}
         for row in materialized_rows:
             external_id = text(row.get("표id"))
             dataset_id = touched.get(external_id)
             period = period_text(row.get("wrttimeIdtfrId"))
-            if dataset_id is None or not period:
+            if dataset_id is None:
+                continue
+            input_status = text(row.get("입력상태"))
+            lifecycle_status = (
+                "deleted" if is_deleted_source_status(input_status) else "active"
+            )
+            current_lifecycle = lifecycle_by_dataset.get(dataset_id)
+            if current_lifecycle is None or lifecycle_status == "deleted":
+                lifecycle_by_dataset[dataset_id] = (
+                    lifecycle_status,
+                    input_status,
+                )
+            if not period:
                 continue
             metadata_rows.append(
                 (
@@ -273,7 +309,7 @@ class RelationalSourceDataImporter:
                     integer_text(row.get("작성관리번호")),
                     text(row.get("하위디렉토리")),
                     text(row.get("디렉토리")),
-                    text(row.get("입력상태")),
+                    input_status,
                     text(row.get("담당부서")),
                     text(row.get("담당자명")),
                     text(row.get("입력기간")),
@@ -302,6 +338,21 @@ class RelationalSourceDataImporter:
             """,
             metadata_rows,
         )
+        if lifecycle_by_dataset:
+            connection.executemany(
+                """
+                INSERT INTO statistical_dataset_lifecycle_events (
+                    dataset_id, source_batch_id, lifecycle_status, notes
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(dataset_id, source_batch_id, lifecycle_status)
+                DO UPDATE SET notes = excluded.notes
+                """,
+                [
+                    (dataset_id, batch_id, lifecycle_status, notes)
+                    for dataset_id, (lifecycle_status, notes)
+                    in lifecycle_by_dataset.items()
+                ],
+            )
         return touched, len(metadata_rows)
 
     def _upsert_dataset(
@@ -380,13 +431,97 @@ class RelationalSourceDataImporter:
                     batch_id,
                 )
             )
+        if not values:
+            return 0
+        dataset_id_values = sorted({int(value[0]) for value in values})
+        existing_rows = connection.execute(
+            f"""
+            SELECT *
+            FROM statistical_dataset_items
+            WHERE dataset_id IN ({", ".join("?" for _ in dataset_id_values)})
+            """,
+            dataset_id_values,
+        ).fetchall()
+        existing = {
+            (int(row["dataset_id"]), int(row["item_data_no"])): row
+            for row in existing_rows
+        }
+        changed_values: list[tuple[object, ...]] = []
+        revisions: list[tuple[object, ...]] = []
+        incoming_identities = {
+            (int(value[0]), int(value[3]))
+            for value in values
+        }
+        represented_dataset_ids = {identity[0] for identity in incoming_identities}
+        for value in values:
+            identity = (int(value[0]), int(value[3]))
+            current = existing.get(identity)
+            if current is None:
+                changed_values.append(value)
+                continue
+            incoming_payload = (
+                value[1], value[2], value[4], value[5], value[6],
+                value[7], value[8], value[9], value[10], value[11],
+            )
+            current_payload = tuple(current[field] for field in ITEM_UPDATE_FIELDS)
+            if incoming_payload == current_payload and not bool(current["is_deleted"]):
+                continue
+            revisions.append(
+                (
+                    int(current["id"]),
+                    batch_id,
+                    *(current[field] for field in ITEM_UPDATE_FIELDS),
+                    int(current["is_deleted"] or 0),
+                    int(current["source_batch_id"]),
+                )
+            )
+            changed_values.append(value)
+        retired_rows = [
+            current
+            for identity, current in existing.items()
+            if identity[0] in represented_dataset_ids
+            and identity not in incoming_identities
+            and not bool(current["is_deleted"])
+        ]
+        for current in retired_rows:
+            revisions.append(
+                (
+                    int(current["id"]),
+                    batch_id,
+                    *(current[field] for field in ITEM_UPDATE_FIELDS),
+                    0,
+                    int(current["source_batch_id"]),
+                )
+            )
+        if revisions:
+            connection.executemany(
+                """
+                INSERT INTO statistical_dataset_item_revisions (
+                    statistical_dataset_item_id, replaced_by_batch_id,
+                    item_id, level, item_name, data_type, is_dummy,
+                    input_required, max_level, is_leaf, full_name,
+                    display_order, is_deleted, source_batch_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                revisions,
+            )
+        if retired_rows:
+            connection.executemany(
+                """
+                UPDATE statistical_dataset_items
+                SET is_deleted = 1, source_batch_id = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                [(batch_id, int(row["id"])) for row in retired_rows],
+            )
         connection.executemany(
             """
             INSERT INTO statistical_dataset_items (
                 dataset_id, item_id, level, item_data_no, item_name,
                 data_type, is_dummy, input_required, max_level, is_leaf,
-                full_name, display_order, source_batch_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                full_name, display_order, is_deleted, source_batch_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
             ON CONFLICT(dataset_id, item_data_no) DO UPDATE SET
                 item_id = excluded.item_id,
                 level = excluded.level,
@@ -398,10 +533,11 @@ class RelationalSourceDataImporter:
                 is_leaf = excluded.is_leaf,
                 full_name = excluded.full_name,
                 display_order = excluded.display_order,
+                is_deleted = 0,
                 source_batch_id = excluded.source_batch_id,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            values,
+            changed_values,
         )
         return len(values)
 
@@ -468,8 +604,8 @@ class RelationalSourceDataImporter:
             merged_value = merge_delta_value(value, current)
             if value_payload(merged_value) == value_payload_from_row(current):
                 unchanged += 1
-                continue
-            updated += 1
+            else:
+                updated += 1
             revisions.append(
                 (
                     int(current["id"]),
@@ -494,6 +630,77 @@ class RelationalSourceDataImporter:
         for start in range(0, len(changed_values), 5000):
             upsert_values(connection, changed_values[start : start + 5000])
         return inserted, updated, unchanged
+
+    def _claim_reused_delta_value_provenance(
+        self,
+        connection: DatabaseConnection,
+        *,
+        batch_id: int,
+        value_path: Path,
+    ) -> None:
+        """Restore provenance for a legacy, deduplicated increment upload.
+
+        Only values identical to the current ledger row are claimed.  A later
+        correction is therefore never replaced by re-uploading an older file.
+        """
+
+        dataset_ids = {
+            str(row["external_id"]): int(row["id"])
+            for row in connection.execute(
+                "SELECT id, external_id FROM statistical_datasets WHERE status = 'active'"
+            ).fetchall()
+        }
+        incoming = list(read_delta_values(value_path, dataset_ids, batch_id))
+        if not incoming:
+            return
+        identities = [value_identity(value) for value in incoming]
+        dataset_id_values = sorted({identity[0] for identity in identities})
+        periods = sorted({str(identity[2]) for identity in identities})
+        existing_rows = connection.execute(
+            f"""
+            SELECT *
+            FROM statistical_values
+            WHERE dataset_id IN ({", ".join("?" for _ in dataset_id_values)})
+              AND period IN ({", ".join("?" for _ in periods)})
+            """,
+            (*dataset_id_values, *periods),
+        ).fetchall()
+        existing = {
+            value_identity_from_row(row): row
+            for row in existing_rows
+        }
+        revisions: list[tuple[object, ...]] = []
+        claimed_values: list[tuple[object, ...]] = []
+        for value in incoming:
+            current = existing.get(value_identity(value))
+            if current is None or int(current["source_batch_id"]) == batch_id:
+                continue
+            merged_value = merge_delta_value(value, current)
+            if value_payload(merged_value) != value_payload_from_row(current):
+                continue
+            revisions.append(
+                (
+                    int(current["id"]),
+                    batch_id,
+                    *(current[field] for field in VALUE_UPDATE_FIELDS),
+                    int(current["source_batch_id"]),
+                )
+            )
+            claimed_values.append(merged_value)
+        if revisions:
+            connection.executemany(
+                """
+                INSERT INTO statistical_value_revisions (
+                    statistical_value_id, replaced_by_batch_id,
+                    data_value, string_value, comment_identifier,
+                    comment_text, english_comment_text, write_state,
+                    check_code, verified, verification_result, source_batch_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                revisions,
+            )
+        for start in range(0, len(claimed_values), 5000):
+            upsert_values(connection, claimed_values[start : start + 5000])
 
     def _existing_result(
         self,
@@ -813,6 +1020,11 @@ def text(value: Any) -> str:
     if rendered.upper() in {"NULL", "(NULL)", "NONE", "NAN"}:
         return ""
     return rendered
+
+
+def is_deleted_source_status(value: str) -> bool:
+    normalized = re.sub(r"\s+", "", value).lower()
+    return any(keyword in normalized for keyword in ("삭제", "폐지", "폐기", "작성종료"))
 
 
 def integer(value: Any) -> int:

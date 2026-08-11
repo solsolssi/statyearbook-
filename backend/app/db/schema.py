@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS annual_reports (
     is_template INTEGER NOT NULL DEFAULT 0,
     origin_kind TEXT NOT NULL DEFAULT 'uploaded',
     base_report_id INTEGER,
-    FOREIGN KEY (base_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL
+    layout_report_id INTEGER,
+    FOREIGN KEY (base_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL,
+    FOREIGN KEY (layout_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS stat_tables (
@@ -325,6 +327,87 @@ CREATE TABLE IF NOT EXISTS statistical_value_revisions (
 CREATE INDEX IF NOT EXISTS idx_statistical_value_revisions_value
 ON statistical_value_revisions(statistical_value_id, archived_at DESC, id DESC);
 
+CREATE TABLE IF NOT EXISTS statistical_dataset_item_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    statistical_dataset_item_id INTEGER NOT NULL,
+    replaced_by_batch_id INTEGER NOT NULL,
+    item_id TEXT NOT NULL DEFAULT '',
+    level INTEGER NOT NULL DEFAULT 0,
+    item_name TEXT NOT NULL DEFAULT '',
+    data_type TEXT NOT NULL DEFAULT '',
+    is_dummy INTEGER NOT NULL DEFAULT 0,
+    input_required INTEGER NOT NULL DEFAULT 0,
+    max_level INTEGER NOT NULL DEFAULT 0,
+    is_leaf INTEGER NOT NULL DEFAULT 0,
+    full_name TEXT NOT NULL DEFAULT '',
+    display_order INTEGER NOT NULL DEFAULT 0,
+    is_deleted INTEGER NOT NULL DEFAULT 0,
+    source_batch_id INTEGER NOT NULL,
+    archived_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (statistical_dataset_item_id)
+        REFERENCES statistical_dataset_items(id) ON DELETE CASCADE,
+    FOREIGN KEY (replaced_by_batch_id)
+        REFERENCES series_import_batches(id) ON DELETE RESTRICT,
+    FOREIGN KEY (source_batch_id)
+        REFERENCES series_import_batches(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_statistical_dataset_item_revisions_item
+ON statistical_dataset_item_revisions(
+    statistical_dataset_item_id, archived_at DESC, id DESC
+);
+
+CREATE TABLE IF NOT EXISTS statistical_dataset_lifecycle_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dataset_id INTEGER NOT NULL,
+    source_batch_id INTEGER NOT NULL,
+    lifecycle_status TEXT NOT NULL,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (dataset_id) REFERENCES statistical_datasets(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_batch_id)
+        REFERENCES series_import_batches(id) ON DELETE CASCADE,
+    UNIQUE (dataset_id, source_batch_id, lifecycle_status)
+);
+
+CREATE INDEX IF NOT EXISTS idx_statistical_dataset_lifecycle_events_batch
+ON statistical_dataset_lifecycle_events(source_batch_id, dataset_id);
+
+CREATE TABLE IF NOT EXISTS source_data_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id INTEGER UNIQUE,
+    parent_snapshot_id INTEGER,
+    source_batch_id INTEGER NOT NULL,
+    target_year INTEGER NOT NULL,
+    snapshot_kind TEXT NOT NULL DEFAULT 'report',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_snapshot_id)
+        REFERENCES source_data_snapshots(id) ON DELETE RESTRICT,
+    FOREIGN KEY (source_batch_id)
+        REFERENCES series_import_batches(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_data_snapshots_parent
+ON source_data_snapshots(parent_snapshot_id, id);
+
+CREATE TABLE IF NOT EXISTS source_snapshot_batches (
+    snapshot_id INTEGER NOT NULL,
+    source_batch_id INTEGER NOT NULL,
+    precedence INTEGER NOT NULL,
+    visible_through_year INTEGER,
+    PRIMARY KEY (snapshot_id, source_batch_id),
+    UNIQUE (snapshot_id, precedence),
+    FOREIGN KEY (snapshot_id)
+        REFERENCES source_data_snapshots(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_batch_id)
+        REFERENCES series_import_batches(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_snapshot_batches_batch
+ON source_snapshot_batches(source_batch_id, snapshot_id);
+
 CREATE TABLE IF NOT EXISTS statistical_period_metadata (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     dataset_id INTEGER NOT NULL,
@@ -381,11 +464,14 @@ CREATE TABLE IF NOT EXISTS yearbook_table_update_policies (
     text_update_action TEXT NOT NULL DEFAULT 'source_then_template',
     source_report_id INTEGER,
     source_table_id INTEGER,
+    policy_source TEXT NOT NULL DEFAULT 'inferred',
+    learned_from_report_id INTEGER,
     notes TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (source_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL,
-    FOREIGN KEY (source_table_id) REFERENCES stat_tables(id) ON DELETE SET NULL
+    FOREIGN KEY (source_table_id) REFERENCES stat_tables(id) ON DELETE SET NULL,
+    FOREIGN KEY (learned_from_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS yearbook_edition_manifest (
@@ -414,11 +500,14 @@ CREATE TABLE IF NOT EXISTS yearbook_reproduction_runs (
     baseline_report_id INTEGER NOT NULL,
     report_year INTEGER NOT NULL,
     target_data_year INTEGER NOT NULL,
+    source_snapshot_id INTEGER,
     status TEXT NOT NULL DEFAULT 'running',
     summary_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at TEXT,
-    FOREIGN KEY (baseline_report_id) REFERENCES annual_reports(id) ON DELETE CASCADE
+    FOREIGN KEY (baseline_report_id) REFERENCES annual_reports(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_snapshot_id)
+        REFERENCES source_data_snapshots(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_yearbook_reproduction_runs_report
@@ -750,6 +839,13 @@ def ensure_schema_columns(connection: DatabaseConnection) -> None:
     ensure_column(connection, "annual_reports", "is_template", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(connection, "annual_reports", "origin_kind", "TEXT NOT NULL DEFAULT 'uploaded'")
     ensure_column(connection, "annual_reports", "base_report_id", "INTEGER")
+    ensure_column(connection, "annual_reports", "layout_report_id", "INTEGER")
+    ensure_column(connection, "yearbook_reproduction_runs", "source_snapshot_id", "INTEGER")
+    ensure_column(connection, "source_snapshot_batches", "visible_through_year", "INTEGER")
+    ensure_column(connection, "statistical_dataset_items", "is_deleted", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection, "statistical_dataset_item_revisions", "is_deleted", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection, "yearbook_table_update_policies", "policy_source", "TEXT NOT NULL DEFAULT 'inferred'")
+    ensure_column(connection, "yearbook_table_update_policies", "learned_from_report_id", "INTEGER")
     ensure_column(connection, "validation_runs", "scope_kind", "TEXT NOT NULL DEFAULT 'full'")
     ensure_column(connection, "validation_runs", "base_run_id", "INTEGER")
     ensure_column(connection, "validation_runs", "selected_rules_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -789,6 +885,36 @@ def ensure_schema_columns(connection: DatabaseConnection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_report_processing_jobs_source_hash
         ON report_processing_jobs(source_file_hash, report_year, report_title)
+        """
+    )
+    backfill_source_snapshot_batch_visibility(connection)
+
+
+def backfill_source_snapshot_batch_visibility(connection: DatabaseConnection) -> None:
+    """Give legacy snapshot memberships a safe historical period boundary."""
+
+    connection.execute(
+        """
+        UPDATE source_snapshot_batches AS membership
+        SET visible_through_year = CASE
+            WHEN (
+                SELECT batch.import_kind
+                FROM series_import_batches AS batch
+                WHERE batch.id = membership.source_batch_id
+            ) = 'relational_incremental' THEN (
+                SELECT batch.target_year - 1
+                FROM series_import_batches AS batch
+                WHERE batch.id = membership.source_batch_id
+            )
+            ELSE (
+                SELECT MIN(snapshot.target_year)
+                FROM source_snapshot_batches AS related_membership
+                JOIN source_data_snapshots AS snapshot
+                  ON snapshot.id = related_membership.snapshot_id
+                WHERE related_membership.source_batch_id = membership.source_batch_id
+            )
+        END
+        WHERE visible_through_year IS NULL
         """
     )
 
