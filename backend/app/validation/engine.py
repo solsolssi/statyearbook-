@@ -10,6 +10,8 @@ from app.validation.cross_table_rules import (
     ConfiguredCrossTableCellMatchRule,
     ConfiguredCrossTableRowSumRule,
     ConfiguredCrossTableWeightedAverageRule,
+    SplitPartRowTotalRule,
+    base_table_code,
 )
 from app.validation.models import ValidationCheckRecord, ValidationIssueRecord, ValidationTable
 from app.validation.profile_rules import ProfileSpecRule, ProfileStateRule
@@ -38,7 +40,24 @@ class ValidationEngine:
                 ProfileStateRule(self._profiles),
                 ProfileSpecRule(self._profiles),
             ]
-        self._cross_table_rules = [*DEFAULT_CROSS_TABLE_RULES]
+        split_part_exclusions: set[str] = set()
+        if profiles is not None:
+            split_part_exclusions = {
+                base_table_code(table_code)
+                for table_code, profile in self._profiles.items()
+                if any(
+                    spec.get("replaces_automatic_rule") == SplitPartRowTotalRule.rule_id
+                    for spec in profile.check_specs
+                )
+            }
+        self._cross_table_rules = [
+            (
+                SplitPartRowTotalRule(excluded_base_codes=split_part_exclusions)
+                if isinstance(rule, SplitPartRowTotalRule)
+                else rule
+            )
+            for rule in DEFAULT_CROSS_TABLE_RULES
+        ]
         if profiles is not None:
             self._cross_table_rules.append(ConfiguredCrossTableRowSumRule(self._profiles))
             self._cross_table_rules.append(ConfiguredCrossTableWeightedAverageRule(self._profiles))

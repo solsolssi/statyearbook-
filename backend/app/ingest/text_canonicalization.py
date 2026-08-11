@@ -5,11 +5,15 @@ import re
 from app.validation.models import restore_hyphenated_line_breaks
 
 
-ENGLISH_TITLE_CHARS = r"A-Za-z0-9 ,:&/().%\[\]·･+=\-'’‘′ʼ~"
+ENGLISH_TITLE_CHARS = r"A-Za-z0-9 ,:&/().%\[\]·･+=\-'’‘′ʼ~→←↔"
 ENGLISH_TITLE_RE = re.compile(
     rf"(?<![A-Za-z0-9])([A-Za-z][{ENGLISH_TITLE_CHARS}]{{2,}}|\d+-[A-Za-z][{ENGLISH_TITLE_CHARS}]{{2,}})$"
 )
 ENGLISH_ONLY_RE = re.compile(rf"(?=[{ENGLISH_TITLE_CHARS}]*[A-Za-z])[{ENGLISH_TITLE_CHARS}]+")
+KOREAN_ACRONYM_SUFFIX_RE = re.compile(
+    rf"^(?P<korean>.*?[가-힣][가-힣\s･·]*[･·]\s*[A-Z]{{2,}})\s+"
+    rf"(?P<english>[A-Za-z][{ENGLISH_TITLE_CHARS}]{{2,}})$"
+)
 
 # These are line-wrap hyphens found in the source typography, not lexical
 # hyphens.  Keep the list deliberately narrow so terms such as ``Non-powered``
@@ -38,6 +42,17 @@ def split_bilingual(text: str) -> tuple[str, str]:
 
     if ENGLISH_ONLY_RE.fullmatch(cleaned):
         return "", cleaned
+
+    # ``대량재해･DVI  Mass Disaster & DVI`` is one Korean label with an
+    # acronym suffix, followed by its English translation.  Treating the
+    # first Latin token as the English boundary duplicated ``DVI`` in the
+    # rendered Korean/English fields.
+    acronym_suffix_match = KOREAN_ACRONYM_SUFFIX_RE.fullmatch(cleaned)
+    if acronym_suffix_match:
+        return (
+            acronym_suffix_match.group("korean").strip(),
+            acronym_suffix_match.group("english").strip(),
+        )
 
     match = ENGLISH_TITLE_RE.search(cleaned)
     if match and match.start() > 0:

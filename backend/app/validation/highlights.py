@@ -275,11 +275,30 @@ def clean_table_cell_text(cell: Any) -> str:
         value = cell
     elif hasattr(cell, "keys") and "text_value" in cell.keys():
         value = cell["text_value"]
+    elif hasattr(cell, "text_value"):
+        value = cell.text_value
     elif isinstance(cell, dict):
         value = cell.get("text_value", "")
     else:
         value = str(cell or "")
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def column_sum_operand_rows_for_view(
+    spec: dict[str, Any],
+    *,
+    target_row: int,
+    matrix: list[list[Any]] | None,
+) -> list[int]:
+    """Resolve dynamic operands so persisted checks highlight their source cells."""
+
+    if spec.get("operand_row_selector") == "following_data_rows" and matrix:
+        return [
+            row_index
+            for row_index in range(target_row + 1, len(matrix))
+            if any(clean_table_cell_text(cell) for cell in matrix[row_index])
+        ]
+    return spec_rows(spec, "operand_rows")
 
 
 def normalize_lookup_text(value: str) -> str:
@@ -410,7 +429,11 @@ def _profile_highlight_cells(
         rule_columns = spec_columns(spec, "columns")
         current_col = col_index if col_index is not None else (rule_columns[0] if rule_columns else -1)
         cells.append(highlight_cell(target_row, current_col, "target"))
-        for operand_row in spec_rows(spec, "operand_rows"):
+        for operand_row in column_sum_operand_rows_for_view(
+            spec,
+            target_row=target_row,
+            matrix=matrix,
+        ):
             cells.append(highlight_cell(operand_row, current_col, "related"))
     elif rule_type == "row_ratio_by_rows":
         target_row = int(spec.get("target_row", row_index if row_index is not None else -1))

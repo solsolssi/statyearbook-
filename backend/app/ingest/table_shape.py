@@ -43,6 +43,11 @@ def wide_row_oriented_text_table_header_count(matrix: list[list[str]]) -> int | 
         first = row[0].strip() if row else ""
         if not first:
             continue
+        if normalize_text(first) == normalized_first:
+            # Multi-row column headers often repeat the diagonal
+            # ``구분/Classification/...`` cell down the first column.  Those
+            # rows are still headers, not row-oriented body descriptors.
+            return None
         if not descriptor_label_looks_row_oriented(first):
             continue
         descriptor_rows += 1

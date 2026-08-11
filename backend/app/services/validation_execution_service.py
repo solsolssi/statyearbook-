@@ -75,6 +75,11 @@ class ValidationExecutionService:
                 selected_language_check_types(rule_keys),
             ):
                 self._run_pending_llm_reviews(int(selected_source["id"]))
+            else:
+                self._synchronize_pending_language_reviews(
+                    int(selected_source["id"]),
+                    selected_language_check_types(rule_keys),
+                )
             return self._result_payload(
                 report_id=report_id,
                 run_id=int(selected_source["id"]),
@@ -89,6 +94,11 @@ class ValidationExecutionService:
                     selected_language_check_types(rule_keys),
                 ):
                     self._run_pending_llm_reviews(int(existing["id"]))
+                else:
+                    self._synchronize_pending_language_reviews(
+                        int(existing["id"]),
+                        selected_language_check_types(rule_keys),
+                    )
                 return self._result_payload(
                     report_id=report_id,
                     run_id=int(existing["id"]),
@@ -109,10 +119,10 @@ class ValidationExecutionService:
         if local_table_ids:
             calculation = CalculationValidationWorkflow(self._db_path).run(
                 report_id=report_id,
+                table_ids=local_table_ids,
                 selected_rule_keys=rule_keys,
             )
             run_id = calculation.run_id
-            self._remove_results_for_tables(run_id, reusable_table_ids)
         else:
             run_id = self._repository.save_run(
                 report_id=report_id,
@@ -120,6 +130,12 @@ class ValidationExecutionService:
                 issues=[],
                 checks=[],
             )
+
+        # The language pipeline runs before _finalize_run.  Persist the
+        # explicitly selected source now so candidate-level reuse can consult
+        # it while it generates the changed tables' language candidates.
+        if selected_source is not None:
+            self._set_base_run_id(run_id, int(selected_source["id"]))
 
         language_types = selected_language_check_types(rule_keys)
         if language_types and local_table_ids:
@@ -154,6 +170,15 @@ class ValidationExecutionService:
             run_id=run_id,
             selected_rule_keys=rule_keys,
         )
+
+    def _set_base_run_id(self, run_id: int, base_run_id: int) -> None:
+        with connect(self._db_path) as connection:
+            init_db(connection)
+            with connection:
+                connection.execute(
+                    "UPDATE validation_runs SET base_run_id = ? WHERE id = ?",
+                    (base_run_id, run_id),
+                )
 
     def _matching_current_run(
         self,
@@ -272,18 +297,37 @@ class ValidationExecutionService:
             ).fetchall()
             table_status_rows = connection.execute(
                 """
+                WITH check_status AS (
+                    SELECT
+                        run_id,
+                        table_id,
+                        MAX(CASE WHEN status = '오류 의심' THEN 1 ELSE 0 END) AS has_error,
+                        MAX(CASE WHEN status = '확인 필요' THEN 1 ELSE 0 END) AS has_warning
+                    FROM validation_checks
+                    GROUP BY run_id, table_id
+                ),
+                language_status AS (
+                    SELECT
+                        run_id,
+                        table_id,
+                        MAX(CASE WHEN status <> 'reviewed' THEN 1 ELSE 0 END) AS has_language_pending
+                    FROM linguistic_review_candidates
+                    GROUP BY run_id, table_id
+                )
                 SELECT
                     vr.id AS run_id,
                     st.code AS table_code,
-                    MAX(CASE WHEN vc.status = '오류 의심' THEN 1 ELSE 0 END) AS has_error,
-                    MAX(CASE WHEN vc.status = '확인 필요' THEN 1 ELSE 0 END) AS has_warning
+                    COALESCE(cs.has_error, 0) AS has_error,
+                    COALESCE(cs.has_warning, 0) AS has_warning,
+                    COALESCE(ls.has_language_pending, 0) AS has_language_pending
                 FROM validation_runs vr
                 JOIN annual_reports ar ON ar.id = vr.report_id
                 JOIN stat_tables st ON st.report_id = ar.id
-                LEFT JOIN validation_checks vc
-                  ON vc.run_id = vr.id AND vc.table_id = st.id
+                LEFT JOIN check_status cs
+                  ON cs.run_id = vr.id AND cs.table_id = st.id
+                LEFT JOIN language_status ls
+                  ON ls.run_id = vr.id AND ls.table_id = st.id
                 WHERE COALESCE(ar.is_archived, 0) = 0
-                GROUP BY vr.id, st.id
                 """,
             ).fetchall()
         table_counts_by_run = logical_table_status_counts(table_status_rows)
@@ -341,28 +385,23 @@ class ValidationExecutionService:
         # Refresh their visible checks after the resumed LLM pass as well.
         synchronize_blue_review_checks(self._db_path, run_id=run_id)
 
-    def _remove_results_for_tables(self, run_id: int, table_ids: set[int]) -> None:
-        if not table_ids:
+    def _synchronize_pending_language_reviews(
+        self,
+        run_id: int,
+        language_types: frozenset[str],
+    ) -> None:
+        if not language_types:
             return
-        placeholders = ",".join("?" for _ in table_ids)
-        params = [run_id, *sorted(table_ids)]
-        with connect(self._db_path) as connection:
-            init_db(connection)
-            with connection:
-                connection.execute(
-                    f"""
-                    DELETE FROM validation_checks
-                    WHERE run_id = ? AND table_id IN ({placeholders})
-                    """,
-                    params,
-                )
-                connection.execute(
-                    f"""
-                    DELETE FROM linguistic_review_candidates
-                    WHERE run_id = ? AND table_id IN ({placeholders})
-                    """,
-                    params,
-                )
+        if "파란색 표기 확인" in language_types:
+            from app.validation.blue_review import synchronize_blue_review_checks
+
+            synchronize_blue_review_checks(self._db_path, run_id=run_id)
+        if {"오탈자 검수", "번역 검수"} & language_types:
+            from app.validation.llm_translation_review import (
+                synchronize_standard_language_pending_checks,
+            )
+
+            synchronize_standard_language_pending_checks(self._db_path, run_id=run_id)
 
     def _copy_reusable_results(
         self,
@@ -586,11 +625,12 @@ def logical_table_status_counts(rows: list[DatabaseRow]) -> dict[int, dict[str, 
             continue
         has_error = bool(int(row["has_error"] or 0))
         has_warning = bool(int(row["has_warning"] or 0))
+        has_language_pending = bool(int(row["has_language_pending"] or 0))
         status = (
             "suspected_error"
             if has_error
             else "needs_review"
-            if has_warning
+            if has_warning or has_language_pending
             else "normal"
         )
         existing = status_by_run_and_table.setdefault(run_id, {}).get(table_code)

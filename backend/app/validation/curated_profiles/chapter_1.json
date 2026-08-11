@@ -15,6 +15,107 @@
     }
   ],
   "profiles": {
+    "1-1-2": {
+      "status": "ready",
+      "decision": "curated_organization_type_total_profile",
+      "label": "소속기관 유형별 기관수 합계 산식 승인",
+      "table_type": "organization_type_summary_table",
+      "notes": "큐레이션: 각 유형의 기관수는 정무직부터 임기제까지 직종별 기관 수를 모두 더한 값입니다. 모든 데이터 행에 같은 산식을 적용합니다.",
+      "suppress_checks": [
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.1-1-2.organization_count_by_service_type",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "기관수 = 정무직 + 고위공무원단 + 1급 + 2급 + 3급 + 3·4급 + 4급 + 4·5급 + 5급이하 + 연구직 + 특정직 + 임기제",
+          "target_column": 1,
+          "operand_columns": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13
+          ],
+          "row_scope": "all_data_rows",
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "1-1-4": {
+      "status": "ready",
+      "decision": "curated_administrative_institution_total_profile",
+      "label": "특별지방행정기관 기관수 합계 산식 승인",
+      "table_type": "administrative_institution_summary_table",
+      "notes": "큐레이션: 각 기관 분류의 기관수는 1차기관과 2·3차기관을 더한 값입니다. 모든 데이터 행에 같은 산식을 적용합니다.",
+      "suppress_checks": [
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.1-1-4.organization_count_by_level",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "기관수 = 1차기관 + 2·3차기관",
+          "target_column": 1,
+          "operand_columns": [
+            2,
+            3
+          ],
+          "row_scope": "all_data_rows",
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "1-1-5": {
+      "status": "ready",
+      "decision": "curated_committee_function_total_profile",
+      "label": "행정기관위원회 성격별 합계 산식 승인",
+      "table_type": "committee_year_trend_table",
+      "notes": "큐레이션: 각 연도의 합계는 성격별 행정과 자문을 더한 값입니다. 모든 연도 데이터 행에 같은 산식을 적용합니다.",
+      "checks": [
+        {
+          "id": "curated.1-1-5.total_by_function",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "합계 = 성격별 행정 + 성격별 자문",
+          "target_column": 1,
+          "operand_columns": [
+            5,
+            6
+          ],
+          "row_scope": "all_data_rows",
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
     "1-2-1-2": {
       "status": "ready",
       "decision": "curated_growth_profile",
@@ -34,6 +135,7 @@
           "value_column": 1,
           "change_column": 2,
           "rate_column": 3,
+          "row_scope": "year_rows",
           "row_indices": [
             1,
             2,
@@ -224,6 +326,7 @@
             2
           ],
           "source_column": 1,
+          "row_scope": "year_rows",
           "row_indices": [
             2,
             3,
@@ -267,6 +370,7 @@
             2,
             3
           ],
+          "row_scope": "year_rows",
           "row_indices": [
             2,
             3,
@@ -297,6 +401,7 @@
             5,
             6
           ],
+          "row_scope": "year_rows",
           "row_indices": [
             2,
             3,
@@ -328,6 +433,7 @@
             9,
             10
           ],
+          "row_scope": "year_rows",
           "row_indices": [
             2,
             3,

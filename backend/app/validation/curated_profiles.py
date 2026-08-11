@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+import hashlib
 import json
 from functools import lru_cache
 from pathlib import Path
@@ -111,6 +112,20 @@ def apply_curated_profile(
         status=str(profile.get("status") or status),
         notes=str(profile.get("notes") or notes),
     )
+
+
+def curated_profile_revision(table_code: str) -> str | None:
+    """Return a stable revision token for one table-specific curated profile.
+
+    Stored validation profiles keep this token so a corrected curated rule is
+    applied on the next validation even when the table's layout is unchanged.
+    """
+
+    profile = curated_profiles().get(table_code)
+    if profile is None:
+        return None
+    payload = json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def apply_confidence_overrides(

@@ -11,6 +11,7 @@ from app.validation.models import (
     format_number,
     normalize_text,
 )
+from app.validation.row_scope import resolve_row_scope
 from app.validation.profiles import ValidationProfile, is_calculation_row_label
 from app.validation.rules import (
     ValidationRule,
@@ -392,7 +393,7 @@ class ProfileSpecRule(ValidationRule):
 
         issues: list[ValidationIssueRecord] = []
         checks: list[ValidationCheckRecord] = []
-        allowed_rows = {int(row_index) for row_index in spec.get("row_indices", [])}
+        allowed_rows = set(resolve_row_scope(table, spec))
         for row_index, row in table.data_rows():
             if allowed_rows and row_index not in allowed_rows:
                 continue
@@ -401,6 +402,8 @@ class ProfileSpecRule(ValidationRule):
             current = additive_target_cell_number(row, target_col)
             operands = [additive_operand_cell_number(row, col_index) for col_index in operand_columns]
             if current is None or any(value is None for value in operands):
+                continue
+            if spec.get("skip_all_zero_operands") and current == 0 and all(value == 0 for value in operands):
                 continue
 
             expected = sum(value for value in operands if value is not None)
@@ -436,7 +439,7 @@ class ProfileSpecRule(ValidationRule):
 
         issues: list[ValidationIssueRecord] = []
         checks: list[ValidationCheckRecord] = []
-        allowed_rows = {int(row_index) for row_index in spec.get("row_indices", [])}
+        allowed_rows = set(resolve_row_scope(table, spec))
         display_only_rows = {int(row_index) for row_index in spec.get("display_only_row_indices", [])}
         for row_index, row in table.data_rows():
             if row_index in display_only_rows:
@@ -459,7 +462,11 @@ class ProfileSpecRule(ValidationRule):
 
             expected = 0.0
             for term in terms:
-                value = additive_operand_cell_number(row, int(term["column"]))
+                term_column = int(term["column"])
+                if spec.get("require_numeric_terms") and cell_number(row, term_column) is None:
+                    expected = None
+                    break
+                value = additive_operand_cell_number(row, term_column)
                 if value is None:
                     expected = None
                     break
@@ -1024,7 +1031,7 @@ class ProfileSpecRule(ValidationRule):
         rate_col = int(spec.get("rate_column", -1))
         change_col_raw = spec.get("change_column")
         change_col = int(change_col_raw) if change_col_raw is not None else None
-        row_indices = [int(row_index) for row_index in spec.get("row_indices", [])]
+        row_indices = resolve_row_scope(table, spec)
         required_columns = [value_col, rate_col] + ([] if change_col is None else [change_col])
         if len(row_indices) < 2 or not self._valid_rows(table, row_indices) or not self._valid_columns(table, required_columns):
             return [], []
@@ -1096,7 +1103,7 @@ class ProfileSpecRule(ValidationRule):
     ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
         value_col = int(spec.get("value_column", -1))
         change_col = int(spec.get("change_column", -1))
-        row_indices = [int(row_index) for row_index in spec.get("row_indices", [])]
+        row_indices = resolve_row_scope(table, spec)
         if len(row_indices) < 2 or not self._valid_rows(table, row_indices) or not self._valid_columns(table, [value_col, change_col]):
             return [], []
 
@@ -1410,11 +1417,17 @@ class ProfileSpecRule(ValidationRule):
         profile: ValidationProfile,
         spec: dict[str, Any],
     ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
-        target_row = int(spec.get("target_row", -1))
-        operand_rows = [int(row_index) for row_index in spec.get("operand_rows", [])]
+        target_row = self._column_sum_target_row(table, spec)
+        operand_rows = self._column_sum_operand_rows(table, spec, target_row)
         columns = [int(col_index) for col_index in spec.get("columns", [])]
-        if target_row < 0 or target_row >= len(table.matrix) or not columns or not operand_rows:
+        if target_row is None or target_row < 0 or target_row >= len(table.matrix) or not columns or not operand_rows:
             return [], []
+
+        resolved_spec = {
+            **spec,
+            "target_row": target_row,
+            "operand_rows": operand_rows,
+        }
 
         issues: list[ValidationIssueRecord] = []
         checks: list[ValidationCheckRecord] = []
@@ -1431,15 +1444,30 @@ class ProfileSpecRule(ValidationRule):
                 value = additive_operand_cell_number(table.matrix[row_index], col_index)
                 if value is not None:
                     values.append(value)
-            if current is None or len(values) < minimum_operands:
+            if len(values) < minimum_operands:
                 continue
 
             expected = sum(values)
+            if current is None:
+                if not spec.get("report_missing_target"):
+                    continue
+                check = self._missing_column_sum_target_check(
+                    table,
+                    profile,
+                    resolved_spec,
+                    row_index=target_row,
+                    col_index=col_index,
+                    expected=expected,
+                )
+                checks.append(check)
+                issues.append(self._issue_from_check(check))
+                continue
+
             passed = abs(current - expected) <= sum_ratio_tolerance(spec, 1.0)
             check = self._calculation_check(
                 table,
                 profile,
-                spec,
+                resolved_spec,
                 check_type="합계 검수",
                 row_index=target_row,
                 col_index=col_index,
@@ -1452,6 +1480,68 @@ class ProfileSpecRule(ValidationRule):
             if not passed:
                 issues.append(self._issue_from_check(check))
         return issues, checks
+
+    def _missing_column_sum_target_check(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+        *,
+        row_index: int,
+        col_index: int,
+        expected: float,
+    ) -> ValidationCheckRecord:
+        row = table.matrix[row_index] if row_index < len(table.matrix) else []
+        row_label = combined_row_label(table, row) or table.row_label(row) or f"{row_index + 1}행"
+        column_label = table.column_text(col_index)
+        evidence = self._calculation_evidence(table, spec, row_index=row_index, col_index=col_index)
+        evidence_detail = f" 연산에 사용한 셀: {evidence}." if evidence else ""
+        return self._check_record(
+            table,
+            profile,
+            spec,
+            check_type=self._check_type(spec, "합계 검수"),
+            location=f"{row_label} {column_label}",
+            current_value=clean_display_text(cell_text(row, col_index)) or "공란",
+            expected_value=format_number(expected),
+            difference="합계값 누락",
+            status=self._status(spec, False),
+            severity=self._severity(spec, False),
+            detail=(
+                "통계표별 검수 기준에 정의된 열 방향 합계의 대상 값이 비어 있습니다."
+                f" 적용 기준: {spec.get('label', spec.get('id', '검수 기준'))}.{evidence_detail}"
+            ),
+            row_index=row_index,
+            col_index=col_index,
+            formula=str(spec.get("label") or spec.get("id") or "profile rule"),
+        )
+
+    def _column_sum_target_row(
+        self,
+        table: ValidationTable,
+        spec: dict[str, Any],
+    ) -> int | None:
+        if spec.get("target_row_selector") == "first_total_row":
+            return next(
+                (
+                    row_index
+                    for row_index, row in table.data_rows()
+                    if is_total_like(combined_row_label(table, row))
+                ),
+                None,
+            )
+        value = spec.get("target_row")
+        return int(value) if value is not None else None
+
+    def _column_sum_operand_rows(
+        self,
+        table: ValidationTable,
+        spec: dict[str, Any],
+        target_row: int | None,
+    ) -> list[int]:
+        if spec.get("operand_row_selector") == "following_data_rows" and target_row is not None:
+            return [row_index for row_index, _ in table.data_rows() if row_index > target_row]
+        return [int(row_index) for row_index in spec.get("operand_rows", [])]
 
     def _calculation_check(
         self,

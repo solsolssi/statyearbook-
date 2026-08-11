@@ -71,6 +71,7 @@ from app.validation.region_glossary import region_review_decision
 from app.validation.result_repository import (
     delete_validation_result,
     delete_validation_results,
+    delete_validation_results_by_expected_value,
     refresh_run_issue_count,
     save_validation_result,
     update_validation_result_outcome,
@@ -93,6 +94,7 @@ DEFAULT_BIZROUTER_MODEL = "openai/gpt-5-mini"
 LLM_TRANSLATION_RULE_ID = "llm.translation_review"
 LLM_SPELLING_RULE_ID = "llm.spelling_review"
 RETIRED_LLM_TERMINOLOGY_RULE_ID = "llm.terminology_review"
+LANGUAGE_PENDING_EXPECTED_VALUE = "언어 검수 대기"
 SPELLING_DEFECT_KINDS = {
     "korean_spelling",
     "english_spelling",
@@ -153,6 +155,9 @@ def append_llm_translation_reviews(
         if resolved_run_id is None:
             return LLMReviewResult(0, 0, 0, 0, "no validation run")
 
+        if not blue_only:
+            clear_standard_language_pending_checks(connection, resolved_run_id)
+
         if blue_only:
             repair_blue_candidate_classifications(connection, resolved_run_id)
             dictionary_counts = resolve_blue_region_candidates(connection, resolved_run_id)
@@ -199,6 +204,8 @@ def append_llm_translation_reviews(
     if not items:
         if blue_only:
             synchronize_blue_review_checks(db_path, run_id=resolved_run_id)
+        else:
+            synchronize_standard_language_pending_checks(db_path, run_id=resolved_run_id)
         with connect(db_path) as connection:
             init_db(connection)
             with connection:
@@ -210,6 +217,8 @@ def append_llm_translation_reviews(
             current_issue_count(db_path, resolved_run_id),
         )
     if not settings["enabled"]:
+        if not blue_only:
+            synchronize_standard_language_pending_checks(db_path, run_id=resolved_run_id)
         return LLMReviewResult(
             processed,
             inserted_issues,
@@ -218,6 +227,8 @@ def append_llm_translation_reviews(
             "disabled",
         )
     if not settings["api_key"]:
+        if not blue_only:
+            synchronize_standard_language_pending_checks(db_path, run_id=resolved_run_id)
         return LLMReviewResult(
             processed,
             inserted_issues,
@@ -324,6 +335,83 @@ def append_llm_translation_reviews(
         inserted_checks=inserted_checks,
         final_issue_count=current_issue_count(db_path, resolved_run_id),
     )
+
+
+def clear_standard_language_pending_checks(
+    connection: DatabaseConnection,
+    run_id: int,
+) -> int:
+    return delete_validation_results_by_expected_value(
+        connection,
+        run_id=run_id,
+        rule_ids=(LLM_SPELLING_RULE_ID, LLM_TRANSLATION_RULE_ID),
+        expected_value=LANGUAGE_PENDING_EXPECTED_VALUE,
+    )
+
+
+def synchronize_standard_language_pending_checks(
+    db_path: Path = DB_PATH,
+    *,
+    run_id: int,
+) -> int:
+    """Expose unresolved spelling/translation candidates as visible review work."""
+
+    with connect(db_path) as connection:
+        init_db(connection)
+        pending_rows = connection.execute(
+            """
+            SELECT id, table_id, review_type, location, row_index, col_index,
+                   current_value, reason
+            FROM linguistic_review_candidates
+            WHERE run_id = ?
+              AND status <> 'reviewed'
+              AND source_kind <> 'blue'
+              AND candidate_kind NOT LIKE 'blue_text%'
+              AND review_type IN (?, ?)
+            ORDER BY table_id, row_index, col_index, location, current_value, review_type, id
+            """,
+            (run_id, SPELLING_CHECK_TYPE, TRANSLATION_CHECK_TYPE),
+        ).fetchall()
+
+        with connection:
+            clear_standard_language_pending_checks(connection, run_id)
+            for row in pending_rows:
+                review_type = str(row["review_type"] or TRANSLATION_CHECK_TYPE)
+                save_validation_result(
+                    connection,
+                    run_id=run_id,
+                    result=ValidationResult(
+                        table_id=int(row["table_id"]),
+                        rule_id=rule_id_for(review_type),
+                        check_type=review_type,
+                        check_label=llm_check_label(review_type),
+                        location=str(row["location"] or ""),
+                        row_index=(
+                            int(row["row_index"])
+                            if row["row_index"] is not None
+                            else None
+                        ),
+                        col_index=(
+                            int(row["col_index"])
+                            if row["col_index"] is not None
+                            else None
+                        ),
+                        current_value=normalize_review_text(
+                            str(row["current_value"] or "")
+                        ),
+                        expected_value=LANGUAGE_PENDING_EXPECTED_VALUE,
+                        difference=f"{review_type} 대기",
+                        status="확인 필요",
+                        severity="warning",
+                        detail=(
+                            "이 후보는 이전 검수 결과로 확정되지 않아 "
+                            "LLM 검수 또는 사용자 확인이 필요합니다."
+                        ),
+                        confidence=0.0,
+                    ),
+                )
+            refresh_issue_count(connection, run_id)
+        return len(pending_rows)
 
 
 def resolve_blue_region_candidates(
@@ -2057,39 +2145,68 @@ def reuse_cached_linguistic_reviews(
     reviewed_model: str,
     standard_language_only: bool = False,
 ) -> tuple[int, int, int]:
-    """Reuse reviewed decisions from this report's explicit revision lineage.
+    """Reuse reviewed decisions from an explicitly authorised review history.
 
     The old database-wide cache made a result from any report look like a
     reusable answer for another report with the same text.  Review memory now
-    lives in the source report's own candidates and is only visible to a child
-    report that selected it as a base report.
+    lives in the source report's own candidates and is only visible through
+    either its report revision lineage or a validation run explicitly selected
+    by the user as a reuse source.
     """
     items = load_linguistic_review_items(connection, run_id)
     if standard_language_only:
         items = [item for item in items if is_standard_language_item(item)]
     run_row = connection.execute(
-        "SELECT report_id FROM validation_runs WHERE id = ?",
+        "SELECT report_id, base_run_id FROM validation_runs WHERE id = ?",
         (run_id,),
     ).fetchone()
     if run_row is None:
         return (0, 0, 0)
     lineage_ids = report_lineage_ids(connection, int(run_row["report_id"]))
-    if not lineage_ids:
+    selected_run_ids = _selected_run_lineage_ids(
+        connection,
+        base_run_id=(
+            int(run_row["base_run_id"])
+            if run_row["base_run_id"] is not None
+            else None
+        ),
+    )
+    if not lineage_ids and not selected_run_ids:
         return (0, 0, 0)
-    placeholders = ",".join("?" for _ in lineage_ids)
+
+    source_conditions: list[str] = []
+    source_params: list[object] = []
+    if lineage_ids:
+        placeholders = ",".join("?" for _ in lineage_ids)
+        source_conditions.append(f"source_run.report_id IN ({placeholders})")
+        source_params.extend(lineage_ids)
+    if selected_run_ids:
+        placeholders = ",".join("?" for _ in selected_run_ids)
+        source_conditions.append(f"source_run.id IN ({placeholders})")
+        source_params.extend(selected_run_ids)
+
+    # A direct user selection wins over a report-lineage result if both happen
+    # to have an otherwise identical candidate fingerprint.
+    selected_order = (
+        "CASE WHEN source_run.id IN ("
+        + ",".join("?" for _ in selected_run_ids)
+        + ") THEN 0 ELSE 1 END, "
+        if selected_run_ids
+        else ""
+    )
     decision_rows = connection.execute(
         f"""
         SELECT candidate.review_fingerprint, candidate.review_result_json
         FROM linguistic_review_candidates candidate
         JOIN validation_runs source_run ON source_run.id = candidate.run_id
-        WHERE source_run.report_id IN ({placeholders})
+        WHERE ({' OR '.join(source_conditions)})
           AND candidate.status = 'reviewed'
           AND candidate.reviewed_model = ?
           AND candidate.review_fingerprint <> ''
           AND candidate.review_result_json <> ''
-        ORDER BY source_run.completed_at DESC, source_run.id DESC, candidate.id DESC
+        ORDER BY {selected_order}source_run.completed_at DESC, source_run.id DESC, candidate.id DESC
         """,
-        (*lineage_ids, reviewed_model),
+        (*source_params, reviewed_model, *selected_run_ids),
     ).fetchall()
     cached_decisions: dict[str, str] = {}
     for row in decision_rows:
@@ -2124,6 +2241,29 @@ def reuse_cached_linguistic_reviews(
         resolution_source="lineage_reuse",
     )
     return counts
+
+
+def _selected_run_lineage_ids(
+    connection: DatabaseConnection,
+    *,
+    base_run_id: int | None,
+) -> list[int]:
+    """Return the explicitly selected validation-run ancestry without cycles."""
+
+    selected_ids: list[int] = []
+    current_id = base_run_id
+    visited: set[int] = set()
+    while current_id is not None and current_id not in visited:
+        visited.add(current_id)
+        row = connection.execute(
+            "SELECT id, base_run_id FROM validation_runs WHERE id = ?",
+            (current_id,),
+        ).fetchone()
+        if row is None:
+            break
+        selected_ids.append(int(row["id"]))
+        current_id = int(row["base_run_id"]) if row["base_run_id"] is not None else None
+    return selected_ids
 
 
 def linguistic_review_fingerprint(item: SourceReviewItem, *, reviewed_model: str) -> str:

@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from app.core.numeric_text import parse_numeric_value
 from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
 from app.db.schema import init_db
+from app.ingest.table_repairs import repair_local_government_sejong_eup_myeon_dong_column
 from app.validation.models import (
     ValidationCell,
     ValidationCheckRecord,
@@ -124,6 +126,7 @@ class ValidationRepository:
             """,
             (table_row["id"],),
         ).fetchall()
+        validation_cells = validation_cells_from_rows(str(table_row["code"]), cells)
 
         return ValidationTable(
             id=table_row["id"],
@@ -134,14 +137,44 @@ class ValidationRepository:
             base_date=table_row["base_date"],
             source=table_row["source"],
             note=table_row["note"],
-            cells=[
-                ValidationCell(
-                    row_index=cell["row_index"],
-                    col_index=cell["col_index"],
-                    text_value=cell["text_value"],
-                    numeric_value=cell["numeric_value"],
-                    is_header=bool(cell["is_header"]),
-                )
-                for cell in cells
-            ],
+            cells=validation_cells,
         )
+
+
+def validation_cells_from_rows(
+    table_code: str,
+    cells: list[DatabaseRow],
+) -> list[ValidationCell]:
+    if table_code != "4-1-9 표4" or not cells:
+        return [
+            ValidationCell(
+                row_index=cell["row_index"],
+                col_index=cell["col_index"],
+                text_value=cell["text_value"],
+                numeric_value=cell["numeric_value"],
+                is_header=bool(cell["is_header"]),
+            )
+            for cell in cells
+        ]
+
+    max_row = max(cell["row_index"] for cell in cells)
+    max_col = max(cell["col_index"] for cell in cells)
+    matrix = [["" for _ in range(max_col + 1)] for _ in range(max_row + 1)]
+    footnote_matrix = [["" for _ in range(max_col + 1)] for _ in range(max_row + 1)]
+    header_rows = {int(cell["row_index"]) for cell in cells if cell["is_header"]}
+    for cell in cells:
+        matrix[cell["row_index"]][cell["col_index"]] = cell["text_value"] or ""
+
+    repair_local_government_sejong_eup_myeon_dong_column(matrix, footnote_matrix)
+
+    return [
+        ValidationCell(
+            row_index=row_index,
+            col_index=col_index,
+            text_value=value,
+            numeric_value=parse_numeric_value(value),
+            is_header=row_index in header_rows,
+        )
+        for row_index, row in enumerate(matrix)
+        for col_index, value in enumerate(row)
+    ]

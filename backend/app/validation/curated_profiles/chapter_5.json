@@ -555,6 +555,8 @@
               "op": "-"
             }
           ],
+          "row_scope": "all_data_rows",
+          "require_numeric_terms": true,
           "row_indices": [
             1,
             2,
@@ -570,6 +572,225 @@
             12,
             13
           ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "5-1-1-5 표1": {
+      "status": "ready",
+      "decision": "curated_balance_summary_profile",
+      "label": "통합재정 수지 표1 증감·수지 산식 승인",
+      "table_type": "financial_balance_summary_table",
+      "notes": "큐레이션: 표1은 증감(A-B)을 모든 행에 적용하고, 통합재정수지(Ⅰ)는 수입-지출, 통합재정수지(Ⅱ)는 수지(Ⅰ)+순세계잉여금으로 검수합니다.",
+      "suppress_checks": [
+        {
+          "type": "row_arithmetic"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.5-1-1-5.part1.balance_i",
+          "type": "cell_relation_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "통합재정수지(Ⅰ) = 통합재정수입 - 통합재정지출",
+          "comparisons": [
+            {
+              "target": {
+                "row": 1,
+                "column": 1
+              },
+              "operand_cells": [
+                {
+                  "row": 2,
+                  "column": 1
+                },
+                {
+                  "row": 3,
+                  "column": 1,
+                  "op": "-"
+                }
+              ]
+            },
+            {
+              "target": {
+                "row": 1,
+                "column": 2
+              },
+              "operand_cells": [
+                {
+                  "row": 2,
+                  "column": 2
+                },
+                {
+                  "row": 3,
+                  "column": 2,
+                  "op": "-"
+                }
+              ]
+            }
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.5-1-1-5.part1.balance_ii",
+          "type": "cell_relation_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "통합재정수지(Ⅱ) = 통합재정수지(Ⅰ) + 순세계잉여금",
+          "comparisons": [
+            {
+              "target": {
+                "row": 5,
+                "column": 1
+              },
+              "operand_cells": [
+                {
+                  "row": 1,
+                  "column": 1
+                },
+                {
+                  "row": 4,
+                  "column": 1
+                }
+              ]
+            },
+            {
+              "target": {
+                "row": 5,
+                "column": 2
+              },
+              "operand_cells": [
+                {
+                  "row": 1,
+                  "column": 2
+                },
+                {
+                  "row": 4,
+                  "column": 2
+                }
+              ]
+            }
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.5-1-1-5.part1.change",
+          "type": "row_arithmetic",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "증감액 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "증감(A-B) = 2026년도(A) - 2025년도(B)",
+          "target_column": 3,
+          "terms": [
+            {
+              "column": 1,
+              "op": "+"
+            },
+            {
+              "column": 2,
+              "op": "-"
+            }
+          ],
+          "row_scope": "all_data_rows",
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "5-1-1-5 표2": {
+      "status": "ready",
+      "decision": "curated_account_subtotal_profile",
+      "label": "통합재정 수입·지출 회계별 합계 산식 승인",
+      "table_type": "financial_account_detail_table",
+      "notes": "큐레이션: 통합재정수입과 통합재정지출은 각각 일반회계·특별회계·기금의 합계이며, 증감(A-B)은 모든 행에 적용합니다.",
+      "suppress_checks": [
+        {
+          "type": "column_sum"
+        },
+        {
+          "type": "row_arithmetic"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.5-1-1-5.part2.revenue_by_accounts",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "통합재정수입 = 일반회계 + 특별회계 + 기금",
+          "target_row": 1,
+          "operand_rows": [
+            2,
+            3,
+            4
+          ],
+          "columns": [
+            1,
+            2,
+            3
+          ],
+          "tolerance": 2.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.5-1-1-5.part2.expenditure_by_accounts",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "통합재정지출 = 일반회계 + 특별회계 + 기금",
+          "target_row": 5,
+          "operand_rows": [
+            6,
+            7,
+            8
+          ],
+          "columns": [
+            1,
+            2,
+            3
+          ],
+          "tolerance": 2.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.5-1-1-5.part2.change",
+          "type": "row_arithmetic",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "증감액 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "증감(A-B) = 2026년도(A) - 2025년도(B)",
+          "target_column": 3,
+          "terms": [
+            {
+              "column": 1,
+              "op": "+"
+            },
+            {
+              "column": 2,
+              "op": "-"
+            }
+          ],
+          "row_scope": "all_data_rows",
           "tolerance": 1.0,
           "confidence": 1.0
         }
@@ -2393,7 +2614,7 @@
       "decision": "curated_total_and_change_profile",
       "label": "지방세 총괄 구성 합계·기간별 증가액 산식 승인",
       "table_type": "year_trend_table",
-      "notes": "큐레이션: 지방세 징수액은 지방자치단체 유형별 금액의 합계입니다. 기간별 증가액은 해당 기준연도의 금액 차이입니다. 기준연도 값이 없는 특별자치시·특별자치도는 계산값 비교에서는 제외하되, 다음 연도 값 추가에 대비해 관련 셀을 검수 화면에서 표시합니다.",
+      "notes": "큐레이션: 지방세 징수액은 지방자치단체 유형별 금액의 합계입니다. 기간별 증가액은 해당 기준연도의 금액 차이입니다. 기준연도 값이 없는 행은 값이 들어오는 즉시 같은 산식을 적용할 수 있도록 전체 행 범위로 검수합니다.",
       "checks": [
         {
           "id": "curated.5-2-1-1.local_tax_total",
@@ -2448,18 +2669,18 @@
               "op": "-"
             }
           ],
+          "row_scope": "all_data_rows",
+          "require_numeric_terms": true,
           "row_indices": [
             2,
             3,
             4,
+            5,
+            6,
             7,
             8,
             9,
             10
-          ],
-          "display_only_row_indices": [
-            5,
-            6
           ],
           "tolerance": 1.0,
           "confidence": 1.0
@@ -2484,18 +2705,18 @@
               "op": "-"
             }
           ],
+          "row_scope": "all_data_rows",
+          "require_numeric_terms": true,
           "row_indices": [
             2,
             3,
             4,
+            5,
+            6,
             7,
             8,
             9,
             10
-          ],
-          "display_only_row_indices": [
-            5,
-            6
           ],
           "tolerance": 1.0,
           "confidence": 1.0
@@ -2520,18 +2741,18 @@
               "op": "-"
             }
           ],
+          "row_scope": "all_data_rows",
+          "require_numeric_terms": true,
           "row_indices": [
             2,
             3,
             4,
+            5,
+            6,
             7,
             8,
             9,
             10
-          ],
-          "display_only_row_indices": [
-            5,
-            6
           ],
           "tolerance": 1.0,
           "confidence": 1.0
@@ -2607,6 +2828,7 @@
             2,
             3
           ],
+          "row_scope": "all_data_rows",
           "row_indices": [
             1,
             2,

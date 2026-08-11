@@ -52,13 +52,27 @@ class RowSumSpec(ProfileCheckSpec):
     target_column: int = Field(ge=0)
     operand_columns: list[int] = Field(min_length=1)
     row_indices: list[int] = Field(default_factory=list)
+    row_scope: Literal["fixed", "all_data_rows", "year_rows", "year_first_occurrence", "year_range"] = "fixed"
+    year_min: int | None = None
+    year_max: int | None = None
 
 
 class ColumnSumSpec(ProfileCheckSpec):
     type: Literal["column_sum", "region_total"]
-    target_row: int = Field(ge=0)
-    operand_rows: list[int] = Field(min_length=1)
+    target_row: int | None = Field(default=None, ge=0)
+    target_row_selector: Literal["first_total_row"] | None = None
+    operand_rows: list[int] = Field(default_factory=list)
+    operand_row_selector: Literal["following_data_rows"] | None = None
     columns: list[int] = Field(min_length=1)
+    report_missing_target: bool = False
+
+    @model_validator(mode="after")
+    def require_target_and_operands(self) -> ColumnSumSpec:
+        if self.target_row is None and self.target_row_selector is None:
+            raise ValueError("target_row 또는 target_row_selector가 필요합니다.")
+        if not self.operand_rows and self.operand_row_selector is None:
+            raise ValueError("operand_rows 또는 operand_row_selector가 필요합니다.")
+        return self
 
 
 class CellCoordinate(BaseModel):
@@ -106,6 +120,9 @@ class RowArithmeticSpec(ProfileCheckSpec):
     target_column: int = Field(ge=0)
     terms: list[ArithmeticTerm] = Field(min_length=1)
     row_indices: list[int] = Field(default_factory=list)
+    row_scope: Literal["fixed", "all_data_rows", "year_rows", "year_first_occurrence", "year_range"] = "fixed"
+    year_min: int | None = None
+    year_max: int | None = None
 
 
 class RowRatioSpec(ProfileCheckSpec):
@@ -178,12 +195,17 @@ class RowYearOverYearSpec(ProfileCheckSpec):
 class YearRowsChangeSpec(ProfileCheckSpec):
     type: Literal["year_rows_change_rate", "year_rows_change_amount"]
     value_column: int = Field(ge=0)
-    row_indices: list[int] = Field(min_length=2)
+    row_indices: list[int] = Field(default_factory=list)
+    row_scope: Literal["fixed", "year_rows", "year_range"] = "fixed"
+    year_min: int | None = None
+    year_max: int | None = None
     rate_column: int | None = Field(default=None, ge=0)
     change_column: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def require_result_column(self) -> YearRowsChangeSpec:
+        if self.row_scope == "fixed" and len(self.row_indices) < 2:
+            raise ValueError("고정 행 범위에는 row_indices가 2개 이상 필요합니다.")
         if self.type == "year_rows_change_rate" and self.rate_column is None:
             raise ValueError("rate_column이 필요합니다.")
         if self.type == "year_rows_change_amount" and self.change_column is None:

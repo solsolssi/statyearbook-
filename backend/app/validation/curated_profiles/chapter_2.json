@@ -92,6 +92,7 @@
             5,
             6
           ],
+          "row_scope": "all_data_rows",
           "row_indices": [
             1,
             2
@@ -119,6 +120,7 @@
           "label": "전년대비 증감 = (방문 발급 당해연도 - 직전 연도) / 직전 연도 * 100",
           "value_column": 2,
           "rate_column": 3,
+          "row_scope": "year_rows",
           "row_indices": [
             1,
             2,
@@ -162,6 +164,7 @@
             3,
             4
           ],
+          "row_scope": "year_rows",
           "row_indices": [
             1,
             2,
@@ -186,6 +189,7 @@
           "label": "전년대비 증감 = (계 당해연도 - 계 직전 연도) / 계 직전 연도 * 100",
           "value_column": 1,
           "rate_column": 2,
+          "row_scope": "year_rows",
           "row_indices": [
             1,
             2,
@@ -207,7 +211,7 @@
       "decision": "curated_sum_profile",
       "label": "정보공개 처리 현황 합계 산식 승인",
       "table_type": "year_trend_table",
-      "notes": "큐레이션: 청구건수는 전부공개·부분공개·비공개의 합계입니다. 값이 아직 입력되지 않은 2025년 행은 계산 대상에서 제외합니다.",
+      "notes": "큐레이션: 청구건수는 전부공개·부분공개·비공개의 합계입니다. 값이 비어 있는 연도는 자동으로 건너뛰고, 이후 값이 입력되면 같은 산식으로 검수합니다.",
       "checks": [
         {
           "id": "curated.2-2-2-1.request_total_by_disclosure_status",
@@ -223,20 +227,6 @@
             2,
             3,
             4
-          ],
-          "row_indices": [
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10,
-            11,
-            12,
-            13
           ],
           "tolerance": 0.0,
           "confidence": 1.0
@@ -270,6 +260,7 @@
             8,
             9
           ],
+          "row_scope": "year_first_occurrence",
           "row_indices": [
             1,
             3,
@@ -313,6 +304,7 @@
             7,
             8
           ],
+          "row_scope": "year_rows",
           "row_indices": [
             2,
             3,
@@ -353,6 +345,7 @@
             7,
             8
           ],
+          "row_scope": "year_rows",
           "row_indices": [
             2,
             3,
@@ -376,7 +369,44 @@
       "label": "생활공감정책 참여단 구성 소계 산식 승인",
       "table_type": "regional_table",
       "notes": "큐레이션: 제10기 구성인원은 남·여 인원의 합, 연령대별 인원의 합, 이전 기수 모니터와 신규 인원의 합으로 각각 검수합니다. 지역별 행과 계 행 모두 같은 산식을 적용합니다.",
+      "suppress_checks": [
+        {
+          "id": "profile.2-2-6.region_total_r3"
+        },
+        {
+          "id": "profile.2-2-6.column_total_r3"
+        },
+        {
+          "id": "profile.2-2-6.same_row_ratio_c10"
+        }
+      ],
       "checks": [
+        {
+          "id": "curated.2-2-6.regional_column_total",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 = 모든 시도 합계",
+          "target_row_selector": "first_total_row",
+          "operand_row_selector": "following_data_rows",
+          "columns": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            11
+          ],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        },
         {
           "id": "curated.2-2-6.sex_subtotal",
           "type": "row_sum",
@@ -391,6 +421,7 @@
             2,
             3
           ],
+          "row_scope": "all_data_rows",
           "row_indices": [
             3,
             4,
@@ -431,6 +462,7 @@
             7,
             8
           ],
+          "row_scope": "all_data_rows",
           "row_indices": [
             3,
             4,
@@ -468,6 +500,7 @@
             9,
             11
           ],
+          "row_scope": "all_data_rows",
           "row_indices": [
             3,
             4,
@@ -489,6 +522,22 @@
             20
           ],
           "tolerance": 0.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.2-2-6.previous_monitor_rate",
+          "type": "row_ratio",
+          "category": "table",
+          "check_group": "ratio",
+          "check_type": "비율 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "이전 기수 모니터 비율 = 이전 기수 모니터 인원 / 제10기 구성인원 × 100",
+          "target_column": 10,
+          "numerator_column": 9,
+          "denominator_column": 1,
+          "multiplier": 100,
+          "tolerance": 0.5,
           "confidence": 1.0
         }
       ]
@@ -525,6 +574,7 @@
             7,
             8
           ],
+          "row_scope": "year_rows",
           "row_indices": [
             2,
             3,

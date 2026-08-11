@@ -425,6 +425,24 @@ class TableDisplayParsingTests(unittest.TestCase):
             "Resident′s Lawsuits",
         )
 
+    def test_korean_embedded_acronyms_and_arrows_stay_in_their_language(self) -> None:
+        disaster = "가축질병(\nAI)\nLivestock disease(AI)"
+        explosion = "여수산단 YNCC 3공장 폭발사고\nYNCC No. 3 Cracker Explosion in Yeosu"
+        dvi = "대량재해･\nDVI Mass Disaster & DVI"
+        sent = "송신\n(민간→공공기관)\nSent\n(private sector →\npublic organization)"
+
+        self.assertEqual(clean_label(disaster), "가축질병(AI)")
+        self.assertEqual(english_label(disaster), "Livestock disease(AI)")
+        self.assertEqual(clean_label(explosion), "여수산단 YNCC 3공장 폭발사고")
+        self.assertEqual(english_label(explosion), "YNCC No. 3 Cracker Explosion in Yeosu")
+        self.assertEqual(clean_label(dvi), "대량재해･DVI")
+        self.assertEqual(english_label(dvi), "Mass Disaster & DVI")
+        self.assertEqual(clean_label(sent), "송신 (민간→공공기관)")
+        self.assertEqual(english_label(sent), "Sent (private sector → public organization)")
+        grade = "전문경력관 가군, 나군, 다군\nSpecialist Grade A/B/C"
+        self.assertEqual(clean_label(grade), "전문경력관 가군, 나군, 다군")
+        self.assertEqual(english_label(grade), "Specialist Grade A/B/C")
+
     def test_numeric_english_phrases_and_ordinals_stay_in_english_labels(self) -> None:
         age = "14세 이하\n14 years old and under"
         replacement = "2차 보충\n2nd Replacement Draft"
@@ -442,6 +460,22 @@ class TableDisplayParsingTests(unittest.TestCase):
             (
                 "’07.12.11.(1차) ’08.1.18.(2차)",
                 "Dec. 11, 2007 (#1) Jan. 18, 2008 (#2)",
+            ),
+        )
+
+    def test_damage_description_with_dates_is_not_reduced_to_dates(self) -> None:
+        value = (
+            "▪ 인명피해(’23.3.31.) : 사망 159명, 부상 330명\n"
+            "▪ 복구지원액 : 61억원\n"
+            "▪\nVictims: 159 Dead, 330 Injured (Mar. 31, 2023)\n"
+            "▪\nRelief: KRW 6.1B"
+        )
+
+        self.assertEqual(
+            split_bilingual_display_value(value),
+            (
+                "▪ 인명피해(’23.3.31.) : 사망 159명, 부상 330명 ▪ 복구지원액 : 61억원 ▪",
+                "Victims: 159 Dead, 330 Injured (Mar. 31, 2023) ▪ Relief: KRW 6.1B",
             ),
         )
 
@@ -712,6 +746,36 @@ class TableDisplayParsingTests(unittest.TestCase):
         self.assertEqual(rows[0]["c0"], "울림사유")
         self.assertEqual(rows[0]["c0_en"], "Reason for alert")
         self.assertEqual(rows[2]["c4"], "안산")
+
+    def test_blank_body_label_rows_are_not_promoted_to_display_header(self) -> None:
+        matrix = [
+            [
+                "구분\nClassification\n지역\nRegion",
+                "",
+                "2024년\n연말잔액\n(a)\n2023\nBalance at the End of the Year\n(a)",
+                "2025년\n적립액\n(b)\n2024\nAmount Accumulated\n(b)",
+            ],
+            ["합계\nTotal", "총계\nTotal", "", ""],
+            ["합계\nTotal", "광역\nMetropolitan", "", ""],
+            ["합계\nTotal", "시군구\nCities, Counties &\nDistricts", "", ""],
+            ["서 울\nSeoul", "본청\nThe headquarter", "", ""],
+            ["세 종\nSejong", "본청\nThe headquarter", "21,207", "7,828"],
+        ]
+
+        header_count = display_header_count_from_matrix(matrix, 1)
+        label_columns = leading_label_column_indexes(matrix, header_count)
+        columns = build_columns(matrix, header_count, label_columns)
+        rows = build_rows(matrix, columns, header_count, label_column_indexes=label_columns)
+
+        self.assertEqual(header_count, 1)
+        self.assertEqual(columns[0].label, "지역")
+        self.assertEqual(columns[0].source_col_indexes, [0, 1])
+        self.assertEqual(columns[1].label, "2024년 연말잔액 (a)")
+        self.assertEqual(rows[0]["c0"], "합계 / 총계")
+        self.assertEqual(rows[2]["c0"], "합계 / 시군구")
+        self.assertEqual(rows[4]["c0"], "세 종 / 본청")
+        self.assertEqual(rows[4]["c2"], 21207)
+        self.assertEqual(rows[4]["c3"], 7828)
 
     def test_only_unmatched_closing_parentheses_are_removed(self) -> None:
         self.assertEqual(remove_unmatched_closing_parentheses("Number of Persons)"), "Number of Persons")

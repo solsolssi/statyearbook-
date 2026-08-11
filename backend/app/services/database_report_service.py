@@ -30,6 +30,11 @@ from app.models.report import (
     Visualization,
     VisualizationSeries,
 )
+from app.ingest.table_repairs import (
+    detach_spanning_small_business_note,
+    normalize_flood_insurance_small_business_guide,
+    repair_local_government_sejong_eup_myeon_dong_column,
+)
 from app.ingest.table_shape import wide_row_oriented_text_table_header_count
 from app.validation.models import restore_hyphenated_line_breaks
 from app.validation.presentation import validation_issue_from_row
@@ -649,6 +654,11 @@ class DatabaseReportService:
 
         matrix = matrix_from_cells(cells)
         footnote_matrix = footnote_matrix_from_cells(cells)
+        display_notes = apply_display_matrix_repairs(
+            str(table_row["code"]),
+            matrix,
+            footnote_matrix,
+        )
         header_count = header_count_from_cells(cells, matrix)
         label_column_indexes = leading_label_column_indexes(matrix, header_count)
         columns = build_columns(
@@ -730,7 +740,11 @@ class DatabaseReportService:
             metadata=TableMetadata(
                 original_file=decode_display_text(report["source_file_name"]),
                 sheet_name=table_row["section_file"],
-                note=table_row["note"],
+                note="\n".join(
+                    value
+                    for value in (str(table_row["note"] or ""), *display_notes)
+                    if value
+                ),
                 source=table_row["source"],
                 source_department=contact.department,
                 source_officer=contact.officer,
@@ -1483,6 +1497,25 @@ def footnote_matrix_from_cells(cells: list[DatabaseRow]) -> list[list[str]]:
     return matrix
 
 
+def apply_display_matrix_repairs(
+    table_code: str,
+    matrix: list[list[str]],
+    footnote_matrix: list[list[str]],
+) -> list[str]:
+    notes: list[str] = []
+    if table_code == "4-1-9 표4":
+        repair_local_government_sejong_eup_myeon_dong_column(matrix, footnote_matrix)
+    normalize_flood_insurance_small_business_guide(table_code, matrix)
+    spanning_note = detach_spanning_small_business_note(
+        table_code,
+        matrix,
+        footnote_matrix,
+    )
+    if spanning_note:
+        notes.append(spanning_note)
+    return notes
+
+
 def header_count_from_cells(cells: list[DatabaseRow], matrix: list[list[str]]) -> int:
     header_rows = {cell["row_index"] for cell in cells if cell["is_header"]}
     if header_rows:
@@ -1496,9 +1529,57 @@ def display_header_count_from_matrix(matrix: list[list[str]], stored_header_coun
         return row_oriented_header_count
     header_count = stored_header_count
     max_header_count = min(len(matrix), 5)
-    while header_count < max_header_count and row_looks_like_header_continuation(matrix[header_count]):
+    stored_header_rows = matrix[:stored_header_count]
+    while header_count < max_header_count:
+        candidate = matrix[header_count]
+        if row_looks_like_blank_body_label_row(candidate, stored_header_rows):
+            break
+        if not row_looks_like_header_continuation(candidate):
+            break
         header_count += 1
     return header_count
+
+
+def row_looks_like_blank_body_label_row(row: list[str], header_rows: list[list[str]]) -> bool:
+    """Detect body rows with empty measures before display-header expansion.
+
+    Draft HWPX files often leave current-year measure cells blank.  Rows such
+    as ``합계/총계`` or ``합계/광역`` then contain only label-column text and no
+    numeric values, which made the display heuristic promote them into the
+    header.  If the stored parser header already labels those leading columns,
+    keep such rows in the body even when their measure cells are blank.
+    """
+
+    non_empty_positions = [
+        col_index
+        for col_index, cell in enumerate(row)
+        if cell.strip()
+    ]
+    if len(non_empty_positions) < 2 or max(non_empty_positions) > 1:
+        return False
+    non_empty = [row[col_index].strip() for col_index in non_empty_positions]
+    if any(parse_numeric(value) is not None for value in non_empty):
+        return False
+    return all(
+        header_rows_cover_label_column(header_rows, col_index)
+        for col_index in non_empty_positions
+    )
+
+
+def header_rows_cover_label_column(header_rows: list[list[str]], col_index: int) -> bool:
+    if any(col_index < len(header_row) and header_row[col_index].strip() for header_row in header_rows):
+        return True
+    if col_index == 1:
+        return any(header_row and looks_like_diagonal_region_classification_header(header_row[0]) for header_row in header_rows)
+    return False
+
+
+def looks_like_diagonal_region_classification_header(value: str) -> bool:
+    normalized = re.sub(r"\s+", "", value).lower()
+    return (
+        ("지역" in normalized and "구분" in normalized)
+        or ("region" in normalized and "classification" in normalized)
+    )
 
 
 def row_looks_like_header_continuation(row: list[str]) -> bool:
@@ -1534,17 +1615,17 @@ def row_is_caption_metadata(row: list[str]) -> bool:
 # uses ``′`` for contractions in a few English translations (for example
 # ``Resident′s Lawsuits``).  Leaving it out makes the glyph survive in the
 # Korean label while disappearing from the English label.
-ENGLISH_LABEL_BODY = r"A-Za-z0-9 /&().,%·･+=:\-'’‘′ʼ㎡㎢㎞㎏㎘㎖㎥"
+ENGLISH_LABEL_BODY = r"A-Za-z0-9 /&().,%·･+=:\-'’‘′ʼ㎡㎢㎞㎏㎘㎖㎥→←↔"
 ENGLISH_LABEL_SPAN_RE = re.compile(
     rf"\[\s*[A-Za-z][{ENGLISH_LABEL_BODY}]*\s*\]"
     rf"|\((?=[^)]*[A-Za-z]{{2}})(?=[^)]*\s)[{ENGLISH_LABEL_BODY}]+\)"
-    rf"|(?<![A-Za-z0-9가-힣(/=+\-])(?:-\s*)?"
+    rf"|(?<![A-Za-z0-9가-힣(/=+\-¤])(?:-\s*)?"
     rf"(?:\d[\d,]*(?:\.\d+)?(?:st|nd|rd|th)?(?:~\d+)?(?=\s+[A-Za-z])|\d+s|(?=[A-Za-z][{ENGLISH_LABEL_BODY}]*[A-Za-z])[A-Za-z])"
     rf"[{ENGLISH_LABEL_BODY}]*"
 )
 HEADER_FORMULA_RE = re.compile(
     r"(?<![A-Za-z])(?:"
-    r"[A-Za-z]/(?:\([A-Za-z](?:[+\-][A-Za-z])+\)|[A-Za-z])"
+    r"[A-Za-z]/\([A-Za-z](?:[+\-][A-Za-z])+\)"
     r"|[A-Za-z]\s*=\s*[A-Za-z](?:\s*[+\-]\s*[A-Za-z])+"
     r")(?![A-Za-z])"
 )
@@ -1565,6 +1646,8 @@ def pure_english_label_line_index(lines: list[str]) -> int | None:
         stripped = line.strip()
         if not stripped or re.search(r"[가-힣]", stripped):
             continue
+        if re.fullmatch(r"[A-Z]{2,}\)?", stripped) and index + 1 < len(lines):
+            continue
         formula_candidate = stripped.strip("()[] ")
         if HEADER_FORMULA_RE.fullmatch(formula_candidate):
             continue
@@ -1583,11 +1666,41 @@ def clean_label(text: str) -> str:
         return ""
 
     formulas: list[str] = []
+    korean_acronyms: list[str] = []
     leading_acronym = ""
     acronym_match = re.match(r"^([A-Z]{2,})\s+(?=[가-힣])", cleaned)
     if acronym_match:
         leading_acronym = acronym_match.group(1)
         cleaned = f"¤A¤{cleaned[acronym_match.end():]}"
+
+    def protect_korean_acronym(match: re.Match[str]) -> str:
+        value = match.group(0)
+        normalized = re.sub(r"\s+", " ", value)
+        normalized = re.sub(r"\(\s*/?\s*([A-Z]{2,})\s*\)", r"(\1)", normalized)
+        if normalized not in korean_acronyms:
+            korean_acronyms.append(normalized)
+        return f"¤K{korean_acronyms.index(normalized)}¤"
+
+    cleaned = re.sub(
+        r"(?<=[가-힣])\(\s*/?\s*[A-Z]{2,}\s*\)",
+        protect_korean_acronym,
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?<=[가-힣])\s+[A-Z]{2,}(?=\s*\d*\s*[가-힣])",
+        protect_korean_acronym,
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?<=[가-힣·･])\s+([A-Z]{2,})(?=[ A-Za-z&]*\b\1\b)",
+        protect_korean_acronym,
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?<=[가-힣·･])([A-Z]{2,})(?=\s+[A-Za-z][ A-Za-z&]*\b\1\b)",
+        protect_korean_acronym,
+        cleaned,
+    )
 
     def protect_formula(match: re.Match[str]) -> str:
         formula = re.sub(r"\s+", "", match.group(0))
@@ -1604,9 +1717,12 @@ def clean_label(text: str) -> str:
             tail = koreanish[first_index + len(token) :].replace(token, "")
             koreanish = koreanish[: first_index + len(token)] + tail
         koreanish = koreanish.replace(token, formula)
+    for acronym_index, acronym in enumerate(korean_acronyms):
+        koreanish = koreanish.replace(f"¤K{acronym_index}¤", acronym)
     if leading_acronym:
         koreanish = koreanish.replace("¤A¤", f"{leading_acronym} ")
     koreanish = re.sub(r"\s+", " ", koreanish).strip(" /")
+    koreanish = re.sub(r"([･·])\s+([A-Z]{2,})$", r"\1\2", koreanish)
     koreanish = re.sub(r"\(\s+", "(", koreanish)
     koreanish = re.sub(r"\s+\)", ")", koreanish)
     koreanish = re.sub(r"(\([^()]+\))(?:\s+\1)+", r"\1", koreanish)
@@ -1624,6 +1740,10 @@ def english_label(text: str) -> str | None:
     lines = [line.strip() for line in restored.splitlines() if line.strip()]
     english_line_index = pure_english_label_line_index(lines)
     english_source = lines[english_line_index:] if english_line_index is not None else lines
+    if english_line_index is not None and english_line_index > 0 and english_source:
+        acronym_prefix = re.match(r"^([A-Z]{2,})\s+(.+)$", english_source[0])
+        if acronym_prefix and re.search(r"[･·]\s*$", lines[english_line_index - 1]):
+            english_source = [acronym_prefix.group(2), *english_source[1:]]
     text = re.sub(r"\s+", " ", " ".join(english_source)).strip()
     if diagonal_region_header_label(clean_label_korean_only(restored), restored):
         return "Region"
@@ -1975,6 +2095,16 @@ def split_temporal_bilingual_display_value(value: str) -> tuple[str, str] | None
     ]
     if not korean_parts or not english_parts:
         return None
+    # A damage-description cell can contain one Korean/English date inside
+    # much longer prose.  It is not a date cell; extracting just the two dates
+    # silently discarded the actual damage details (notably 7-3-1-2 이태원
+    # 사고).  Only apply the compact date presentation when no semantic text
+    # remains after removing every temporal token.
+    remainder = KOREAN_TEMPORAL_DISPLAY_RE.sub("", value)
+    remainder = ENGLISH_TEMPORAL_DISPLAY_RE.sub("", remainder)
+    remainder = re.sub(r"[\s#(),./~–-]+", "", remainder)
+    if remainder:
+        return None
     return " ".join(korean_parts), " ".join(english_parts)
 
 
@@ -1991,6 +2121,18 @@ def split_stacked_bilingual_display_value(value: str) -> tuple[str, str] | None:
     if any(re.search(r"[가-힣]", line) for line in english_lines):
         return None
     korean_lines = lines[:english_line_index]
+    # HWPX occasionally puts a Korean label's attached acronym at the start
+    # of the following English line: ``대량재해･ / DVI Mass Disaster & DVI``.
+    # The acronym belongs to the Korean label; keeping it in both fields made
+    # DVI visibly duplicate.
+    acronym_prefix = re.match(r"^([A-Z]{2,})\s+(.+)$", english_lines[0])
+    if (
+        acronym_prefix
+        and korean_lines
+        and re.search(r"[･·]\s*$", korean_lines[-1])
+    ):
+        korean_lines[-1] = f"{korean_lines[-1]}{acronym_prefix.group(1)}"
+        english_lines[0] = acronym_prefix.group(2)
     korean = clean_label("\n".join(korean_lines))
     english = remove_unmatched_closing_parentheses(" ".join(english_lines))
     if not korean or not english:

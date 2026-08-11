@@ -23,6 +23,7 @@ from app.validation.profiles import (
     structure_signature,
 )
 from app.validation.catalog import rule_definition_payload
+from app.validation.curated_profiles import curated_profile_revision
 from app.validation.profile_migrations import migrate_profile_document
 from app.validation.profile_specs import validate_profile_specs
 
@@ -48,6 +49,8 @@ class ValidationProfileRepository:
                 for table in tables:
                     signature = structure_signature(table)
                     profile = self._profile_by_code_signature(connection, table.code, signature)
+                    curated_refresh_required = profile_requires_curated_refresh(profile, table.code)
+                    dynamic_scope_refresh_required = profile_requires_dynamic_scope_refresh(profile)
                     inherited_profile = None
                     if profile is None:
                         inherited_profile = self._profile_by_title_signature(
@@ -69,7 +72,7 @@ class ValidationProfileRepository:
                         )
                     ):
                         inherited_profile = previous_profile
-                    if profile is None or refresh:
+                    if profile is None or refresh or curated_refresh_required or dynamic_scope_refresh_required:
                         try:
                             draft = (
                                 inherited_profile_draft(table, inherited_profile)
@@ -380,6 +383,41 @@ def row_to_profile(row: DatabaseRow) -> ValidationProfile:
         approved_at=row["approved_at"],
         approved_by=row["approved_by"],
     )
+
+
+def profile_requires_curated_refresh(
+    profile: ValidationProfile | None,
+    table_code: str,
+) -> bool:
+    """Whether a stored profile predates the current table-specific curation.
+
+    A curated rule can intentionally omit today's empty row.  That must not
+    freeze the row range forever: when the next annual value arrives, the
+    profile is regenerated and the rule is evaluated for the new non-empty
+    row.  Tables without curation retain their normal structure-only reuse.
+    """
+
+    revision = curated_profile_revision(table_code)
+    if profile is None or revision is None:
+        return False
+    return str(profile.rules.get("curated_profile_revision") or "") != revision
+
+
+def profile_requires_dynamic_scope_refresh(profile: ValidationProfile | None) -> bool:
+    """Migrate generated year-row rules away from frozen detected row numbers."""
+
+    if profile is None:
+        return False
+    for check in profile.check_specs:
+        check_id = str(check.get("id") or "")
+        if (
+            check_id.startswith("profile.")
+            and str(check.get("type") or "") in {"year_rows_change_rate", "year_rows_change_amount"}
+            and check.get("row_indices")
+            and str(check.get("row_scope") or "fixed") == "fixed"
+        ):
+            return True
+    return False
 
 
 def validated_profile_draft(

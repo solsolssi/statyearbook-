@@ -14,7 +14,11 @@ from app.core.numeric_text import parse_numeric_value
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
 from app.ingest.cell_text import footnote_markers_from_texts, split_cell_text
 from app.ingest.repository import ImportedTable, ReportImportRepository
-from app.ingest.table_repairs import repair_region_split_rows
+from app.ingest.table_repairs import (
+    detach_spanning_small_business_note,
+    normalize_flood_insurance_small_business_guide,
+    repair_region_split_rows,
+)
 from app.ingest.table_shape import wide_row_oriented_text_table_header_count
 from app.ingest.text_canonicalization import (
     ENGLISH_ONLY_RE,
@@ -31,7 +35,13 @@ TABLE_CODE_RE = re.compile(
     rf"(?<![\d-])(?:"
     # A numeric title can immediately follow a four-part code in HWPX
     # (for example, ``8-1-1-330년경과...`` means ``8-1-1-3``).
-    rf"(?:[1-9]|1[0-9])-\d{{1,2}}-\d{{1,2}}-\d{{1,2}}(?=\d{{2,4}}년)"
+    # Prefer a four-digit year beginning with ``20`` when the title touches
+    # the code.  Without this guard, ``4-2-6-12024년`` was greedily parsed
+    # as code ``4-2-6-12`` and title ``024년 ...``.
+    rf"(?:[1-9]|1[0-9])-\d{{1,2}}-\d{{1,2}}-\d{{1,2}}(?=20\d{{2}}년)"
+    # Retain the legacy two-digit numeric-title form, e.g. ``8-1-1-330년``
+    # means table ``8-1-1-3`` with the title beginning ``30년``.
+    rf"|(?:[1-9]|1[0-9])-\d{{1,2}}-\d{{1,2}}-\d{{1,2}}(?=\d{{2}}년)"
     rf"|{NUMERIC_TABLE_CODE_PATTERN}(?![-\d])"
     rf"|{APPENDIX_TABLE_CODE_PATTERN}(?![-\d])"
     rf")"
@@ -745,8 +755,46 @@ def compatible_part_structure(
         return True
     if left_header == right_header:
         return True
+    if period_variant_headers_match(left_header, right_header):
+        return True
     shorter, longer = sorted((left_header, right_header), key=len)
-    return bool(shorter) and longer[-len(shorter) :] == shorter
+    return bool(shorter) and (
+        longer[-len(shorter) :] == shorter
+        or period_variant_headers_match(shorter, longer[-len(shorter) :])
+    )
+
+
+def period_variant_headers_match(
+    left: tuple[tuple[str, ...], ...],
+    right: tuple[tuple[str, ...], ...],
+) -> bool:
+    """Return true when repeated HWPX page headers differ only by year tokens.
+
+    Multi-page HWPX tables are stored as separate physical ``tbl`` elements.
+    During draft editing, one page's repeated header can be advanced to the new
+    year while the next page still carries the prior-year header, especially
+    when body values are temporarily blank.  That is still one rendered logical
+    table, not two subtables, so compare the header skeleton with explicit year
+    tokens normalized.
+    """
+
+    if len(left) != len(right):
+        return False
+    return normalize_period_header(left) == normalize_period_header(right)
+
+
+def normalize_period_header(
+    header: tuple[tuple[str, ...], ...],
+) -> tuple[tuple[str, ...], ...]:
+    return tuple(tuple(normalize_period_header_cell(cell) for cell in row) for row in header)
+
+
+def normalize_period_header_cell(value: str) -> str:
+    normalized = value
+    normalized = re.sub(r"(?:19|20)\d{2}(?:년|년도)?", "<year>", normalized)
+    normalized = re.sub(r"year(?:19|20)\d{2}", "year<year>", normalized)
+    normalized = re.sub(r"[’']\d{2}(?:년|년도)?", "<year>", normalized)
+    return normalized
 
 
 def rows_start_with_header(
@@ -873,9 +921,17 @@ def normalize_matrix_with_footnotes(
                 repeated_header_count = len(canonical_header)
             elif current_header == canonical_header:
                 repeated_header_count = len(current_header)
+            elif period_variant_headers_match(current_header, canonical_header):
+                repeated_header_count = len(current_header)
             elif (
                 len(current_header) <= len(canonical_header)
-                and canonical_header[-len(current_header) :] == current_header
+                and (
+                    canonical_header[-len(current_header) :] == current_header
+                    or period_variant_headers_match(
+                        current_header,
+                        canonical_header[-len(current_header) :],
+                    )
+                )
             ):
                 repeated_header_count = len(current_header)
 
@@ -1047,6 +1103,12 @@ def prepare_hwpx_import_tables(
         )
         if not matrix or max((len(row) for row in matrix), default=0) < 2:
             continue
+        normalize_flood_insurance_small_business_guide(table.code, matrix)
+        spanning_note = detach_spanning_small_business_note(
+            table.code,
+            matrix,
+            footnote_matrix,
+        )
         # HWPX already contains the authored paragraph and bilingual line
         # boundaries.  Re-running generic bilingual normalization here can
         # move a leading English number or a formula to the Korean line.
@@ -1093,7 +1155,7 @@ def prepare_hwpx_import_tables(
                 base_date=base_date,
                 section_file=table.section_file,
                 table_order=table.table_order,
-                note="\n".join(table.notes),
+                note="\n".join([*table.notes, *([spanning_note] if spanning_note else [])]),
                 source=source,
                 raw_context=raw_text,
                 matrix=stored_matrix,

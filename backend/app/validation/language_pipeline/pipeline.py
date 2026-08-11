@@ -8,6 +8,7 @@ from app.db.schema import init_db
 from app.validation.blue_review import synchronize_blue_review_checks
 from app.validation.language_pipeline.candidates import LanguageCandidateGenerator
 from app.validation.language_pipeline.resolution import ReusableLanguageResolver
+from app.validation.linguistic_policy import SPELLING_CHECK_TYPE, TRANSLATION_CHECK_TYPE
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,15 @@ class LanguageReviewPipeline:
             or "파란색 표기 확인" in selected_check_types
         ):
             synchronize_blue_review_checks(self._db_path, run_id=run_id)
+        if (
+            selected_check_types is None
+            or bool({SPELLING_CHECK_TYPE, TRANSLATION_CHECK_TYPE} & selected_check_types)
+        ):
+            from app.validation.llm_translation_review import (
+                synchronize_standard_language_pending_checks,
+            )
+
+            synchronize_standard_language_pending_checks(self._db_path, run_id=run_id)
         candidate_count, pending_count = self._review_counts(run_id)
         if include_llm and pending_count:
             raise RuntimeError(

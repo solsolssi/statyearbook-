@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   BookOpenCheck,
   Database,
@@ -30,6 +30,13 @@ interface AppHeaderProps {
 }
 
 type UploadMode = UploadSubmission["mode"];
+type SourceFileRole = "info" | "item" | "value";
+
+interface SourceFileSet {
+  infoFile: File | null;
+  itemFile: File | null;
+  valueFile: File | null;
+}
 
 interface UploadModeOption {
   id: UploadMode;
@@ -176,9 +183,17 @@ function UploadDecisionDialog({
     `${baseReport ? baseReport.year + 1 : new Date().getFullYear()} 행정안전통계연보`,
   );
   const [completedFile, setCompletedFile] = useState<File | null>(null);
-  const [sourceFiles, setSourceFiles] = useState<File[]>([]);
+  const [sourceFileSet, setSourceFileSet] = useState<SourceFileSet>({
+    infoFile: null,
+    itemFile: null,
+    valueFile: null,
+  });
   const completedInputRef = useRef<HTMLInputElement>(null);
-  const sourceInputRef = useRef<HTMLInputElement>(null);
+  const sourceInputRefs = {
+    info: useRef<HTMLInputElement>(null),
+    item: useRef<HTMLInputElement>(null),
+    value: useRef<HTMLInputElement>(null),
+  };
 
   useEffect(() => {
     if (!baseReport) {
@@ -201,7 +216,6 @@ function UploadDecisionDialog({
   }, [mode, targetYear]);
 
   const needsBaseReport = mode !== "completed_report_new";
-  const sourceFileSet = classifySourceFiles(sourceFiles);
   const canSubmit =
     (!needsBaseReport || Boolean(baseReport)) &&
     /^\d{4}$/.test(targetYear) &&
@@ -241,6 +255,19 @@ function UploadDecisionDialog({
     });
   }
 
+  function setSourceFile(role: SourceFileRole, file: File | null) {
+    if (!file) {
+      return;
+    }
+    setSourceFileSet((current) =>
+      role === "info"
+        ? { ...current, infoFile: file }
+        : role === "item"
+          ? { ...current, itemFile: file }
+          : { ...current, valueFile: file },
+    );
+  }
+
   return (
     <div className="upload-dialog-backdrop" role="presentation">
       <section
@@ -270,7 +297,7 @@ function UploadDecisionDialog({
                 onClick={() => {
                   setMode(item.id);
                   setCompletedFile(null);
-                  setSourceFiles([]);
+                  setSourceFileSet({ infoFile: null, itemFile: null, valueFile: null });
                 }}
               >
                 <Icon aria-hidden="true" size={20} />
@@ -344,19 +371,26 @@ function UploadDecisionDialog({
           </div>
         ) : (
           <div className="upload-file-picker">
-            <input
-              ref={sourceInputRef}
-              className="visually-hidden"
-              type="file"
-              accept=".xls,.xlsx"
-              multiple
-              onChange={(event) => setSourceFiles(Array.from(event.target.files ?? []))}
+            <SourceFilePicker
+              label="표정보"
+              inputRef={sourceInputRefs.info}
+              file={sourceFileSet.infoFile}
+              onFileChange={(file) => setSourceFile("info", file)}
             />
-            <button type="button" onClick={() => sourceInputRef.current?.click()}>
-              <Upload aria-hidden="true" size={18} />
-              <span>연보 파일 선택</span>
-            </button>
+            <SourceFilePicker
+              label="표항목"
+              inputRef={sourceInputRefs.item}
+              file={sourceFileSet.itemFile}
+              onFileChange={(file) => setSourceFile("item", file)}
+            />
+            <SourceFilePicker
+              label="표데이터"
+              inputRef={sourceInputRefs.value}
+              file={sourceFileSet.valueFile}
+              onFileChange={(file) => setSourceFile("value", file)}
+            />
             <SourceFileStatus files={sourceFileSet} />
+            <p>각 파일을 지정해서 선택하세요. `.xls`, `.xlsx` 모두 지원합니다.</p>
           </div>
         )}
 
@@ -520,14 +554,35 @@ function SourceFileStatus({
   );
 }
 
-function classifySourceFiles(files: File[]): {
-  infoFile: File | null;
-  itemFile: File | null;
-  valueFile: File | null;
-} {
-  return {
-    infoFile: files.find((file) => file.name.includes("표정보")) ?? null,
-    itemFile: files.find((file) => file.name.includes("표항목")) ?? null,
-    valueFile: files.find((file) => file.name.includes("표데이터")) ?? null,
-  };
+function SourceFilePicker({
+  label,
+  inputRef,
+  file,
+  onFileChange,
+}: {
+  label: string;
+  inputRef: RefObject<HTMLInputElement>;
+  file: File | null;
+  onFileChange: (file: File | null) => void;
+}) {
+  return (
+    <div className="source-file-picker">
+      <strong>{label}</strong>
+      <input
+        ref={inputRef}
+        className="visually-hidden"
+        type="file"
+        accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        onChange={(event) => {
+          onFileChange(event.target.files?.[0] ?? null);
+          event.target.value = "";
+        }}
+      />
+      <button type="button" onClick={() => inputRef.current?.click()}>
+        <Upload aria-hidden="true" size={18} />
+        <span>연보 파일 선택</span>
+      </button>
+      <span>{file?.name ?? "미선택"}</span>
+    </div>
+  );
 }

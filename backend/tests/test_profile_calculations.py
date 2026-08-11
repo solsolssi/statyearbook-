@@ -10,6 +10,9 @@ from app.validation.cross_table_rules import (
 )
 from app.validation.curated_profiles import apply_curated_profile, curated_profiles
 from app.validation.profile_rules import ProfileSpecRule
+from app.validation.highlights import resolve_highlights
+from app.validation.engine import ValidationEngine
+from app.validation.cross_table_rules import SplitPartRowTotalRule
 from app.validation.rules import leading_label_columns
 from app.validation.profiles import (
     ValidationProfile,
@@ -70,6 +73,160 @@ def profile_for(table: ValidationTable, checks: list[dict]) -> ValidationProfile
 
 
 class ProfileCalculationTest(unittest.TestCase):
+    def test_curated_organization_count_sums_all_service_type_columns(self) -> None:
+        table = make_table(
+            [
+                [
+                    "구분",
+                    "기관수",
+                    "정무직",
+                    "고위공무원단",
+                    "1급",
+                    "2급",
+                    "3급",
+                    "3·4급",
+                    "4급",
+                    "4·5급",
+                    "5급이하",
+                    "연구직",
+                    "특정직",
+                    "임기제",
+                ],
+                ["계", "534", "3", "120", "-", "-", "-", "25", "107", "4", "201", "28", "38", "8"],
+                ["시험연구기관", "119", "-", "36", "-", "-", "-", "4", "46", "2", "15", "15", "-", "1"],
+            ],
+            code="1-1-2",
+        )
+        inferred = infer_profile_checks(
+            table,
+            analysis=analyze_table(table),
+            templates=detect_templates(table),
+        )
+
+        application = apply_curated_profile(
+            table.code,
+            checks=inferred,
+            table_type="test",
+            status="ready",
+            notes="",
+        )
+        row_sums = [
+            check
+            for check in application.checks
+            if check.get("type") == "row_sum"
+        ]
+
+        self.assertEqual(len(row_sums), 1)
+        self.assertEqual(row_sums[0]["target_column"], 1)
+        self.assertEqual(row_sums[0]["operand_columns"], list(range(2, 14)))
+        self.assertEqual(row_sums[0]["row_scope"], "all_data_rows")
+
+        profile = profile_for(table, application.checks)
+        issues, checks = ProfileSpecRule({table.code: profile}).evaluate(table)
+
+        self.assertEqual(issues, [])
+        self.assertEqual(
+            [
+                (check.row_index, check.current_value, check.expected_value, check.status)
+                for check in checks
+                if check.rule_id == "curated.1-1-2.organization_count_by_service_type"
+            ],
+            [(1, "534", "534", "정상"), (2, "119", "119", "정상")],
+        )
+
+    def test_curated_administrative_institution_count_sums_primary_and_secondary(self) -> None:
+        table = make_table(
+            [
+                ["구분", "기관수", "1차기관", "2·3차기관"],
+                ["계", "5,078", "257", "4,821"],
+                ["현업행정기관", "1,739", "-", "1,739"],
+            ],
+            code="1-1-4",
+        )
+        inferred = infer_profile_checks(
+            table,
+            analysis=analyze_table(table),
+            templates=detect_templates(table),
+        )
+
+        application = apply_curated_profile(
+            table.code,
+            checks=inferred,
+            table_type="test",
+            status="ready",
+            notes="",
+        )
+        row_sums = [
+            check
+            for check in application.checks
+            if check.get("type") == "row_sum"
+        ]
+
+        self.assertEqual(len(row_sums), 1)
+        self.assertEqual(row_sums[0]["target_column"], 1)
+        self.assertEqual(row_sums[0]["operand_columns"], [2, 3])
+        self.assertEqual(row_sums[0]["row_scope"], "all_data_rows")
+
+        profile = profile_for(table, application.checks)
+        issues, checks = ProfileSpecRule({table.code: profile}).evaluate(table)
+
+        self.assertEqual(issues, [])
+        self.assertEqual(
+            [
+                (check.row_index, check.current_value, check.expected_value, check.status)
+                for check in checks
+                if check.rule_id == "curated.1-1-4.organization_count_by_level"
+            ],
+            [(1, "5,078", "5,078", "정상"), (2, "1,739", "1,739", "정상")],
+        )
+
+    def test_curated_committee_total_sums_administration_and_advisory(self) -> None:
+        table = make_table(
+            [
+                ["구분", "소속별", "", "", "", "성격별", ""],
+                ["연도", "합계", "대통령", "국무총리", "각 부처", "행정", "자문"],
+                ["2024", "571", "19", "57", "495", "39", "532"],
+                ["2025", "581", "20", "62", "499", "40", "541"],
+            ],
+            code="1-1-5",
+            header_rows=2,
+        )
+        inferred = infer_profile_checks(
+            table,
+            analysis=analyze_table(table),
+            templates=detect_templates(table),
+        )
+
+        application = apply_curated_profile(
+            table.code,
+            checks=inferred,
+            table_type="test",
+            status="ready",
+            notes="",
+        )
+        row_sum = next(
+            check
+            for check in application.checks
+            if check.get("id") == "curated.1-1-5.total_by_function"
+        )
+
+        self.assertEqual(row_sum["target_column"], 1)
+        self.assertEqual(row_sum["operand_columns"], [5, 6])
+        self.assertEqual(row_sum["row_scope"], "all_data_rows")
+
+        profile = profile_for(table, application.checks)
+        issues, checks = ProfileSpecRule({table.code: profile}).evaluate(table)
+
+        self.assertEqual(issues, [])
+        self.assertEqual(
+            [
+                (check.row_index, check.current_value, check.expected_value, check.status)
+                for check in checks
+                if check.rule_id == "curated.1-1-5.total_by_function"
+            ],
+            [(2, "571", "571", "정상"), (3, "581", "581", "정상")],
+        )
+
     def test_total_measure_column_is_not_a_validation_row_label(self) -> None:
         table = make_table(
             [
@@ -1084,6 +1241,102 @@ class ProfileCalculationTest(unittest.TestCase):
         self.assertEqual(sum_checks[0]["id"], "curated.2-2-1-2.total_by_operation_status")
         self.assertEqual(len(growth_checks), 1)
 
+    def test_information_disclosure_sum_rule_includes_later_completed_year(self) -> None:
+        """A curated annual rule must not freeze the last empty row forever."""
+
+        table = make_table(
+            [
+                ["연도", "청구건수", "전부공개", "부분공개", "비공개"],
+                ["2024", "1,191,687", "870,418", "252,089", "69,180"],
+                ["2025", "1,225,880", "880,519", "272,630", "72,731"],
+            ],
+            code="2-2-2-1",
+        )
+        application = apply_curated_profile(
+            table.code,
+            checks=[],
+            table_type="year_trend_table",
+            status="ready",
+            notes="",
+        )
+        sum_rule = next(
+            check
+            for check in application.checks
+            if check.get("id") == "curated.2-2-2-1.request_total_by_disclosure_status"
+        )
+        self.assertNotIn("row_indices", sum_rule)
+
+        _, checks = ProfileSpecRule({table.code: profile_for(table, [sum_rule])}).evaluate(table)
+        self.assertEqual({check.row_index for check in checks}, {1, 2})
+        self.assertTrue(all(check.status == "정상" for check in checks))
+
+    def test_year_scoped_rules_include_newly_appended_year(self) -> None:
+        table = make_table(
+            [
+                ["연도", "값", "증감", "증감률"],
+                ["2024", "100", "", ""],
+                ["2025", "120", "20", "20"],
+                ["2026", "150", "30", "25"],
+            ],
+            code="rolling-year-test",
+        )
+        profile = profile_for(
+            table,
+            [
+                {
+                    "id": "test.rolling_year_rate",
+                    "type": "year_rows_change_rate",
+                    "check_type": "증감률 검수",
+                    "value_column": 1,
+                    "change_column": 2,
+                    "rate_column": 3,
+                    "row_scope": "year_rows",
+                    "multiplier": 100,
+                    "change_tolerance": 0,
+                    "rate_tolerance": 0,
+                }
+            ],
+        )
+
+        _, checks = ProfileSpecRule({table.code: profile}).evaluate(table)
+
+        self.assertEqual(
+            {(check.row_index, check.col_index) for check in checks},
+            {(2, 2), (2, 3), (3, 2), (3, 3)},
+        )
+        self.assertTrue(all(check.status == "정상" for check in checks))
+
+    def test_first_year_occurrence_scope_keeps_paired_percentage_rows_out(self) -> None:
+        table = make_table(
+            [
+                ["연도", "계", "항목1", "항목2"],
+                ["2025", "10", "4", "6"],
+                ["2025", "10", "40", "60"],
+                ["2026", "12", "5", "7"],
+                ["2026", "12", "42", "58"],
+            ],
+            code="paired-year-test",
+        )
+        profile = profile_for(
+            table,
+            [
+                {
+                    "id": "test.first_year_sum",
+                    "type": "row_sum",
+                    "check_type": "합계 검수",
+                    "target_column": 1,
+                    "operand_columns": [2, 3],
+                    "row_scope": "year_first_occurrence",
+                    "tolerance": 0,
+                }
+            ],
+        )
+
+        _, checks = ProfileSpecRule({table.code: profile}).evaluate(table)
+
+        self.assertEqual({check.row_index for check in checks}, {1, 3})
+        self.assertTrue(all(check.status == "정상" for check in checks))
+
     def test_direct_profile_is_not_overridden_by_a_generic_group(self) -> None:
         profiles = curated_profiles()
 
@@ -1135,6 +1388,266 @@ class ProfileCalculationTest(unittest.TestCase):
             if check["id"] == "curated.4-1-7-3.total_quota_by_institution_layer"
         )
         self.assertTrue(total_check["include_calculation_rows"])
+
+    def test_curated_profiles_remove_replaced_automatic_calculations(self) -> None:
+        """A curated formula must replace, never duplicate, its heuristic equivalent."""
+
+        replacements = {
+            "6-1-3-1": (
+                "profile.6-1-3-1.row_total_direct_c1",
+                "profile.6-1-3-1.row_total_direct_c5",
+                "profile.6-1-3-1.row_total_direct_c10",
+                "profile.6-1-3-1.region_total_r3",
+                "profile.6-1-3-1.column_total_r3",
+            ),
+            "6-2-7-1": ("profile.6-2-7-1.row_total_direct_c2",),
+            "6-2-11-3": ("profile.6-2-11-3.region_total_r1",),
+            "6-3-2-2": ("profile.6-3-2-2.same_row_ratio_c4",),
+            "7-2-3": ("profile.7-2-3.same_row_ratio_c5",),
+            "7-2-11-1": ("profile.7-2-11-1.region_total_r3",),
+        }
+
+        for table_code, automatic_ids in replacements.items():
+            application = apply_curated_profile(
+                table_code,
+                checks=[
+                    {"id": automatic_id, "type": "row_sum"}
+                    for automatic_id in automatic_ids
+                ],
+                table_type="general",
+                status="ready",
+                notes="",
+            )
+            applied_ids = {str(check.get("id")) for check in application.checks}
+            self.assertTrue(set(automatic_ids).isdisjoint(applied_ids), table_code)
+
+    def test_ship_profile_uses_dynamic_regional_total_and_zero_value_subtotal_rows(self) -> None:
+        profile = curated_profiles()["6-1-3-1"]
+        suppressed = {check.get("id") for check in profile["suppress_checks"]}
+        self.assertIn("profile.6-1-3-1.region_total_r3", suppressed)
+        self.assertIn("profile.6-1-3-1.column_total_r3", suppressed)
+        regional_total = next(
+            check
+            for check in profile["checks"]
+            if check["id"] == "curated.6-1-3-1.regional_column_total"
+        )
+        self.assertEqual(regional_total["target_row_selector"], "first_total_row")
+        self.assertEqual(regional_total["operand_row_selector"], "following_data_rows")
+        self.assertEqual(regional_total["columns"], list(range(1, 13)))
+        for check_id in (
+            "curated.6-1-3-1.ship_subtotal",
+            "curated.6-1-3-1.powerboat_subtotal",
+            "curated.6-1-3-1.dock_subtotal",
+        ):
+            check = next(check for check in profile["checks"] if check["id"] == check_id)
+            self.assertEqual(check["row_scope"], "all_data_rows")
+            self.assertNotIn("skip_all_zero_operands", check)
+
+    def test_life_policy_profile_uses_dynamic_column_total_and_replaces_duplicate_ratio(self) -> None:
+        profile = curated_profiles()["2-2-6"]
+        suppressed = {check.get("id") for check in profile["suppress_checks"]}
+
+        self.assertIn("profile.2-2-6.column_total_r3", suppressed)
+        self.assertIn("profile.2-2-6.region_total_r3", suppressed)
+        self.assertIn("profile.2-2-6.same_row_ratio_c10", suppressed)
+        self.assertIn(
+            "curated.2-2-6.regional_column_total",
+            {str(check.get("id")) for check in profile["checks"]},
+        )
+        column_total = next(
+            check
+            for check in profile["checks"]
+            if check.get("id") == "curated.2-2-6.regional_column_total"
+        )
+        self.assertEqual(column_total["columns"], [1, 2, 3, 4, 5, 6, 7, 8, 9, 11])
+
+        application = apply_curated_profile(
+            "2-2-6",
+            checks=[
+                {"id": "profile.2-2-6.region_total_r3", "type": "region_total"},
+                {"id": "profile.2-2-6.column_total_r3", "type": "column_sum"},
+                {"id": "profile.2-2-6.same_row_ratio_c10", "type": "row_ratio"},
+            ],
+            table_type="regional_table",
+            status="ready",
+            notes="",
+        )
+        applied = {str(check.get("id")) for check in application.checks}
+        self.assertIn("curated.2-2-6.regional_column_total", applied)
+        self.assertNotIn("profile.2-2-6.column_total_r3", applied)
+        self.assertNotIn("profile.2-2-6.region_total_r3", applied)
+        self.assertNotIn("profile.2-2-6.same_row_ratio_c10", applied)
+
+    def test_network_usage_profile_keeps_institution_column_total(self) -> None:
+        profile = curated_profiles()["3-1-4"]
+        self.assertNotIn("suppress_checks", profile)
+
+    def test_column_sum_can_follow_the_total_row_after_header_reparse(self) -> None:
+        table = make_table(
+            [
+                ["구분", "인원"],
+                ["구분", "인원"],
+                ["구분", "인원"],
+                ["계", "10"],
+                ["서울", "4"],
+                ["부산", "6"],
+            ],
+            header_rows=3,
+        )
+        profile = profile_for(
+            table,
+            [
+                {
+                    "id": "test.dynamic_total",
+                    "type": "column_sum",
+                    "check_type": "합계 검수",
+                    "target_row_selector": "first_total_row",
+                    "operand_row_selector": "following_data_rows",
+                    "columns": [1],
+                }
+            ],
+        )
+
+        _, checks = ProfileSpecRule({table.code: profile}).evaluate(table)
+
+        self.assertEqual(len(checks), 1)
+        self.assertEqual((checks[0].row_index, checks[0].col_index), (3, 1))
+        self.assertEqual(
+            {(target.row_index, target.col_index) for target in checks[0].highlights},
+            {(3, 1), (4, 1), (5, 1)},
+        )
+
+    def test_column_sum_reports_missing_total_and_highlights_all_operands(self) -> None:
+        table = make_table(
+            [
+                ["구분", "계", "소계"],
+                ["계", "", ""],
+                ["인용", "10", "7"],
+                ["기각", "20", "15"],
+                ["각하", "1", "1"],
+            ],
+            code="4-1-4-2",
+        )
+        application = apply_curated_profile(
+            table.code,
+            checks=[],
+            table_type="test",
+            status="ready",
+            notes="",
+        )
+        next(
+            check
+            for check in application.checks
+            if check.get("id") == "curated.4-1-4-2.column_total_by_decision"
+        )["columns"] = [1, 2]
+        profile = profile_for(table, application.checks)
+
+        issues, checks = ProfileSpecRule({table.code: profile}).evaluate(table)
+        total_checks = [
+            check
+            for check in checks
+            if check.rule_id == "curated.4-1-4-2.column_total_by_decision"
+        ]
+
+        self.assertEqual(len(total_checks), 2)
+        self.assertEqual(len(issues), 2)
+        self.assertTrue(all(check.status == "오류 의심" for check in total_checks))
+        self.assertEqual(total_checks[0].current_value, "공란")
+        self.assertEqual(total_checks[0].expected_value, "31")
+        self.assertEqual(
+            {(target.row_index, target.col_index) for target in total_checks[0].highlights},
+            {(1, 1), (2, 1), (3, 1), (4, 1)},
+        )
+
+    def test_dynamic_column_sum_highlights_operands_when_loaded_from_saved_profile(self) -> None:
+        matrix = [
+            ["구분", "값"],
+            ["계", "10"],
+            ["서울", "4"],
+            ["부산", "6"],
+        ]
+        highlights = resolve_highlights(
+            {"row_index": 1, "col_index": 1},
+            spec={
+                "id": "test.dynamic_total",
+                "type": "column_sum",
+                "target_row_selector": "first_total_row",
+                "operand_row_selector": "following_data_rows",
+                "columns": [1],
+            },
+            header_count=1,
+            matrix=matrix,
+        )
+
+        self.assertEqual(
+            {(cell.row_index, cell.col_index, str(cell.role)) for cell in highlights.cells},
+            {(1, 1, "target"), (2, 1, "related"), (3, 1, "related")},
+        )
+
+    def test_decision_result_profile_replaces_duplicate_column_total_and_checks_each_row(self) -> None:
+        inferred = [
+            {"id": "profile.4-1-4-2.column_total_r2", "type": "column_sum"},
+            {"id": "profile.4-1-4-2.row_total_c1", "type": "row_sum"},
+        ]
+        application = apply_curated_profile(
+            "4-1-4-2",
+            checks=inferred,
+            table_type="test",
+            status="ready",
+            notes="",
+        )
+        rule_ids = {str(check.get("id")) for check in application.checks}
+        self.assertNotIn("profile.4-1-4-2.column_total_r2", rule_ids)
+        self.assertNotIn("profile.4-1-4-2.row_total_c1", rule_ids)
+        self.assertIn("curated.4-1-4-2.column_total_by_decision", rule_ids)
+        self.assertIn("curated.4-1-4-2.result_total_by_category", rule_ids)
+
+        table = make_table(
+            [
+                ["구분", "계", "재산 소계", "", "", "", "생명·신체 소계"],
+                ["계", "1,803", "1,708", "", "", "", "235"],
+                ["인용", "1,099", "1,021", "", "", "", "187"],
+                ["기각", "700", "683", "", "", "", "48"],
+                ["각하", "4", "4", "", "", "", "-"],
+            ],
+            code="4-1-4-2",
+        )
+        row_sum = next(
+            check
+            for check in application.checks
+            if check.get("id") == "curated.4-1-4-2.result_total_by_category"
+        )
+        _, checks = ProfileSpecRule({table.code: profile_for(table, [row_sum])}).evaluate(table)
+        category_checks = [
+            check
+            for check in checks
+            if check.rule_id == "curated.4-1-4-2.result_total_by_category"
+        ]
+        self.assertEqual([check.row_index for check in category_checks], [1, 2, 3, 4])
+        self.assertEqual([check.status for check in category_checks], ["오류 의심", "오류 의심", "오류 의심", "정상"])
+
+    def test_curated_cross_part_rule_disables_only_its_matching_automatic_rule(self) -> None:
+        table = make_table(
+            [["구분", "합계"], ["서울", "10"]],
+            code="7-3-2-1 표1",
+        )
+        profile = profile_for(
+            table,
+            [
+                {
+                    "id": "curated.7-3-2-1.property_total_across_parts",
+                    "type": "cross_table_row_sum",
+                    "replaces_automatic_rule": "cross.split_part_row_total",
+                }
+            ],
+        )
+
+        engine = ValidationEngine(profiles={table.code: profile})
+        split_rule = next(
+            rule for rule in engine._cross_table_rules if isinstance(rule, SplitPartRowTotalRule)
+        )
+
+        self.assertEqual(split_rule._excluded_base_codes, {"7-3-2-1"})
 
     def test_row_sum_can_explicitly_validate_a_total_row(self) -> None:
         table = make_table(

@@ -17,6 +17,7 @@ from app.validation.catalog import (
     rule_spec,
 )
 from app.validation.profile_generation.curated_profile_merger import merge_curated_profile
+from app.validation.curated_profiles import curated_profile_revision
 from app.validation.profile_generation.pipeline import compile_profile_checks
 from app.validation.profile_generation.providers import ProfileProvider
 from app.validation.profile_generation.structure_analyzer import analyze_structure
@@ -164,6 +165,7 @@ class HeuristicProfileDraftProvider:
                 "checks": checks,
                 "table_rules": table_rules,
                 "requires_llm_review": needs_llm_review,
+                "curated_profile_revision": curated_profile_revision(table.code),
             },
             notes=notes,
         )
@@ -2646,12 +2648,12 @@ def infer_year_rows_change_rate_rules(table: ValidationTable) -> list[dict[str, 
         return []
 
     value_col = value_columns[0]
-    row_indices = [
-        row_index
-        for row_index, row in year_rows
+    populated_year_count = sum(
+        1
+        for _, row in year_rows
         if cell_number(row, value_col) is not None and cell_number(row, rate_col) is not None
-    ]
-    if len(row_indices) < 3:
+    )
+    if populated_year_count < 3:
         return []
 
     if change_col is not None and rate_col_looks_like_same_row_share(table, rate_col, change_col, value_col):
@@ -2665,7 +2667,7 @@ def infer_year_rows_change_rate_rules(table: ValidationTable) -> list[dict[str, 
                     "label": f"{leaf_header(table, change_col)} = 당해연도 - 전년도",
                     "value_column": value_col,
                     "change_column": change_col,
-                    "row_indices": row_indices,
+                    "row_scope": "year_rows",
                     "change_tolerance": 1.0,
                     "confidence": 0.94,
                 },
@@ -2687,7 +2689,7 @@ def infer_year_rows_change_rate_rules(table: ValidationTable) -> list[dict[str, 
                 "value_column": value_col,
                 "change_column": change_col,
                 "rate_column": rate_col,
-                "row_indices": row_indices,
+                "row_scope": "year_rows",
                 "multiplier": 100,
                 "change_tolerance": 1.0,
                 "rate_tolerance": 0.15,

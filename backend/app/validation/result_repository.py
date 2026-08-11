@@ -214,6 +214,23 @@ def delete_validation_results(
     return max(int(cursor.rowcount or 0), 0)
 
 
+def delete_validation_results_by_expected_value(
+    connection: DatabaseConnection,
+    *,
+    run_id: int,
+    rule_ids: Sequence[str],
+    expected_value: str,
+) -> int:
+    if not rule_ids:
+        return 0
+    filters = ["run_id = ?", f"rule_id IN ({', '.join('?' for _ in rule_ids)})", "expected_value = ?"]
+    cursor = connection.execute(
+        f"DELETE FROM validation_checks WHERE {' AND '.join(filters)}",
+        (run_id, *rule_ids, expected_value),
+    )
+    return max(int(cursor.rowcount or 0), 0)
+
+
 def delete_validation_result(
     connection: DatabaseConnection,
     *,

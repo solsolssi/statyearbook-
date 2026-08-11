@@ -39,6 +39,7 @@ from app.validation.llm_translation_review import (
     stored_language_finding_is_non_actionable,
     reset_standard_language_review_results,
     save_llm_review_decisions,
+    synchronize_standard_language_pending_checks,
 )
 
 
@@ -67,6 +68,84 @@ class LLMTranslationReviewTest(unittest.TestCase):
         }
         values.update(overrides)
         return SourceReviewItem(**values)  # type: ignore[arg-type]
+
+    def test_pending_standard_language_candidates_are_visible_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "review.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                with connection:
+                    report_id = int(
+                        connection.execute(
+                            """
+                            INSERT INTO annual_reports (
+                                year, title, source_file_name, source_file_path,
+                                file_hash, imported_at
+                            ) VALUES (2026, '테스트', 'test.hwpx', '/tmp/test.hwpx',
+                                      'hash-test', CURRENT_TIMESTAMP)
+                            """
+                        ).lastrowid
+                    )
+                    table_id = int(
+                        connection.execute(
+                            """
+                            INSERT INTO stat_tables (
+                                report_id, code, title, section_title, unit,
+                                base_date, source, note, table_order
+                            ) VALUES (?, '1-1', '테스트 표', '테스트 표', '명',
+                                      '2025. 12. 31.', '테스트과', '', 1)
+                            """,
+                            (report_id,),
+                        ).lastrowid
+                    )
+                    run_id = int(
+                        connection.execute(
+                            """
+                            INSERT INTO validation_runs (
+                                report_id, rules_version, started_at, completed_at
+                            ) VALUES (?, 'test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            """,
+                            (report_id,),
+                        ).lastrowid
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO linguistic_review_candidates (
+                            run_id, table_id, review_type, candidate_kind,
+                            source_kind, location, row_index, col_index,
+                            current_value, korean_text, english_text,
+                            glossary_json, reason, prompt_version
+                        ) VALUES (?, ?, '번역 검수', 'translation_pair',
+                                  'document', '3행 2열', 2, 1,
+                                  '국립현대미술관 National Museum of Mordern and Contemporary Art',
+                                  '국립현대미술관',
+                                  'National Museum of Mordern and Contemporary Art',
+                                  '[]', '번역 후보', 'test-prompt')
+                        """,
+                        (run_id, table_id),
+                    )
+
+            inserted = synchronize_standard_language_pending_checks(
+                db_path,
+                run_id=run_id,
+            )
+
+            self.assertEqual(inserted, 1)
+            with connect(db_path) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT rule_id, check_type, expected_value, status, severity
+                    FROM validation_checks
+                    WHERE run_id = ?
+                    """,
+                    (run_id,),
+                ).fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(str(rows[0]["rule_id"]), "llm.translation_review")
+            self.assertEqual(str(rows[0]["check_type"]), "번역 검수")
+            self.assertEqual(str(rows[0]["expected_value"]), "언어 검수 대기")
+            self.assertEqual(str(rows[0]["status"]), "확인 필요")
+            self.assertEqual(str(rows[0]["severity"]), "warning")
 
     def test_reconciliation_keeps_only_actionable_language_findings(self) -> None:
         style_item = self.source_item(
@@ -1400,6 +1479,93 @@ class LLMTranslationReviewTest(unittest.TestCase):
             self.assertEqual(child_status, "reviewed")
             self.assertEqual(unrelated_status, "pending")
 
+    def test_selected_prior_run_reuses_candidate_without_report_lineage(self) -> None:
+        """A user-selected run is an explicit candidate reuse permission.
+
+        This is the normal path for separately uploaded yearbooks: the target
+        report has no ``base_report_id``, but the user selected a completed
+        validation execution as its reuse source.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "selected-run.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+
+                def add_report(title: str) -> tuple[int, int]:
+                    report_id = int(connection.execute(
+                        """
+                        INSERT INTO annual_reports (
+                            year, title, source_file_name, source_file_path,
+                            file_hash, imported_at
+                        ) VALUES (2026, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """,
+                        (title, f"{title}.hwpx", f"/{title}.hwpx", f"hash-{title}"),
+                    ).lastrowid)
+                    table_id = int(connection.execute(
+                        "INSERT INTO stat_tables (report_id, code, title, title_en) VALUES (?, '1-1', '지역', 'Region')",
+                        (report_id,),
+                    ).lastrowid)
+                    connection.execute(
+                        """
+                        INSERT INTO stat_table_cells (table_id, row_index, col_index, text_value, is_header)
+                        VALUES (?, 0, 0, '서울 Seoul', 1)
+                        """,
+                        (table_id,),
+                    )
+                    return report_id, table_id
+
+                source_report_id, source_table_id = add_report("원본")
+                source_run_id = self.insert_run(connection, source_report_id)
+                self.insert_candidate(connection, source_run_id, source_table_id)
+                source_item = load_linguistic_review_items(connection, source_run_id)[0]
+                save_llm_review_decisions(
+                    connection,
+                    source_run_id,
+                    [source_item],
+                    [{
+                        "id": source_item.issue_id,
+                        "context_token": review_context_token(source_item),
+                        "status": "정상",
+                        "issue_type": "오탈자 검수",
+                        "current_value": "서울 Seoul",
+                        "expected_value": "서울 Seoul",
+                        "difference": "오탈자 없음",
+                        "detail": "검수 완료",
+                    }],
+                    reviewed_model="model-a",
+                )
+
+                target_report_id, target_table_id = add_report("별도 업로드")
+                target_run_id = self.insert_run(
+                    connection,
+                    target_report_id,
+                    base_run_id=source_run_id,
+                )
+                target_candidate_id = self.insert_candidate(
+                    connection,
+                    target_run_id,
+                    target_table_id,
+                )
+                self.assertEqual(
+                    reuse_cached_linguistic_reviews(
+                        connection,
+                        target_run_id,
+                        reviewed_model="model-a",
+                    ),
+                    (0, 1, 1),
+                )
+                target_row = connection.execute(
+                    """
+                    SELECT status, resolution_source
+                    FROM linguistic_review_candidates
+                    WHERE id = ?
+                    """,
+                    (target_candidate_id,),
+                ).fetchone()
+
+            self.assertEqual(target_row["status"], "reviewed")
+            self.assertEqual(target_row["resolution_source"], "lineage_reuse")
+
     def test_stored_english_only_bilingual_finding_is_reconciled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "reconcile.sqlite"
@@ -1562,15 +1728,20 @@ class LLMTranslationReviewTest(unittest.TestCase):
                 self.assertEqual(placeholder_count, 0)
 
     @staticmethod
-    def insert_run(connection, report_id: int) -> int:
+    def insert_run(
+        connection,
+        report_id: int,
+        *,
+        base_run_id: int | None = None,
+    ) -> int:
         return int(
             connection.execute(
                 """
                 INSERT INTO validation_runs (
-                    report_id, rules_version, started_at, completed_at
-                ) VALUES (?, 'test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    report_id, rules_version, started_at, completed_at, base_run_id
+                ) VALUES (?, 'test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
                 """,
-                (report_id,),
+                (report_id, base_run_id),
             ).lastrowid
         )
 

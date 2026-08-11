@@ -32,6 +32,146 @@
     }
   ],
   "profiles": {
+    "7-1-4-3": {
+      "status": "ready",
+      "decision": "curated_steep_slope_designation_profile",
+      "label": "급경사지 붕괴위험지역 등급별 소계 산식 승인",
+      "table_type": "year_trend_grade_breakdown_table",
+      "notes": "큐레이션: 계 소계는 공공시설+사유시설, C·D등급 소계도 각각 공공시설+사유시설로 검수합니다. 공공시설/사유시설을 C·D·E등급으로 다시 더하는 자동 후보와 2025년 E등급 하위합계 후보는 원표 구조상 안정적이지 않아 제외합니다.",
+      "suppress_checks": [
+        {
+          "id": "profile.7-1-4-3.row_total_direct_c3"
+        },
+        {
+          "id": "profile.7-1-4-3.row_total_direct_c4"
+        },
+        {
+          "id": "profile.7-1-4-3.row_total_direct_c11"
+        }
+      ]
+    },
+    "7-2-3": {
+      "status": "ready",
+      "decision": "curated_seismic_reinforcement_total_profile",
+      "label": "기존 공공시설물 내진성능 총계·내진율 산식 승인",
+      "table_type": "facility_seismic_reinforcement_table",
+      "notes": "큐레이션: 총계는 1~33번 시설 전체의 대상·연간실적·누계 합계입니다. 리프트, 물류시설처럼 값이 없거나 뒤쪽에 있는 시설도 합계 산식의 대상 행에 포함합니다. 내진율은 누계/대상 × 100입니다.",
+      "suppress_checks": [
+        {
+          "type": "column_sum"
+        },
+        {
+          "id": "profile.7-2-3.same_row_ratio_c5"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.7-2-3.total_all_facilities",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "총계 = 1~33번 전체 시설 합계",
+          "target_row": 2,
+          "operand_rows": [
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35
+          ],
+          "columns": [
+            2,
+            3,
+            4
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.7-2-3.seismic_ratio",
+          "type": "row_ratio",
+          "category": "table",
+          "check_group": "ratio",
+          "check_type": "비율 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "내진율 = 누계 / 대상 × 100",
+          "target_column": 5,
+          "numerator_column": 4,
+          "denominator_column": 2,
+          "multiplier": 100,
+          "tolerance": 0.15,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "7-2-11-1": {
+      "status": "ready",
+      "decision": "curated_warning_system_total_profile",
+      "label": "재난 예·경보시스템 보유 합계 산식 승인",
+      "table_type": "regional_warning_system_table",
+      "notes": "큐레이션: 시설 수 합계는 산간계곡 시설합계, 자동음성통보 시설 수, 재해문자전광판 시설 수를 더해 검수합니다. 산간계곡 세부 통제국~감시국은 산간계곡 시설합계 산식에서만 사용합니다.",
+      "suppress_checks": [
+        {
+          "id": "profile.7-2-11-1.row_total_c2"
+        },
+        {
+          "id": "profile.7-2-11-1.region_total_r3"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.7-2-11-1.facility_total_by_system_totals",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "합계 시설 수 = 산간계곡 시설합계 + 자동음성통보 시설 수 + 재해문자전광판 시설 수",
+          "target_column": 2,
+          "operand_columns": [
+            4,
+            11,
+            13
+          ],
+          "row_scope": "all_data_rows",
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
     "7-3-2-1 표1": {
       "status": "ready",
       "decision": "curated_cross_part_disaster_damage_total_profile",
@@ -53,6 +193,7 @@
           "failure_status": "오류 의심",
           "severity": "critical",
           "label": "합계 재산 = 표1 재산 피해 합계 + 표2 재산 피해 합계",
+          "replaces_automatic_rule": "cross.split_part_row_total",
           "source_table_code": "7-3-2-1 표2",
           "emit_source_checks": true,
           "target_column": 1,
@@ -87,6 +228,7 @@
           "failure_status": "오류 의심",
           "severity": "critical",
           "label": "합계 인명 = 표1 인명 피해 합계 + 표2 인명 피해 합계",
+          "replaces_automatic_rule": "cross.split_part_row_total",
           "source_table_code": "7-3-2-1 표2",
           "emit_source_checks": true,
           "target_column": 2,
@@ -327,6 +469,8 @@
             2,
             3
           ],
+          "row_scope": "year_range",
+          "year_max": 2017,
           "row_indices": [
             2,
             3,
@@ -350,6 +494,8 @@
             3,
             5
           ],
+          "row_scope": "year_range",
+          "year_min": 2018,
           "row_indices": [
             5,
             6,
@@ -391,6 +537,8 @@
             3,
             5
           ],
+          "row_scope": "year_range",
+          "year_max": 2017,
           "row_indices": [
             2,
             3,
@@ -413,6 +561,8 @@
             4,
             6
           ],
+          "row_scope": "year_range",
+          "year_max": 2017,
           "row_indices": [
             2,
             3,
@@ -436,6 +586,8 @@
             5,
             7
           ],
+          "row_scope": "year_range",
+          "year_min": 2018,
           "row_indices": [
             5,
             6,
@@ -462,8 +614,10 @@
           "operand_columns": [
             4,
             6,
-            9
+            8
           ],
+          "row_scope": "year_range",
+          "year_min": 2018,
           "row_indices": [
             5,
             6,

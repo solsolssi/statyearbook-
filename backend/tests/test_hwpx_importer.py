@@ -18,6 +18,7 @@ from app.ingest.hwpx_importer import (
     remember_title_context,
     resolve_title_section,
     separate_bilingual_lines,
+    table_matrix_with_footnotes,
 )
 from app.services.database_report_service import row_looks_like_header_continuation
 
@@ -94,6 +95,19 @@ class HwpxImporterTest(unittest.TestCase):
             ),
         )
 
+    def test_parse_title_block_keeps_final_code_segment_before_four_digit_year(self) -> None:
+        self.assertEqual(
+            parse_title_block(
+                "4-2-6-12024년 고향사랑기부제 기부 현황 "
+                "Hometown Love Donation Program Performance in 2024"
+            )[:3],
+            (
+                "4-2-6-1",
+                "2024년 고향사랑기부제 기부 현황",
+                "Hometown Love Donation Program Performance in 2024",
+            ),
+        )
+
     def test_parse_title_block_supports_appendix_codes(self) -> None:
         self.assertEqual(
             parse_title_block(
@@ -140,6 +154,56 @@ class HwpxImporterTest(unittest.TestCase):
         ]
         self.assertFalse(is_title_table(matrix, "구분 2010 2011 주민소송 7 - 4-1-2"))
 
+    def test_diagonal_two_column_header_span_matches_existing_hwpx_shape(self) -> None:
+        table = ET.fromstring(
+            """
+            <tbl>
+              <tr>
+                <tc>
+                  <cellAddr rowAddr="0" colAddr="0" />
+                  <cellSpan rowSpan="1" colSpan="2" />
+                  <p><run><t>구분</t></run></p>
+                  <p><run><t>Classification</t></run></p>
+                  <p><run><t>지역</t></run></p>
+                  <p><run><t>Region</t></run></p>
+                </tc>
+                <tc>
+                  <cellAddr rowAddr="0" colAddr="2" />
+                  <cellSpan rowSpan="1" colSpan="1" />
+                  <p><run><t>2025년</t></run></p>
+                </tc>
+              </tr>
+              <tr>
+                <tc>
+                  <cellAddr rowAddr="1" colAddr="0" />
+                  <cellSpan rowSpan="1" colSpan="1" />
+                  <p><run><t>합계</t></run></p>
+                  <p><run><t>Total</t></run></p>
+                </tc>
+                <tc>
+                  <cellAddr rowAddr="1" colAddr="1" />
+                  <cellSpan rowSpan="1" colSpan="1" />
+                  <p><run><t>총계</t></run></p>
+                  <p><run><t>Total</t></run></p>
+                </tc>
+                <tc>
+                  <cellAddr rowAddr="1" colAddr="2" />
+                  <cellSpan rowSpan="1" colSpan="1" />
+                  <p><run><t>1</t></run></p>
+                </tc>
+              </tr>
+            </tbl>
+            """
+        )
+
+        matrix, _ = table_matrix_with_footnotes(table, set())
+
+        self.assertEqual(
+            matrix[0],
+            ["구분\nClassification\n지역\nRegion", "", "2025년"],
+        )
+        self.assertEqual(matrix[1], ["합계\nTotal", "총계\nTotal", "1"])
+
     def test_page_continuations_drop_repeated_headers_and_empty_grid_columns(self) -> None:
         table = LogicalTable(
             code="1-1-5",
@@ -178,6 +242,68 @@ class HwpxImporterTest(unittest.TestCase):
             [["구분", "합계", "행정"], ["2009", "10", "4"], ["2010", "11", "5"]],
         )
         self.assertEqual(imported[0].header_count, 1)
+
+    def test_page_continuation_with_period_only_header_change_is_not_split(self) -> None:
+        table = LogicalTable(
+            code="7-1-7",
+            title="재난관리기금 적립 및 운용",
+            title_en="Savings and Operation of Disaster Management Fund",
+            section_title="",
+            section_title_en="",
+            section_file="Contents/section7.xml",
+            table_order=1,
+            parts=[
+                TablePart(
+                    section_file="Contents/section7.xml",
+                    matrix=[
+                        [
+                            "구분\nClassification\n지역\nRegion",
+                            "",
+                            "2024년\n연말잔액\n(a)\n2023\nBalance at the End of the Year\n(a)",
+                            "2025년\n적립액\n(b)\n2024\nAmount Accumulated\n(b)",
+                        ],
+                        ["합계\nTotal", "총계\nTotal", "", ""],
+                        ["울 산\nUlsan", "시군구\nCities, Counties &\nDistricts", "", ""],
+                    ],
+                    raw_text="",
+                ),
+                TablePart(
+                    section_file="Contents/section7.xml",
+                    matrix=[
+                        [
+                            "구분\nClassification\n지역\nRegion",
+                            "",
+                            "2023년\n연말잔액\n(a)\n2023\nBalance at the End of the Year\n(a)",
+                            "2024년\n적립액\n(b)\n2024\nAmount Accumulated\n(b)",
+                        ],
+                        ["세 종\nSejong", "본청\nThe headquarter", "21,207", "7,828"],
+                        ["제 주\nJeju", "본청\nThe headquarter", "41,378", "16,066"],
+                    ],
+                    raw_text="",
+                ),
+            ],
+        )
+
+        imported = prepare_hwpx_import_tables([table])
+
+        self.assertEqual(len(imported), 1)
+        self.assertEqual(imported[0].code, "7-1-7")
+        self.assertEqual(imported[0].header_count, 1)
+        self.assertEqual(
+            imported[0].matrix,
+            [
+                [
+                    "구분\nClassification\n지역\nRegion",
+                    "",
+                    "2024년\n연말잔액\n(a)\n2023\nBalance at the End of the Year\n(a)",
+                    "2025년\n적립액\n(b)\n2024\nAmount Accumulated\n(b)",
+                ],
+                ["합계\nTotal", "총계\nTotal", "", ""],
+                ["울 산\nUlsan", "시군구\nCities, Counties &\nDistricts", "", ""],
+                ["세 종\nSejong", "본청\nThe headquarter", "21,207", "7,828"],
+                ["제 주\nJeju", "본청\nThe headquarter", "41,378", "16,066"],
+            ],
+        )
 
     def test_authored_bilingual_and_formula_line_boundaries_are_preserved(self) -> None:
         table = LogicalTable(
@@ -297,6 +423,179 @@ class HwpxImporterTest(unittest.TestCase):
             imported[0].matrix[0][1],
             "30 ~ 50만 명\n300,000 up to 500,000 Persons",
         )
+
+    def test_repeated_diagonal_header_rows_are_not_row_oriented_text_tables(self) -> None:
+        table = LogicalTable(
+            code="2-2-6",
+            title="생활공감정책 참여단",
+            title_en="",
+            section_title="",
+            section_title_en="",
+            section_file="Contents/section1.xml",
+            table_order=1,
+            parts=[
+                TablePart(
+                    section_file="Contents/section1.xml",
+                    matrix=[
+                        [
+                            "구분\nClassification\n지역\nRegion",
+                            "제10기\n구성인원\nThe 10th Monitors",
+                            "성별 인원\nSex",
+                            "",
+                            "연령별 인원\nAge",
+                            "",
+                        ],
+                        [
+                            "구분\nClassification\n지역\nRegion",
+                            "제10기\n구성인원\nThe 10th Monitors",
+                            "성별 인원\nSex",
+                            "",
+                            "연령별 인원\nAge",
+                            "",
+                        ],
+                        [
+                            "구분\nClassification\n지역\nRegion",
+                            "제10기\n구성인원\nThe 10th Monitors",
+                            "남\nMan",
+                            "여\nWoman",
+                            "20대 이하\nUnder 20 Years",
+                            "30대\n30s",
+                        ],
+                        ["계\nTotal", "1,683", "724", "959", "89", "171"],
+                    ],
+                    raw_text="",
+                )
+            ],
+        )
+
+        imported = prepare_hwpx_import_tables([table])
+
+        self.assertEqual(imported[0].header_count, 3)
+
+    def test_shifted_small_business_amount_column_is_repaired(self) -> None:
+        table = LogicalTable(
+            code="7-3-9-4",
+            title="연도별 풍수해 보험금 지급",
+            title_en="",
+            section_title="",
+            section_title_en="",
+            section_file="Contents/section1.xml",
+            table_order=1,
+            parts=[
+                TablePart(
+                    section_file="Contents/section1.xml",
+                    matrix=[
+                        ["연도\nYear", "합계", "", "주택", "", "온실", "", "소상공인\nSmall business", "", ""],
+                        ["연도\nYear", "건수", "금액", "건수", "금액", "건수", "금액", "건수", "금액", ""],
+                        ["2020", "5,007", "26,832", "1,455", "7,863", "3,057", "15,627", "495", "", "3,342"],
+                    ],
+                    raw_text="",
+                )
+            ],
+        )
+
+        imported = prepare_hwpx_import_tables([table])
+
+        self.assertEqual(imported[0].matrix[2][8], "3,342")
+        self.assertEqual(max(len(row) for row in imported[0].matrix), 9)
+
+    def test_spanning_small_business_guide_is_kept_as_a_note_not_data(self) -> None:
+        guide = (
+            "* ’18~’19년 시범사업\nPilot projects (2018-2019)\n"
+            "*’20년 전국 시행\nNationwide enforcement (2020)"
+        )
+        table = LogicalTable(
+            code="7-3-9-4",
+            title="연도별 풍수해보험 가입",
+            title_en="",
+            section_title="",
+            section_title_en="",
+            section_file="Contents/section1.xml",
+            table_order=1,
+            parts=[
+                TablePart(
+                    section_file="Contents/section1.xml",
+                    matrix=[
+                        ["연도\nYear", "합계", "주택", "온실", "", "소상공인\nSmall business", "", ""],
+                        ["연도\nYear", "건수", "금액", "건수", "금액", "건수", "금액", "건수"],
+                        ["2015", "10", "8", "2", "100", "", "", guide],
+                        ["2016", "11", "9", "2", "101", "", "", guide],
+                        ["2017", "12", "10", "2", "102", "", "", guide],
+                        ["2018", "13", "10", "2", "103", "", "", "1"],
+                    ],
+                    raw_text="",
+                )
+            ],
+        )
+
+        imported = prepare_hwpx_import_tables([table])
+
+        self.assertTrue(imported[0].note.startswith("#주) 소상공인:"))
+        self.assertEqual([imported[0].matrix[index][7] for index in (2, 3, 4)], ["", "", ""])
+        self.assertEqual(imported[0].matrix[5][7], "1")
+
+    def test_small_business_guide_keeps_its_korean_and_english_lines(self) -> None:
+        guide = (
+            "* ’18~’19년 시범사업\nPilot projects (2018-2019)\n"
+            "-’18년 22개 시군구22\ncities, counties, districts (2018)\n"
+            "-’19년 37개 시군구37\ncities, counties, districts (2019)\n"
+            "*’20년 전국 시행\nNationwide enforcement (2020)"
+        )
+        table = LogicalTable(
+            code="7-3-9-2",
+            title="연도별 풍수해보험 가입",
+            title_en="",
+            section_title="",
+            section_title_en="",
+            section_file="Contents/section1.xml",
+            table_order=1,
+            parts=[
+                TablePart(
+                    section_file="Contents/section1.xml",
+                    matrix=[
+                        ["연도\nYear", "합계", "주택", "온실", "", "소상공인\nSmall business"],
+                        ["연도\nYear", "건수", "건수", "건수", "면적", "건수"],
+                        ["2015", "10", "8", "2", "100", guide],
+                    ],
+                    raw_text="",
+                )
+            ],
+        )
+
+        imported = prepare_hwpx_import_tables([table])
+
+        self.assertEqual(imported[0].note, "")
+        self.assertEqual(
+            imported[0].matrix[2][5],
+            "* ’18~’19년 시범사업\n-’18년 22개 시군구\n-’19년 37개 시군구\n*’20년 전국 시행\n"
+            "Pilot projects (2018-2019)\n22 cities, counties, districts (2018)\n37 cities, counties, districts (2019)\nNationwide enforcement (2020)",
+        )
+
+    def test_local_government_sejong_count_stays_under_eup_myeon_dong(self) -> None:
+        table = LogicalTable(
+            code="4-1-9 표4",
+            title="지방자치단체 기구",
+            title_en="",
+            section_title="",
+            section_title_en="",
+            section_file="Contents/section1.xml",
+            table_order=1,
+            parts=[
+                TablePart(
+                    section_file="Contents/section1.xml",
+                    matrix=[
+                        ["구분\nClassification\n지역\nRegion", "", "군\nCounty", "구\nDistrict", "읍･면･동\nEup, Myeon & Dong", "구 출장소"],
+                        ["세 종\nSejong", "", "-", "24", "-", "-"],
+                    ],
+                    raw_text="",
+                )
+            ],
+        )
+
+        imported = prepare_hwpx_import_tables([table])
+
+        self.assertEqual(imported[0].matrix[1][2], "-")
+        self.assertEqual(imported[0].matrix[1][3], "24")
 
     def test_text_only_first_row_on_next_page_is_data_not_an_extra_header(self) -> None:
         table = LogicalTable(

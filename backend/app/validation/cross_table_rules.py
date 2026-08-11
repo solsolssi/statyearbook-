@@ -19,6 +19,7 @@ from app.validation.rules import (
     combined_row_label,
     leading_label_columns,
 )
+from app.validation.row_scope import resolve_row_scope
 
 if TYPE_CHECKING:
     from app.validation.profiles import ValidationProfile
@@ -102,11 +103,16 @@ class SplitPartRowTotalRule:
     rule_id = "cross.split_part_row_total"
     check_type = "합계 검수"
 
+    def __init__(self, *, excluded_base_codes: set[str] | None = None) -> None:
+        self._excluded_base_codes = excluded_base_codes or set()
+
     def evaluate(self, tables: list[ValidationTable]) -> CrossTableValidationResult:
         issues: list[ValidationIssueRecord] = []
         checks: list[ValidationCheckRecord] = []
 
-        for _, parts in split_part_groups(tables).items():
+        for base_code, parts in split_part_groups(tables).items():
+            if base_code in self._excluded_base_codes:
+                continue
             if len(parts) < 2:
                 continue
 
@@ -256,7 +262,7 @@ class ConfiguredCrossTableRowSumRule:
         source_columns = [int(value) for value in spec.get("source_columns", [])]
         if not source_columns:
             source_columns = [int(spec.get("source_column", -1))]
-        row_indices = [int(value) for value in spec.get("row_indices", [])]
+        row_indices = resolve_row_scope(target_table, spec)
         if target_column < 0 or any(column < 0 for column in source_columns) or not target_operand_columns:
             return [], []
         if target_column >= column_count(target_table) or any(
@@ -265,7 +271,7 @@ class ConfiguredCrossTableRowSumRule:
             return [], []
 
         source_rows = rows_by_label(source_table)
-        if not row_indices:
+        if not row_indices and str(spec.get("row_scope") or "fixed") == "fixed":
             row_indices = [row_index for row_index, _ in target_table.data_rows()]
 
         issues: list[ValidationIssueRecord] = []

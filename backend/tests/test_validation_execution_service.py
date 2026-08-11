@@ -288,6 +288,52 @@ class ValidationExecutionServiceTest(unittest.TestCase):
             )
             self.assertEqual(exact_result["run_id"], source_run)
 
+    def test_reusable_run_counts_pending_language_without_multiplying_rows(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                with connection:
+                    report_id = insert_report(connection, year=2026, title="2026 연보")
+                    table_id = insert_table(
+                        connection,
+                        report_id=report_id,
+                        code="1-1",
+                        values=("구분", "합계", "계", "3"),
+                    )
+                    run_id = int(connection.execute(
+                        """
+                        INSERT INTO validation_runs (
+                            report_id, rules_version, started_at, completed_at, selected_rules_json
+                        ) VALUES (?, 'test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
+                        """,
+                        (report_id, json.dumps(["sum", "translation"])),
+                    ).lastrowid)
+                    insert_check(connection, run_id=run_id, table_id=table_id, check_type="합계 검수")
+                    insert_check(connection, run_id=run_id, table_id=table_id, check_type="합계 검수")
+                    connection.executemany(
+                        """
+                        INSERT INTO linguistic_review_candidates (
+                            run_id, table_id, review_type, candidate_kind,
+                            source_kind, location, current_value, korean_text,
+                            english_text, glossary_json, reason, prompt_version
+                        ) VALUES (?, ?, '번역 검수', 'translation_pair',
+                                  'document', ?, ?, ?, ?, '[]', '후보', 'test')
+                        """,
+                        [
+                            (run_id, table_id, "2행 1열", "정부 Government", "정부", "Government"),
+                            (run_id, table_id, "3행 1열", "조직 Organization", "조직", "Organization"),
+                        ],
+                    )
+
+            reusable_runs = ValidationExecutionService(db_path).list_reusable_runs(report_id)
+
+            self.assertEqual(len(reusable_runs), 1)
+            self.assertEqual(reusable_runs[0]["id"], run_id)
+            self.assertEqual(reusable_runs[0]["normal_count"], 0)
+            self.assertEqual(reusable_runs[0]["needs_review_count"], 1)
+            self.assertEqual(reusable_runs[0]["suspected_error_count"], 0)
+
 
 def insert_report(
     connection,

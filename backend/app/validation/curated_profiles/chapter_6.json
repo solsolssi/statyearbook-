@@ -20,6 +20,241 @@
     }
   ],
   "profiles": {
+    "6-1-3-1": {
+      "status": "ready",
+      "decision": "curated_ship_and_dock_subtotal_profile",
+      "label": "내수면 유·도선 선박·규모·선착장 소계 산식 승인",
+      "table_type": "regional_ship_facility_table",
+      "notes": "큐레이션: 합계 행은 모든 지역 행의 열별 합계로 검수합니다. 행 내부 소계는 선박 수 소계(유선+도선), 동력선 소계(5t미만+5~100t+101t 이상), 유·도선장 소계(유선장+도선장)만 검수합니다. 대시와 빈 값은 0으로 포함하여 모든 데이터 행을 계속 검수합니다.",
+      "suppress_checks": [
+        {
+          "id": "profile.6-1-3-1.row_total_direct_c1"
+        },
+        {
+          "id": "profile.6-1-3-1.row_total_direct_c5"
+        },
+        {
+          "id": "profile.6-1-3-1.row_total_direct_c10"
+        },
+        {
+          "id": "profile.6-1-3-1.region_total_r3"
+        },
+        {
+          "id": "profile.6-1-3-1.column_total_r3"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.6-1-3-1.regional_column_total",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "합계 = 모든 지역의 열별 합계",
+          "target_row_selector": "first_total_row",
+          "operand_row_selector": "following_data_rows",
+          "columns": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.6-1-3-1.ship_subtotal",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "선박 수 소계 = 유선 + 도선",
+          "target_column": 1,
+          "operand_columns": [
+            2,
+            3
+          ],
+          "row_scope": "all_data_rows",
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.6-1-3-1.powerboat_subtotal",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "동력선 소계 = 5t미만 + 5~100t + 101t 이상",
+          "target_column": 5,
+          "operand_columns": [
+            6,
+            7,
+            8
+          ],
+          "row_scope": "all_data_rows",
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.6-1-3-1.dock_subtotal",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "유·도선장 소계 = 유선장 + 도선장",
+          "target_column": 10,
+          "operand_columns": [
+            11,
+            12
+          ],
+          "row_scope": "all_data_rows",
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "6-2-7-1": {
+      "status": "ready",
+      "decision": "curated_regional_casualty_total_profile",
+      "label": "지역축제 안전사고 지역합계·인명피해 소계 산식 승인",
+      "table_type": "regional_casualty_table",
+      "notes": "큐레이션: 합계 행은 지역별 행의 합계로 검수하고, 인명피해 합계는 사망+부상입니다. 자동 내부 소계 후보가 빈 지역 행을 잘못 묶지 않도록 표별 산식으로 고정합니다.",
+      "suppress_checks": [
+        {
+          "type": "column_sum"
+        },
+        {
+          "id": "profile.6-2-7-1.row_total_direct_c2"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.6-2-7-1.region_total",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "합계 = 지역별 전체 합계",
+          "target_row": 2,
+          "operand_rows": [
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19
+          ],
+          "columns": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.6-2-7-1.casualty_subtotal",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "인명피해 합계 = 사망 + 부상",
+          "target_column": 2,
+          "operand_columns": [
+            3,
+            4
+          ],
+          "row_scope": "all_data_rows",
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "6-2-11-3": {
+      "status": "ready",
+      "decision": "curated_elevator_accident_region_total_profile",
+      "label": "승강기 안전사고 지역합계 산식 승인",
+      "table_type": "regional_accident_table",
+      "notes": "큐레이션: 합계 행은 시도별 행의 합계입니다. 광주 하위 행 합계처럼 실제 계층이 아닌 자동 내부 소계 후보는 제외합니다.",
+      "suppress_checks": [
+        {
+          "id": "profile.6-2-11-3.implicit_subtotal_r6"
+        },
+        {
+          "id": "profile.6-2-11-3.region_total_r1"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.6-2-11-3.region_total",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "합계 = 시도별 전체 합계",
+          "target_row": 1,
+          "operand_rows": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ],
+          "columns": [
+            2,
+            3
+          ],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
     "6-2-6-2": {
       "status": "ready",
       "decision": "curated_casualty_subtotal_profile",
@@ -216,6 +451,54 @@
             7
           ],
           "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "6-3-2-2": {
+      "status": "ready",
+      "decision": "curated_cbr_mask_total_and_ratio_profile",
+      "label": "화생방 방독면 보유수량·확보율 산식 승인",
+      "table_type": "year_trend_ratio_table",
+      "notes": "큐레이션: 방독면 보유수량은 민방위대원용 방독면 확보량과 정부지원 대피시설 비치용의 합계이며, 비율은 방독면 확보량을 대원수로 나누어 계산합니다.",
+      "suppress_checks": [
+        {
+          "id": "profile.6-3-2-2.same_row_ratio_c4"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.6-3-2-2.mask_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "방독면 보유수량 = 방독면 확보량 + 정부지원 대피시설 비치용",
+          "target_column": 1,
+          "operand_columns": [
+            3,
+            5
+          ],
+          "row_scope": "all_data_rows",
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.6-3-2-2.secured_mask_ratio",
+          "type": "row_ratio",
+          "category": "table",
+          "check_group": "ratio",
+          "check_type": "비율 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "비율 = 방독면 확보량 / 대원수 × 100",
+          "target_column": 4,
+          "numerator_column": 3,
+          "denominator_column": 2,
+          "multiplier": 100,
+          "tolerance": 0.15,
           "confidence": 1.0
         }
       ]

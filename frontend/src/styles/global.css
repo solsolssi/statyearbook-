@@ -290,6 +290,42 @@ button {
   font-weight: 900;
 }
 
+.source-file-picker {
+  display: grid;
+  grid-template-columns: 70px max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.source-file-picker > strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.source-file-picker > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: fit-content;
+  min-height: 42px;
+  padding: 0 14px;
+  color: #244c73;
+  background: var(--surface);
+  border: 1px solid #aac6e0;
+  font-weight: 900;
+}
+
+.source-file-picker > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .upload-file-picker p {
   margin: 0;
   color: var(--muted);
