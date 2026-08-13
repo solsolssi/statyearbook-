@@ -19,6 +19,29 @@ from app.services.yearbook_reproduction_service import YearbookReproductionServi
 
 
 class YearbookReproductionServiceTest(unittest.TestCase):
+    def test_overview_hides_ledger_generated_reports_from_baseline_options(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                with connection:
+                    report_id = insert_report(connection)
+                    insert_report(
+                        connection,
+                        title="증분업로드",
+                        file_hash="ledger-generated",
+                        origin_kind="ledger_generated",
+                    )
+                    insert_period_table(connection, report_id)
+                    insert_period_dataset(connection)
+
+            overview = YearbookReproductionService(db_path).overview(report_id=report_id)
+
+            self.assertEqual(
+                [report.title for report in overview.available_reports],
+                ["2025 테스트 연보"],
+            )
+
     def test_user_confirmed_source_mapping_overrides_title_inference(self) -> None:
         with TemporaryDirectory() as directory:
             db_path = Path(directory) / "report.sqlite"
@@ -66,6 +89,48 @@ class YearbookReproductionServiceTest(unittest.TestCase):
             self.assertEqual(config["mapping_authority"], "user_confirmed")
             self.assertEqual(config["source_bindings"][0]["first_period"], "202300")
             self.assertEqual(config["source_bindings"][0]["last_period"], "202400")
+
+    def test_stored_source_id_connects_increment_when_title_changes(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                with connection:
+                    report_id = insert_report(connection)
+                    insert_table_with_title(
+                        connection,
+                        report_id,
+                        code="1-9",
+                        title="기준 연보의 옛 표 이름",
+                        order=1,
+                    )
+                    dataset_id = insert_dataset(connection, "M-RENAMED", "증분에서 바뀐 표 이름")
+                    batch_id = insert_batch(connection, "renamed")
+                    insert_item(connection, dataset_id, batch_id, 10001, "합계")
+                    insert_value(connection, dataset_id, batch_id, "202400", 10001, 1, "77")
+                    connection.execute(
+                        """
+                        INSERT INTO yearbook_table_recipes (
+                            table_code, revision, effective_from_year,
+                            source_dataset_id, materializer, config_json,
+                            status, source_report_id
+                        ) VALUES (
+                            '1-9', 1, 2025, ?, 'current_period_rows',
+                            '{"value_authority": "source_ledger"}',
+                            'draft', ?
+                        )
+                        """,
+                        (dataset_id, report_id),
+                    )
+
+            table = YearbookReproductionService(db_path).overview(
+                report_id=report_id
+            ).tables[0]
+
+            self.assertEqual(table.mapping_status, "mapped")
+            self.assertEqual(table.match_method, "source_external_id")
+            self.assertEqual(table.source_external_id, "M-RENAMED")
+            self.assertIn("원장 번호", table.reason)
 
     def test_analyzes_mapping_period_window_and_keeps_report_immutable(self) -> None:
         with TemporaryDirectory() as directory:
@@ -248,14 +313,21 @@ class YearbookReproductionServiceTest(unittest.TestCase):
             self.assertEqual(config["target_period_offset"], -1)
 
 
-def insert_report(connection: DatabaseConnection) -> int:
+def insert_report(
+    connection: DatabaseConnection,
+    *,
+    title: str = "2025 테스트 연보",
+    file_hash: str = "report-2025",
+    origin_kind: str = "uploaded",
+) -> int:
     cursor = connection.execute(
         """
         INSERT INTO annual_reports (
             year, title, source_file_name, source_file_path,
-            file_hash, imported_at
-        ) VALUES (2025, '2025 테스트 연보', '2025.md', '', 'report-2025', '2025-01-01')
-        """
+            file_hash, imported_at, origin_kind
+        ) VALUES (2025, ?, '2025.md', '', ?, '2025-01-01', ?)
+        """,
+        (title, file_hash, origin_kind),
     )
     assert cursor.lastrowid is not None
     return int(cursor.lastrowid)
@@ -303,6 +375,27 @@ def insert_unmapped_table(connection: DatabaseConnection, report_id: int) -> Non
             (0, 1, "값", 1),
             (1, 0, "합계", 0),
             (1, 1, "1", 0),
+        ],
+    )
+
+
+def insert_table_with_title(
+    connection: DatabaseConnection,
+    report_id: int,
+    *,
+    code: str,
+    title: str,
+    order: int,
+) -> None:
+    table_id = insert_table(connection, report_id, code, title, order)
+    insert_cells(
+        connection,
+        table_id,
+        [
+            (0, 0, "구분", 1),
+            (0, 1, "합계", 1),
+            (1, 0, "계", 0),
+            (1, 1, "77", 0),
         ],
     )
 

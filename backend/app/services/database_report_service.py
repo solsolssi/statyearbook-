@@ -24,6 +24,7 @@ from app.models.report import (
     StatTable,
     StatTablePart,
     StatTableSummary,
+    TableDownloadCatalogItem,
     TableMetadata,
     TableHierarchyItem,
     ValidationIssue,
@@ -261,6 +262,46 @@ class DatabaseReportService:
             ]
             return group_table_parts(physical_tables)
 
+    def list_download_catalog(self, report_id: int) -> list[TableDownloadCatalogItem]:
+        """List logical table ids without materializing cells or validation results."""
+        report = self._resolve_report(report_id)
+        if report is None:
+            return []
+
+        with connect(self._db_path) as connection:
+            init_db(connection)
+            rows = connection.execute(
+                """
+                SELECT id, code, title
+                FROM stat_tables
+                WHERE report_id = ?
+                ORDER BY table_order, id
+                """,
+                (report["id"],),
+            ).fetchall()
+
+        grouped: dict[str, list[DatabaseRow]] = {}
+        order: list[str] = []
+        for row in rows:
+            code = base_table_code(str(row["code"]))
+            if code not in grouped:
+                grouped[code] = []
+                order.append(code)
+            grouped[code].append(row)
+
+        return [
+            TableDownloadCatalogItem(
+                id=(
+                    f"group-{code}"
+                    if len(grouped[code]) > 1
+                    else f"db-{grouped[code][0]['id']}"
+                ),
+                code=code,
+                title=strip_part_suffix(str(grouped[code][0]["title"])),
+            )
+            for code in order
+        ]
+
     def get_table(self, table_id: str, report_id: int | None = None) -> StatTable | None:
         if report_id == TEST_REPORT_ID:
             tables, _, _ = self._test_report_tables()
@@ -359,6 +400,7 @@ class DatabaseReportService:
                 SELECT r.id, r.year, r.title, r.source_file_name, r.imported_at
                 FROM annual_reports r
                 WHERE COALESCE(r.is_archived, 0) = 0
+                  AND COALESCE(r.origin_kind, 'uploaded') != 'ledger_generated'
                 GROUP BY r.id
                 ORDER BY r.year DESC, r.imported_at DESC, r.id DESC
                 """
@@ -602,6 +644,7 @@ class DatabaseReportService:
                 SELECT *
                 FROM annual_reports
                 WHERE COALESCE(is_archived, 0) = 0
+                  AND COALESCE(origin_kind, 'uploaded') != 'ledger_generated'
                 ORDER BY imported_at DESC, id DESC
                 LIMIT 1
                 """
@@ -670,6 +713,7 @@ class DatabaseReportService:
         )
         rows = build_rows(matrix, columns, header_count, footnote_matrix, label_column_indexes)
         table_id = f"db-{table_row['id']}"
+        validation_stale = table_validation_is_stale(connection, run_id, table_row)
         checks = build_validation_issues(
             connection,
             run_id,
@@ -681,6 +725,9 @@ class DatabaseReportService:
             include_highlights=include_highlights,
         )
         status, status_label = status_from_checks(checks)
+        if validation_stale:
+            status = TableStatus.NEEDS_REVIEW
+            status_label = "재검수 필요"
         contact = parse_contact_metadata(table_row["source"] or "")
         generation = connection.execute(
             """
@@ -746,10 +793,10 @@ class DatabaseReportService:
                     if value
                 ),
                 source=table_row["source"],
-                source_department=contact.department,
-                source_officer=contact.officer,
-                source_extension=contact.extension,
-                source_reference=contact.source_reference,
+                source_department=str(table_row["source_department"] or contact.department),
+                source_officer=str(table_row["source_officer"] or contact.officer),
+                source_extension=str(table_row["source_extension"] or contact.extension),
+                source_reference=str(table_row["source_reference"] or contact.source_reference),
                 base_date=table_row["base_date"] or f"{report['year']} 기준",
                 base_date_display=metadata_base_date_display(table_row, report["year"]),
                 unit_display=metadata_unit_display(table_row),
@@ -763,6 +810,7 @@ class DatabaseReportService:
                 else ""
             ),
             generation_message=str(generation["generation_message"] or "") if generation else "",
+            validation_stale=validation_stale,
         )
 
     def _latest_run_id(self, connection: DatabaseConnection, report_id: int) -> int | None:
@@ -800,6 +848,7 @@ def table_summary(table: StatTable) -> StatTableSummary:
         generation_message=table.generation_message,
         update_mode=table.update_mode,
         source_dataset_title=table.source_dataset_title,
+        validation_stale=table.validation_stale,
     )
 
 
@@ -1122,38 +1171,58 @@ def load_checks_for_tables(
     include_passing: bool = True,
 ) -> list[DatabaseRow]:
     rows: list[DatabaseRow] = []
-    status_filter = "" if include_passing else "AND status <> '정상'"
+    status_filter = "" if include_passing else "AND checks.status <> '정상'"
     for chunk in chunks(table_ids):
         placeholders = ", ".join("?" for _ in chunk)
         rows.extend(
             connection.execute(
                 f"""
-                SELECT *
-                FROM validation_checks
-                WHERE run_id = ? AND table_id IN ({placeholders})
+                SELECT checks.*
+                FROM validation_checks AS checks
+                JOIN stat_tables AS source_table ON source_table.id = checks.table_id
+                JOIN validation_runs AS source_run ON source_run.id = checks.run_id
+                WHERE checks.run_id = ? AND checks.table_id IN ({placeholders})
+                  AND (
+                    source_table.edited_after_run_id IS NULL
+                    OR source_run.id > source_table.edited_after_run_id
+                  )
                 {status_filter}
                 ORDER BY
-                    table_id,
-                    CASE status
+                    checks.table_id,
+                    CASE checks.status
                         WHEN '오류 의심' THEN 0
                         WHEN '확인 필요' THEN 1
+                        WHEN '재검수 필요' THEN 1
                         WHEN '정상' THEN 2
                         ELSE 3
                     END,
-                    CASE severity
+                    CASE checks.severity
                         WHEN 'critical' THEN 0
                         WHEN 'warning' THEN 1
                         ELSE 2
                     END,
-                    row_index IS NULL,
-                    row_index,
-                    col_index,
-                    id
+                    checks.row_index IS NULL,
+                    checks.row_index,
+                    checks.col_index,
+                    checks.id
                 """,
                 [run_id, *chunk],
             ).fetchall()
         )
     return rows
+
+
+def table_validation_is_stale(
+    connection: DatabaseConnection,
+    run_id: int | None,
+    table_row: DatabaseRow,
+) -> bool:
+    edited_after_run_id = table_row["edited_after_run_id"]
+    if edited_after_run_id is None:
+        return False
+    if run_id is None:
+        return True
+    return run_id <= int(edited_after_run_id)
 
 
 def build_validation_issues(
@@ -1180,6 +1249,7 @@ def build_validation_issues(
                 CASE status
                     WHEN '오류 의심' THEN 0
                     WHEN '확인 필요' THEN 1
+                    WHEN '재검수 필요' THEN 1
                     WHEN '정상' THEN 2
                     ELSE 3
                 END,
@@ -1220,6 +1290,8 @@ def status_from_checks(checks: list[ValidationIssue]) -> tuple[TableStatus, str]
     active_checks = [check for check in checks if check.status != "정상"]
     if any(check.severity == "critical" for check in active_checks):
         return TableStatus.SUSPECTED_ERROR, "오류 의심"
+    if any(check.status == "재검수 필요" for check in active_checks):
+        return TableStatus.NEEDS_REVIEW, "재검수 필요"
     if active_checks:
         return TableStatus.NEEDS_REVIEW, "확인 필요"
     return TableStatus.NORMAL, "정상"
@@ -1358,6 +1430,7 @@ def table_to_part(table: StatTable) -> StatTablePart:
         generation_message=table.generation_message,
         update_mode=table.update_mode,
         source_dataset_title=table.source_dataset_title,
+        validation_stale=table.validation_stale,
     )
 
 
@@ -1461,6 +1534,7 @@ def group_table_parts(tables: list[StatTable]) -> list[StatTable]:
                     "changes": combined_changes,
                     "visualizations": combined_visualizations,
                     "parts": [table_to_part(part) for part in parts],
+                    "validation_stale": any(part.validation_stale for part in parts),
                     **generation,
                 },
             )
@@ -2436,6 +2510,8 @@ def formatted_value(value: Any, unit: str) -> str:
 
 def metadata_base_date_display(table_row: DatabaseRow, report_year: int) -> str:
     fallback = table_row["base_date"] or f"{report_year} 기준"
+    if table_row["manually_edited_at"]:
+        return fallback
     raw_context = re.sub(r"\s+", " ", table_row["raw_context"] or "")
     match = re.search(r"\(\s*([^()]*?기준)\s*\)\s*\(\s*(As of [^)]+)\s*\)", raw_context)
     if not match:
@@ -2446,6 +2522,8 @@ def metadata_base_date_display(table_row: DatabaseRow, report_year: int) -> str:
 
 def metadata_unit_display(table_row: DatabaseRow) -> str:
     fallback = table_row["unit"] or "-"
+    if table_row["manually_edited_at"]:
+        return fallback
     raw_context = re.sub(r"\s+", " ", table_row["raw_context"] or "")
     match = re.search(r"\(\s*단위\s*:\s*([^)]+?)\s*\)\s*\(\s*(Unit\s*:\s*[^)]+)\s*\)", raw_context)
     if not match:

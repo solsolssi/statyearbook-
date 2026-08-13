@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ClipboardCheck, Database, LoaderCircle, Trash2 } from "lucide-react";
+import { ClipboardCheck, Database, Download, LoaderCircle, Trash2 } from "lucide-react";
 
 import type {
   ReportOption,
@@ -9,6 +9,7 @@ import type {
 } from "../types";
 import { ValidationTypeFilter } from "./ValidationTypeFilter";
 import { ValidationRunDialog } from "./ValidationRunDialog";
+import { ReportWorkbookDownloadDialog } from "./ReportWorkbookDownloadDialog";
 
 type SummaryFilter = TableStatus | "all";
 
@@ -79,8 +80,21 @@ export function ReportSummaryPanel({
   onDeleteReport,
 }: ReportSummaryPanelProps) {
   const [validationDialogOpen, setValidationDialogOpen] = useState(false);
+  const [downloadDialogOpen, setDownloadDialogOpen] = useState(false);
   const isTestReport = Boolean(summary.is_test_report);
-  const reportOptions =
+  const currentReportOption =
+    summary.report_id && summary.report_id > 0
+      ? {
+          id: summary.report_id,
+          year: Number(summary.base_year) || 0,
+          title: summary.file_name || `${summary.base_year} ${datasetLabel}`,
+          file_name: summary.file_name,
+          imported_at: "",
+          table_count: summary.total_tables,
+          kind: "published" as const,
+        }
+      : null;
+  const baseReportOptions =
     availableReports.length > 0
       ? availableReports
       : [
@@ -94,8 +108,14 @@ export function ReportSummaryPanel({
             kind: "published" as const,
           },
         ];
+  const reportOptions =
+    currentReportOption &&
+    !baseReportOptions.some((report) => report.id === currentReportOption.id)
+      ? [currentReportOption, ...baseReportOptions]
+      : baseReportOptions;
   const selectedReport =
     reportOptions.find((report) => String(report.id) === selectedReportId) ??
+    currentReportOption ??
     reportOptions[0];
   const canDeleteSelectedReport = Boolean(
     selectedReport &&
@@ -103,6 +123,17 @@ export function ReportSummaryPanel({
       selectedReport.kind !== "test" &&
       !isTestReport,
   );
+  const canRunValidation = Boolean(
+    !isTestReport && summary.validation_available !== false && summary.report_id,
+  );
+  const showValidationTypeFilter = !isTestReport && validationTypes.length > 0;
+  const canDownloadSelectedReport = Boolean(
+    selectedReport &&
+      selectedReport.id > 0 &&
+      selectedReport.kind !== "test" &&
+      !isTestReport,
+  );
+  const downloadReports = canDownloadSelectedReport && selectedReport ? [selectedReport] : [];
 
   async function handleDeleteClick() {
     if (!selectedReport || !canDeleteSelectedReport || deleteState === "deleting") {
@@ -150,30 +181,17 @@ export function ReportSummaryPanel({
             <span>{deleteState === "deleting" ? "삭제 중" : "연보 삭제"}</span>
           </button>
         ) : null}
-      </div>
-
-      {!isTestReport && summary.validation_available !== false && summary.report_id ? (
-        <div className="report-validation-actions">
+        {canDownloadSelectedReport ? (
           <button
+            className="summary-download-button"
             type="button"
-            disabled={validationRunState === "running"}
-            onClick={() => setValidationDialogOpen(true)}
+            onClick={() => setDownloadDialogOpen(true)}
           >
-            {validationRunState === "running" ? (
-              <LoaderCircle className="is-spinning" aria-hidden="true" size={17} />
-            ) : (
-              <ClipboardCheck aria-hidden="true" size={17} />
-            )}
-            <span>
-              {validationRunState === "running"
-                ? "검수 진행 중"
-                : summary.validation_scope === "none"
-                  ? "검수 진행"
-                  : "검수 다시 진행"}
-            </span>
+            <Download aria-hidden="true" size={17} />
+            <span>연보 다운</span>
           </button>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
 
       <div className="mini-summary-grid">
         {summaryCards.map((card) => (
@@ -201,78 +219,48 @@ export function ReportSummaryPanel({
         ))}
       </div>
 
+      {showValidationTypeFilter || canRunValidation ? (
+        <div className="summary-control-row">
+          {showValidationTypeFilter ? (
+            <ValidationTypeFilter
+              types={validationTypes}
+              hiddenTypes={hiddenValidationTypes}
+              onVisibilityChange={onValidationTypeVisibilityChange}
+              onShowAll={onShowAllValidationTypes}
+              onHideAll={onHideAllValidationTypes}
+            />
+          ) : null}
+          {canRunValidation ? (
+            <div className="report-validation-actions">
+              <button
+                type="button"
+                disabled={validationRunState === "running"}
+                onClick={() => setValidationDialogOpen(true)}
+              >
+                {validationRunState === "running" ? (
+                  <LoaderCircle className="is-spinning" aria-hidden="true" size={17} />
+                ) : (
+                  <ClipboardCheck aria-hidden="true" size={17} />
+                )}
+                <span>
+                  {validationRunState === "running"
+                    ? "검수 진행 중"
+                    : summary.validation_scope === "none"
+                      ? "검수 진행"
+                      : "검수 다시 진행"}
+                </span>
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       {isTestReport ? (
         <div className="test-report-notice">
           <strong>원장 기반 테스트 생성</strong>
           <span>검수는 실행하지 않았으며, 생성하지 못한 표도 기준 레이아웃과 문제를 표시합니다.</span>
         </div>
-      ) : summary.validation_scope === "none" ? (
-        <div className="test-report-notice update-scope-notice">
-          <strong>
-            {summary.origin_kind === "ledger_generated"
-              ? "원장 기반 연보 생성"
-              : "연보 업로드 완료"}
-          </strong>
-          <span>연보 데이터만 저장된 상태입니다. 위의 검수 진행 버튼에서 항목을 선택해 실행하세요.</span>
-        </div>
-      ) : summary.validation_scope === "shared" ? (
-        <>
-          <div className="test-report-notice update-scope-notice">
-            <strong>동일 표 검수 결과 공유</strong>
-            <span>
-              {summary.reused_report_count ?? 0}개 연보에서 동일한
-              {" "}{summary.reused_table_count ?? 0}개 표의 검수 결과
-              {" "}{summary.reused_check_count ?? 0}건을 재사용했습니다.
-            </span>
-          </div>
-          <ValidationTypeFilter
-            types={validationTypes}
-            hiddenTypes={hiddenValidationTypes}
-            onVisibilityChange={onValidationTypeVisibilityChange}
-            onShowAll={onShowAllValidationTypes}
-            onHideAll={onHideAllValidationTypes}
-          />
-        </>
-      ) : summary.validation_scope === "selected" ? (
-        <>
-          <div className="test-report-notice update-scope-notice">
-            <strong>선택 항목 검수 완료</strong>
-            <span>{summary.selected_validation_keys?.length ?? 0}개 검수 항목을 실행했습니다.</span>
-          </div>
-          <ValidationTypeFilter
-            types={validationTypes}
-            hiddenTypes={hiddenValidationTypes}
-            onVisibilityChange={onValidationTypeVisibilityChange}
-            onShowAll={onShowAllValidationTypes}
-            onHideAll={onHideAllValidationTypes}
-          />
-        </>
-      ) : summary.validation_scope === "changed_tables" ? (
-        <>
-          <div className="test-report-notice update-scope-notice">
-            <strong>변경 표 부분 검수</strong>
-            <span>
-              변경·신규 {summary.changed_table_count ?? 0}개 표만 새로 검수하고,
-              동일한 {summary.unchanged_table_count ?? 0}개 표는 기존 검수 결과를 재사용했습니다.
-            </span>
-          </div>
-          <ValidationTypeFilter
-            types={validationTypes}
-            hiddenTypes={hiddenValidationTypes}
-            onVisibilityChange={onValidationTypeVisibilityChange}
-            onShowAll={onShowAllValidationTypes}
-            onHideAll={onHideAllValidationTypes}
-          />
-        </>
-      ) : (
-        <ValidationTypeFilter
-          types={validationTypes}
-          hiddenTypes={hiddenValidationTypes}
-          onVisibilityChange={onValidationTypeVisibilityChange}
-          onShowAll={onShowAllValidationTypes}
-          onHideAll={onHideAllValidationTypes}
-        />
-      )}
+      ) : null}
 
       {validationDialogOpen && selectedReport ? (
         <ValidationRunDialog
@@ -282,6 +270,13 @@ export function ReportSummaryPanel({
           state={validationRunState}
           onClose={() => setValidationDialogOpen(false)}
           onRun={onRunValidation}
+        />
+      ) : null}
+      {downloadDialogOpen ? (
+        <ReportWorkbookDownloadDialog
+          reports={downloadReports}
+          selectedReportId={selectedReportId}
+          onClose={() => setDownloadDialogOpen(false)}
         />
       ) : null}
 

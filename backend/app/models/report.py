@@ -52,7 +52,7 @@ class ValidationIssue(BaseModel):
     current_value: str
     expected_value: str | None = None
     difference: str | None = None
-    status: ValidationStatus = ValidationStatus.NEEDS_REVIEW
+    status: ValidationStatus | str = ValidationStatus.NEEDS_REVIEW
     severity: Severity = Severity.WARNING
     detail: str
     formula: str | None = None
@@ -131,6 +131,7 @@ class StatTablePart(BaseModel):
     generation_message: str = ""
     update_mode: str = ""
     source_dataset_title: str = ""
+    validation_stale: bool = False
 
 
 class StatTable(BaseModel):
@@ -165,6 +166,7 @@ class StatTable(BaseModel):
     generation_message: str = ""
     update_mode: str = ""
     source_dataset_title: str = ""
+    validation_stale: bool = False
 
 
 class StatTableSummary(BaseModel):
@@ -189,6 +191,15 @@ class StatTableSummary(BaseModel):
     generation_message: str = ""
     update_mode: str = ""
     source_dataset_title: str = ""
+    validation_stale: bool = False
+
+
+class TableDownloadCatalogItem(BaseModel):
+    """Minimal table identity used when choosing an Excel download."""
+
+    id: str
+    code: str
+    title: str
 
 
 class ReportSummary(BaseModel):

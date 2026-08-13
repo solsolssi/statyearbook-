@@ -143,8 +143,8 @@ class LLMTranslationReviewTest(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(str(rows[0]["rule_id"]), "llm.translation_review")
             self.assertEqual(str(rows[0]["check_type"]), "번역 검수")
-            self.assertEqual(str(rows[0]["expected_value"]), "언어 검수 대기")
-            self.assertEqual(str(rows[0]["status"]), "확인 필요")
+            self.assertEqual(str(rows[0]["expected_value"]), "재검수 필요")
+            self.assertEqual(str(rows[0]["status"]), "재검수 필요")
             self.assertEqual(str(rows[0]["severity"]), "warning")
 
     def test_reconciliation_keeps_only_actionable_language_findings(self) -> None:

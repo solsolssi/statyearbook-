@@ -281,6 +281,7 @@ class YearbookReproductionService:
             """
             SELECT id, year, title, is_archived
             FROM annual_reports
+            WHERE COALESCE(origin_kind, 'uploaded') != 'ledger_generated'
             ORDER BY year, is_archived, id DESC
             """
         ).fetchall()
@@ -443,28 +444,30 @@ def analyze_table(
     recipe: RecipeDefinition | None,
 ) -> ReproductionTableAnalysis:
     period_rule, materializer = infer_period_rule(table, target_year)
-    if recipe is not None and recipe.status == "approved":
+    if recipe is not None and recipe.source_dataset_ids:
         configured_target = str(recipe.config.get("target_period") or "")
         if configured_target:
             period_rule = period_rule.model_copy(
                 update={
                     "target_period": configured_target,
-                    "anchor": "user_confirmed",
+                    "anchor": (
+                        "user_confirmed"
+                        if recipe.status == "approved"
+                        else "source_external_id"
+                    ),
                 }
             )
     table_target_year = int(period_rule.target_period)
     table_title = str(table.row["title"])
-    if recipe is not None and recipe.status == "approved":
+    if recipe is not None and recipe.source_dataset_ids:
         confirmed_sources = [
             source
             for source in sources
             if int(source.row["id"]) in recipe.source_dataset_ids
         ]
-        # A confirmed source binding without an explicitly fixed period is an
-        # annual binding.  The predecessor table can still print last year's
-        # period, but a supplied increment for the requested target year must
-        # be considered before declaring the recipe missing.  Fixed-history
-        # recipes retain their explicit ``target_period`` above.
+        # A stored source binding is the table-to-increment key. The table
+        # title can change between years, so source ids must be considered
+        # before any title-based inference.
         if not str(recipe.config.get("target_period") or ""):
             requested_candidates = [
                 candidate_projection(
@@ -505,15 +508,14 @@ def analyze_table(
             and (is_copy or has_required_data)
         )
         source_titles = [str(source.row["title"]) for source in confirmed_sources]
-        reason = (
-            "사용자가 확정한 원장 연결입니다."
-            if basic_recipe
-            else (
-                "사용자가 원장 연결을 확정했지만 표시 기준기간의 원장값이 없습니다."
-                if selected is not None
-                else "사용자가 확정한 원장 연결 정보를 찾지 못했습니다."
-            )
-        )
+        if basic_recipe and recipe.status == "approved":
+            reason = "사용자가 확정한 원장 연결입니다."
+        elif basic_recipe:
+            reason = "표에 저장된 원장 번호로 증분 통계를 연결했습니다."
+        elif selected is not None:
+            reason = "표에 저장된 원장 번호는 있으나 표시 기준기간의 증분값이 없습니다."
+        else:
+            reason = "표에 저장된 원장 번호와 일치하는 증분 통계를 찾지 못했습니다."
         return ReproductionTableAnalysis(
             table_id=int(table.row["id"]),
             code=str(table.row["code"]),
@@ -525,7 +527,11 @@ def analyze_table(
             source_dataset_id=selected.dataset_id if selected is not None else None,
             source_external_id=selected.external_id if selected is not None else "",
             source_title=", ".join(source_titles),
-            match_method="user_confirmed",
+            match_method=(
+                "user_confirmed"
+                if recipe.status == "approved"
+                else "source_external_id"
+            ),
             confidence=1.0,
             reason=reason,
             period_rule=period_rule,

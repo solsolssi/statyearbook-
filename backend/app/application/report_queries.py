@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from app.models.report import ReportOverviewPayload, ReportPayload, StatTable
+from app.models.report import (
+    ReportOverviewPayload,
+    ReportPayload,
+    StatTable,
+    TableDownloadCatalogItem,
+)
 from app.services.database_report_service import DatabaseReportService
 
 
@@ -19,6 +24,8 @@ class ReportQueryService:
     def list_tables(self, report_id: int | None = None) -> list[StatTable]:
         return self._repository.list_tables(report_id)
 
+    def download_catalog(self, report_id: int) -> list[TableDownloadCatalogItem]:
+        return self._repository.list_download_catalog(report_id)
+
     def table_detail(self, table_id: str, report_id: int | None = None) -> StatTable | None:
         return self._repository.get_table(table_id, report_id)
-

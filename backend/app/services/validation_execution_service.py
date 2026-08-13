@@ -69,6 +69,10 @@ class ValidationExecutionService:
             and selected_source is not None
             and int(selected_source["report_id"]) == report_id
             and run_rule_keys(selected_source) == rule_keys
+            and not self._report_has_edits_since_run(
+                report_id=report_id,
+                run_id=int(selected_source["id"]),
+            )
         ):
             if include_llm and self._has_pending_language_reviews(
                 int(selected_source["id"]),
@@ -197,9 +201,38 @@ class ValidationExecutionService:
                 (report_id,),
             ).fetchall()
             for row in rows:
-                if run_rule_keys(row) == selected_rule_keys:
+                if (
+                    run_rule_keys(row) == selected_rule_keys
+                    and not self._report_has_edits_since_run(
+                        report_id=report_id,
+                        run_id=int(row["id"]),
+                    )
+                ):
                     return row
         return None
+
+    def _report_has_edits_since_run(self, *, report_id: int, run_id: int) -> bool:
+        """Whether any table's current content is newer than ``run_id``.
+
+        Validation results point to a mutable table row rather than a table
+        snapshot.  Therefore an earlier run from the *same* report can only be
+        returned or reused when no table was edited after that run.
+        """
+
+        with connect(self._db_path) as connection:
+            init_db(connection)
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM stat_tables
+                WHERE report_id = ?
+                  AND edited_after_run_id IS NOT NULL
+                  AND edited_after_run_id >= ?
+                LIMIT 1
+                """,
+                (report_id, run_id),
+            ).fetchone()
+        return row is not None
 
     def _reusable_tables(
         self,
@@ -237,6 +270,14 @@ class ValidationExecutionService:
                 for code, target in target_tables.items():
                     target_id = int(target["id"])
                     if target_id in resolved:
+                        continue
+                    # A prior run of the same report refers to these same
+                    # mutable rows.  Do not copy its result if this table was
+                    # edited after that run; it must be evaluated locally.
+                    if (
+                        candidate_report_id == report_id
+                        and table_has_edits_since_run(target, int(run["id"]))
+                    ):
                         continue
                     source = candidate_tables.get(code)
                     if source is None:
@@ -302,7 +343,7 @@ class ValidationExecutionService:
                         run_id,
                         table_id,
                         MAX(CASE WHEN status = '오류 의심' THEN 1 ELSE 0 END) AS has_error,
-                        MAX(CASE WHEN status = '확인 필요' THEN 1 ELSE 0 END) AS has_warning
+                        MAX(CASE WHEN status IN ('확인 필요', '재검수 필요') THEN 1 ELSE 0 END) AS has_warning
                     FROM validation_checks
                     GROUP BY run_id, table_id
                 ),
@@ -588,6 +629,14 @@ def latest_compatible_run(
         if requested.issubset(run_rule_keys(row)):
             return row
     return None
+
+
+def table_has_edits_since_run(table: DatabaseRow, run_id: int) -> bool:
+    edited_after_run_id = table["edited_after_run_id"]
+    return (
+        edited_after_run_id is not None
+        and run_id <= int(edited_after_run_id)
+    )
 
 
 def unique_reusable_run_rows(

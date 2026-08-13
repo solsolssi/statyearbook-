@@ -105,4 +105,29 @@ describe("validation visibility baseline", () => {
     expect(visible.checks.map((check) => check.type)).toEqual(["합계 검수"]);
     expect(visible.status).toBe("normal");
   });
+
+  it("keeps manually edited tables in the review queue until validation runs again", () => {
+    const source = {
+      ...table([issue("합계 검수", "오류 의심", "critical")]),
+      validation_stale: true,
+    };
+    const [visible] = tablesWithValidationVisibility(
+      [source],
+      DEFAULT_HIDDEN_VALIDATION_TYPES,
+    );
+
+    expect(visible.status).toBe("needs_review");
+    expect(visible.status_label).toBe("재검수 필요");
+    expect(visible.checks.map((check) => check.type)).toEqual(["합계 검수"]);
+  });
+
+  it("labels pending language checks as revalidation work", () => {
+    const source = table([
+      issue("번역 검수", "재검수 필요", "warning"),
+    ]);
+    const [visible] = tablesWithValidationVisibility([source], new Set());
+
+    expect(visible.status).toBe("needs_review");
+    expect(visible.status_label).toBe("재검수 필요");
+  });
 });

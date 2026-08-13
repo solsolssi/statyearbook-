@@ -233,11 +233,11 @@ def synchronize_blue_review_checks(db_path: Path, *, run_id: int) -> int:
                     continue
 
                 pending_labels = "·".join(unique_nonempty(pending_types))
-                expected_value = "언어 검수 대기"
-                difference = f"{pending_labels} 대기"
+                expected_value = "재검수 필요"
+                difference = f"{pending_labels} 재검수 필요"
                 detail = (
                     "HWPX 원문에서 파란색으로 표시된 검수 대상입니다. "
-                    f"{pending_labels} 결과가 아직 생성되지 않았습니다."
+                    f"{pending_labels} 결과가 아직 생성되지 않아 재검수 필요로 남았습니다."
                 )
                 save_validation_result(
                     connection,
@@ -253,7 +253,7 @@ def synchronize_blue_review_checks(db_path: Path, *, run_id: int) -> int:
                         current_value=str(current_value),
                         expected_value=expected_value,
                         difference=difference,
-                        status=ValidationStatus.NEEDS_REVIEW,
+                        status="재검수 필요",
                         severity=Severity.WARNING,
                         detail=detail,
                         confidence=0.78,

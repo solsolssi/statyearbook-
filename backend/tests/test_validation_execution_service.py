@@ -288,6 +288,80 @@ class ValidationExecutionServiceTest(unittest.TestCase):
             )
             self.assertEqual(exact_result["run_id"], source_run)
 
+    def test_same_report_revalidates_only_table_edited_after_selected_run(self) -> None:
+        """An edit must not copy a prior result from the same mutable row."""
+
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                with connection:
+                    report_id = insert_report(connection, year=2026, title="테스트 연보")
+                    unchanged_table = insert_table(
+                        connection,
+                        report_id=report_id,
+                        code="1-1-1",
+                        values=("구분", "합계", "계", "3"),
+                    )
+                    edited_table = insert_table(
+                        connection,
+                        report_id=report_id,
+                        code="1-1-2",
+                        values=("구분", "합계", "계", "4"),
+                    )
+                    source_run = int(connection.execute(
+                        """
+                        INSERT INTO validation_runs (
+                            report_id, rules_version, started_at, completed_at,
+                            selected_rules_json
+                        ) VALUES (?, 'test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
+                        """,
+                        (report_id, json.dumps(["sum"])),
+                    ).lastrowid)
+                    insert_check(
+                        connection,
+                        run_id=source_run,
+                        table_id=unchanged_table,
+                        check_type="합계 검수",
+                    )
+                    insert_check(
+                        connection,
+                        run_id=source_run,
+                        table_id=edited_table,
+                        check_type="합계 검수",
+                    )
+                    connection.execute(
+                        """
+                        UPDATE stat_tables
+                        SET edited_after_run_id = ?
+                        WHERE id = ?
+                        """,
+                        (source_run, edited_table),
+                    )
+
+            result = ValidationExecutionService(db_path).run(
+                report_id=report_id,
+                selected_rule_keys=["sum"],
+                reuse_existing=True,
+                source_validation_run_id=source_run,
+            )
+
+            self.assertNotEqual(result["run_id"], source_run)
+            self.assertEqual(result["reused_report_count"], 1)
+            self.assertEqual(result["reused_table_count"], 1)
+            with connect(db_path) as connection:
+                copied = connection.execute(
+                    """
+                    SELECT t.code
+                    FROM validation_checks c
+                    JOIN stat_tables t ON t.id = c.table_id
+                    WHERE c.run_id = ? AND c.rule_id = 'test.합계 검수'
+                    ORDER BY t.code
+                    """,
+                    (result["run_id"],),
+                ).fetchall()
+            self.assertEqual([str(row["code"]) for row in copied], ["1-1-1"])
+
     def test_reusable_run_counts_pending_language_without_multiplying_rows(self) -> None:
         with TemporaryDirectory() as directory:
             db_path = Path(directory) / "report.sqlite"
@@ -333,7 +407,6 @@ class ValidationExecutionServiceTest(unittest.TestCase):
             self.assertEqual(reusable_runs[0]["normal_count"], 0)
             self.assertEqual(reusable_runs[0]["needs_review_count"], 1)
             self.assertEqual(reusable_runs[0]["suspected_error_count"], 0)
-
 
 def insert_report(
     connection,

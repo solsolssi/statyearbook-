@@ -21,6 +21,7 @@ LASTROWID_TABLES = {
     "yearbook_reproduction_runs",
     "yearbook_reproduction_table_results",
     "yearbook_reproduction_cell_results",
+    "yearbook_manual_edits",
 }
 
 

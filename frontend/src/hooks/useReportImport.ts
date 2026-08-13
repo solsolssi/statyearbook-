@@ -28,6 +28,8 @@ export type UploadSubmission =
 
 export type UploadState = "idle" | "uploading" | "error";
 
+const TEST_REPORT_ID = -1;
+
 export function useReportImport(onCompleted: (job: ReportImportJob) => void) {
   const [uploadState, setUploadState] = useState<UploadState>("idle");
 
@@ -72,7 +74,7 @@ export function useReportImport(onCompleted: (job: ReportImportJob) => void) {
           );
           onCompleted({
             id: 0,
-            report_id: result.generated_report_id,
+            report_id: TEST_REPORT_ID,
             run_id: null,
             source_file_name: "통계 원장 엑셀",
             status: "completed",

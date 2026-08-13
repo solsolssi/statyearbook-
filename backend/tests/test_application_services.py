@@ -18,17 +18,20 @@ class ReportQueryServiceTest(unittest.TestCase):
         repository.get_overview_for_report.return_value = object()
         repository.get_payload_for_report.return_value = object()
         repository.list_tables.return_value = []
+        repository.list_download_catalog.return_value = []
         repository.get_table.return_value = None
         service = ReportQueryService(repository)
 
         self.assertIs(service.overview(2026), repository.get_overview_for_report.return_value)
         self.assertIs(service.legacy_payload(2025), repository.get_payload_for_report.return_value)
         self.assertEqual(service.list_tables(2026), [])
+        self.assertEqual(service.download_catalog(2026), [])
         self.assertIsNone(service.table_detail("1-1-1-1", 2026))
 
         repository.get_overview_for_report.assert_called_once_with(2026)
         repository.get_payload_for_report.assert_called_once_with(2025)
         repository.list_tables.assert_called_once_with(2026)
+        repository.list_download_catalog.assert_called_once_with(2026)
         repository.get_table.assert_called_once_with("1-1-1-1", 2026)
 
     def test_overview_projection_cannot_contain_source_cells(self) -> None:
@@ -41,6 +44,80 @@ class ReportQueryServiceTest(unittest.TestCase):
 
 
 class ReportDeleteTest(unittest.TestCase):
+    def test_list_reports_hides_internal_ledger_generated_snapshots(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                insert_report(connection, title="게시 연보")
+                insert_report(
+                    connection,
+                    title="원장 생성 내부 스냅샷",
+                    file_hash="ledger-hash",
+                    origin_kind="ledger_generated",
+                )
+
+            reports = DatabaseReportService(db_path).list_reports()
+
+            self.assertEqual([report["title"] for report in reports], ["게시 연보"])
+
+    def test_default_overview_does_not_open_internal_ledger_generated_snapshot(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                published_id = insert_report(connection, title="게시 연보")
+                insert_report(
+                    connection,
+                    title="증분업로드",
+                    file_hash="ledger-hash",
+                    origin_kind="ledger_generated",
+                )
+
+            overview = DatabaseReportService(db_path).get_overview_for_report()
+
+            self.assertEqual(overview.summary.report_id, published_id)
+            self.assertEqual(overview.summary.file_name, "source.xlsx")
+
+    def test_download_catalog_returns_logical_table_ids_without_table_cells(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                report_id = insert_report(connection, title="게시 연보")
+                first_id = insert_table(connection, report_id)
+                connection.execute(
+                    "UPDATE stat_tables SET code = '2-2-6 표1', title = '연결 현황 표1' WHERE id = ?",
+                    (first_id,),
+                )
+                second_id = insert_table(connection, report_id)
+                connection.execute(
+                    "UPDATE stat_tables SET code = '2-2-6 표2', title = '연결 현황 표2' WHERE id = ?",
+                    (second_id,),
+                )
+
+            catalog = DatabaseReportService(db_path).list_download_catalog(report_id)
+
+            self.assertEqual(len(catalog), 1)
+            self.assertEqual(catalog[0].id, "group-2-2-6")
+            self.assertEqual(catalog[0].code, "2-2-6")
+            self.assertEqual(catalog[0].title, "연결 현황")
+
+    def test_download_catalog_uses_detail_api_id_for_single_table(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                report_id = insert_report(connection, title="게시 연보")
+                table_id = insert_table(connection, report_id)
+
+            catalog = DatabaseReportService(db_path).list_download_catalog(report_id)
+
+            self.assertEqual(catalog[0].id, f"db-{table_id}")
+            self.assertIsNotNone(
+                DatabaseReportService(db_path).get_table(catalog[0].id, report_id)
+            )
+
     def test_delete_report_removes_uploaded_snapshot_data(self) -> None:
         with TemporaryDirectory() as directory:
             db_path = Path(directory) / "report.sqlite"
@@ -129,15 +206,16 @@ def insert_report(
     is_archived: int = 0,
     is_template: int = 0,
     base_report_id: int | None = None,
+    origin_kind: str = "uploaded",
 ) -> int:
     cursor = connection.execute(
         """
         INSERT INTO annual_reports (
             year, title, source_file_name, source_file_path, file_hash,
-            imported_at, is_archived, is_template, base_report_id
-        ) VALUES (2027, ?, 'source.xlsx', '/tmp/source.xlsx', ?, CURRENT_TIMESTAMP, ?, ?, ?)
+            imported_at, is_archived, is_template, base_report_id, origin_kind
+        ) VALUES (2027, ?, 'source.xlsx', '/tmp/source.xlsx', ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
         """,
-        (title, file_hash, is_archived, is_template, base_report_id),
+        (title, file_hash, is_archived, is_template, base_report_id, origin_kind),
     )
     return int(cursor.lastrowid)
 

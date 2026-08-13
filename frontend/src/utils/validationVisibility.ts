@@ -26,7 +26,7 @@ export function validationTypesForTables(
   tables: ValidationTableLike[],
   preferredOrder: readonly string[] = VALIDATION_CHECK_TYPES,
 ) {
-  const discovered = new Set(
+  const discovered = new Set<string>(
     preferredOrder.filter((type) => !INTERNAL_VALIDATION_TYPES.has(type)),
   );
   for (const table of tables) {
@@ -53,6 +53,10 @@ function statusFromChecks(checks: ValidationIssue[]): { status: TableStatus; sta
     return { status: "suspected_error", status_label: "오류 의심" };
   }
 
+  if (activeChecks.some((check) => check.status === "재검수 필요")) {
+    return { status: "needs_review", status_label: "재검수 필요" };
+  }
+
   if (activeChecks.length > 0) {
     return { status: "needs_review", status_label: "확인 필요" };
   }
@@ -64,6 +68,14 @@ function partWithVisibleChecks(part: StatTablePart, hiddenTypes: ReadonlySet<str
   const checks = visibleChecks(part.checks, hiddenTypes);
   if (part.is_test_table) {
     return { ...part, checks };
+  }
+  if (part.validation_stale) {
+    return {
+      ...part,
+      checks,
+      status: "needs_review",
+      status_label: "재검수 필요",
+    };
   }
   const status = statusFromChecks(checks);
 
@@ -87,6 +99,21 @@ export function tablesWithValidationVisibility<T extends ValidationTableLike>(
         ...("parts" in table
           ? { parts: table.parts.map((part) => partWithVisibleChecks(part, hiddenTypes)) }
           : {}),
+      } as T;
+    }
+    // A manual change invalidates the prior validation result.  This must
+    // take precedence over recalculating status from the now-stale checks;
+    // otherwise fixing a previously failing cell would misleadingly show
+    // the table as normal before validation runs again.
+    if (table.validation_stale) {
+      return {
+        ...table,
+        checks,
+        ...("parts" in table
+          ? { parts: table.parts.map((part) => partWithVisibleChecks(part, hiddenTypes)) }
+          : {}),
+        status: "needs_review",
+        status_label: "재검수 필요",
       } as T;
     }
     const status = statusFromChecks(checks);

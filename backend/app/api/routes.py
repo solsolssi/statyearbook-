@@ -6,6 +6,7 @@ from fastapi import (
     APIRouter,
     BackgroundTasks,
     File,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -20,6 +21,7 @@ from app.models.report import (
     ReportPayload,
     ReportProcessingJob,
     StatTable,
+    TableDownloadCatalogItem,
     ValidationProfileApprovalRequest,
     ValidationProfileSummary,
     ValidationCatalogItem,
@@ -37,6 +39,13 @@ from app.models.yearbook_reproduction import (
     YearbookReproductionOverview,
 )
 from app.models.report_updates import ReportComparisonSummary
+from app.models.yearbook_edits import (
+    TableContentUpdateRequest,
+    ReportEditAccess,
+    ReportEditAuthenticationRequest,
+    ReportEditPasswordRequest,
+    TableEditSession,
+)
 from app.application.imports import ReportImportApplicationService
 from app.application.report_queries import ReportQueryService
 from app.application.validation_operations import ValidationApplicationService
@@ -53,6 +62,11 @@ from app.services.yearbook_reproduction_build_service import (
 )
 from app.services.ledger_yearbook_service import LedgerYearbookService
 from app.services.report_update_service import ReportComparisonService
+from app.services.yearbook_edit_service import (
+    YearbookEditAuthenticationError,
+    YearbookEditError,
+    YearbookEditService,
+)
 from app.yearbook_data.relational_import import RelationalSourceDataImporter
 from app.yearbook_data.relational_import import FULL_INFO_COLUMNS, tabular_rows
 from app.workflows.report_processing import (
@@ -230,12 +244,100 @@ def list_tables(report_id: int | None = Query(default=None)) -> list[StatTable]:
     return ReportQueryService(get_report_service()).list_tables(report_id)
 
 
+@router.get(
+    "/reports/{report_id}/table-download-catalog",
+    response_model=list[TableDownloadCatalogItem],
+)
+def get_table_download_catalog(report_id: int) -> list[TableDownloadCatalogItem]:
+    return ReportQueryService(get_report_service()).download_catalog(report_id)
+
+
 @router.get("/tables/{table_id}", response_model=StatTable)
 def get_table(table_id: str, report_id: int | None = Query(default=None)) -> StatTable:
     table = ReportQueryService(get_report_service()).table_detail(table_id, report_id)
     if table is None:
         raise HTTPException(status_code=404, detail="Table not found")
     return table
+
+
+@router.get(
+    "/reports/{report_id}/edit-access",
+    response_model=ReportEditAccess,
+)
+def get_report_edit_access(report_id: int) -> ReportEditAccess:
+    try:
+        return YearbookEditService().get_access(report_id)
+    except YearbookEditError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.put(
+    "/reports/{report_id}/tables/{table_id}/edit-password",
+    response_model=ReportEditAccess,
+)
+def set_report_edit_password(
+    report_id: int,
+    table_id: str,
+    payload: ReportEditPasswordRequest,
+) -> ReportEditAccess:
+    try:
+        return YearbookEditService().set_password(
+            report_id=report_id,
+            table_id=table_id,
+            new_password=payload.new_password,
+            current_password=payload.current_password,
+        )
+    except YearbookEditAuthenticationError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
+    except YearbookEditError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post(
+    "/reports/{report_id}/tables/{table_id}/edit-session",
+    response_model=TableEditSession,
+)
+def authenticate_table_edit(
+    report_id: int,
+    table_id: str,
+    payload: ReportEditAuthenticationRequest,
+) -> TableEditSession:
+    try:
+        return YearbookEditService().authenticate(
+            report_id=report_id,
+            table_id=table_id,
+            password=payload.password,
+        )
+    except YearbookEditAuthenticationError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
+    except YearbookEditError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.put(
+    "/reports/{report_id}/tables/{table_id}",
+    response_model=StatTable,
+)
+def update_table_content(
+    report_id: int,
+    table_id: str,
+    payload: TableContentUpdateRequest,
+    authorization: str | None = Header(default=None),
+) -> StatTable:
+    scheme, _, access_token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not access_token:
+        raise HTTPException(status_code=401, detail="수정 비밀번호 인증이 필요합니다.")
+    try:
+        return YearbookEditService().update_table(
+            report_id=report_id,
+            table_id=table_id,
+            access_token=access_token,
+            payload=payload,
+        )
+    except YearbookEditAuthenticationError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
+    except YearbookEditError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @router.post("/validation/run", response_model=ValidationRunResult)

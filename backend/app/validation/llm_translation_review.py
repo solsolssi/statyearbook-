@@ -94,7 +94,7 @@ DEFAULT_BIZROUTER_MODEL = "openai/gpt-5-mini"
 LLM_TRANSLATION_RULE_ID = "llm.translation_review"
 LLM_SPELLING_RULE_ID = "llm.spelling_review"
 RETIRED_LLM_TERMINOLOGY_RULE_ID = "llm.terminology_review"
-LANGUAGE_PENDING_EXPECTED_VALUE = "언어 검수 대기"
+LANGUAGE_PENDING_EXPECTED_VALUE = "재검수 필요"
 SPELLING_DEFECT_KINDS = {
     "korean_spelling",
     "english_spelling",
@@ -400,12 +400,12 @@ def synchronize_standard_language_pending_checks(
                             str(row["current_value"] or "")
                         ),
                         expected_value=LANGUAGE_PENDING_EXPECTED_VALUE,
-                        difference=f"{review_type} 대기",
-                        status="확인 필요",
+                        difference=f"{review_type} 재검수 필요",
+                        status="재검수 필요",
                         severity="warning",
                         detail=(
-                            "이 후보는 이전 검수 결과로 확정되지 않아 "
-                            "LLM 검수 또는 사용자 확인이 필요합니다."
+                            "이 후보는 LLM 검수를 실행하지 않아 재검수 필요로 남았습니다. "
+                            "LLM 검수를 포함해 다시 실행하면 현재 값 기준으로 판정됩니다."
                         ),
                         confidence=0.0,
                     ),

@@ -278,7 +278,7 @@ export function ValidationRunDialog({
             />
             <span>
               <strong>언어 후보 LLM 자동 판정</strong>
-              <small>선택하지 않으면 오탈자·번역 후보를 담당자 확인 대기로 남깁니다.</small>
+              <small>선택하지 않으면 오탈자·번역 후보를 재검수 필요로 남깁니다.</small>
             </span>
           </label>
         </div>

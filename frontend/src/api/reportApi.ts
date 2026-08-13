@@ -7,6 +7,9 @@ import type {
   SourceStatisticDetail,
   SourceStatisticsOverview,
   StatTable,
+  TableContentUpdatePayload,
+  ReportEditAccess,
+  TableEditSession,
   ValidationCatalogItem,
   ValidationReuseRunOption,
   YearbookReproductionOverview,
@@ -61,6 +64,12 @@ export interface ValidationRunResult {
   reused_report_count: number;
   reused_table_count: number;
   reused_check_count: number;
+}
+
+export interface TableDownloadCatalogItem {
+  id: string;
+  code: string;
+  title: string;
 }
 
 export async function fetchReport(reportId?: string): Promise<ReportPayload> {
@@ -137,6 +146,81 @@ export async function fetchTable(tableId: string, reportId?: string): Promise<St
     apiPath(`/api/tables/${encodeURIComponent(tableId)}`, { report_id: reportId }),
     undefined,
     "통계표 상세 데이터를 불러오지 못했습니다.",
+  );
+}
+
+export async function fetchTableDownloadCatalog(
+  reportId: number,
+): Promise<TableDownloadCatalogItem[]> {
+  return requestJson<TableDownloadCatalogItem[]>(
+    `/api/reports/${reportId}/table-download-catalog`,
+    undefined,
+    "통계 번호 목록을 불러오지 못했습니다.",
+  );
+}
+
+export async function fetchReportEditAccess(
+  reportId: number,
+): Promise<ReportEditAccess> {
+  return requestJson<ReportEditAccess>(
+    `/api/reports/${reportId}/edit-access`,
+    undefined,
+    "수정 비밀번호 설정을 불러오지 못했습니다.",
+  );
+}
+
+export async function saveReportEditPassword(
+  reportId: number,
+  tableId: string,
+  values: { newPassword: string; currentPassword?: string },
+): Promise<ReportEditAccess> {
+  return requestJson<ReportEditAccess>(
+    `/api/reports/${reportId}/tables/${encodeURIComponent(tableId)}/edit-password`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        new_password: values.newPassword,
+        current_password: values.currentPassword || undefined,
+      }),
+    },
+    "수정 비밀번호를 저장하지 못했습니다.",
+  );
+}
+
+export async function authenticateTableEdit(
+  reportId: number,
+  tableId: string,
+  password: string,
+): Promise<TableEditSession> {
+  return requestJson<TableEditSession>(
+    `/api/reports/${reportId}/tables/${encodeURIComponent(tableId)}/edit-session`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    },
+    "수정 비밀번호를 확인하지 못했습니다.",
+  );
+}
+
+export async function updateTableContent(
+  reportId: number,
+  tableId: string,
+  accessToken: string,
+  payload: TableContentUpdatePayload,
+): Promise<StatTable> {
+  return requestJson<StatTable>(
+    `/api/reports/${reportId}/tables/${encodeURIComponent(tableId)}`,
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(payload),
+    },
+    "수정한 연보를 저장하지 못했습니다.",
   );
 }
 

@@ -11,6 +11,8 @@ ESSENTIAL_TABLES = (
     "annual_reports",
     "stat_tables",
     "stat_table_cells",
+    "yearbook_edit_passwords",
+    "yearbook_manual_edits",
     "series_import_batches",
     "statistical_datasets",
     "statistical_dataset_versions",

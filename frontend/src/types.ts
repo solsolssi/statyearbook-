@@ -120,6 +120,7 @@ export interface StatTablePart {
   generation_message?: string;
   update_mode?: string;
   source_dataset_title?: string;
+  validation_stale?: boolean;
 }
 
 export interface StatTable {
@@ -154,6 +155,7 @@ export interface StatTable {
   generation_message?: string;
   update_mode?: string;
   source_dataset_title?: string;
+  validation_stale?: boolean;
 }
 
 export interface StatTableSummary {
@@ -176,6 +178,82 @@ export interface StatTableSummary {
   generation_message?: string;
   update_mode?: string;
   source_dataset_title?: string;
+  validation_stale?: boolean;
+}
+
+export interface StatisticEditAccess {
+  table_id: string;
+  code: string;
+  title: string;
+  source_officer: string;
+  has_password: boolean;
+  is_initial_password: boolean;
+  updated_at: string;
+}
+
+export interface ReportEditAccess {
+  report_id: number;
+  year: number;
+  title: string;
+  statistics: StatisticEditAccess[];
+}
+
+export interface TableEditSession {
+  access_token: string;
+}
+
+export interface EditableColumnPatch {
+  source_col_indexes: number[];
+  label: string;
+  label_en: string;
+  footnote_marker: string;
+}
+
+export interface EditableCellPatch {
+  row_index: number;
+  col_index: number;
+  value: string;
+  value_en: string;
+  footnote_marker: string;
+}
+
+export interface EditableHierarchyPatch {
+  kind: "domain" | "section";
+  original_code: string;
+  code: string;
+  title: string;
+  title_en: string;
+}
+
+export interface EditableTablePartPayload {
+  id: string;
+  code: string;
+  title: string;
+  title_en: string;
+  unit: string;
+  header_count: number;
+  metadata: {
+    base_date: string;
+    note: string;
+    source: string;
+    source_department: string;
+    source_officer: string;
+    source_extension: string;
+    source_reference: string;
+  };
+  columns: EditableColumnPatch[];
+  cells: EditableCellPatch[];
+}
+
+export interface TableContentUpdatePayload {
+  code: string;
+  title: string;
+  title_en: string;
+  section_title: string;
+  section_title_en: string;
+  domain: string;
+  hierarchy_patches: EditableHierarchyPatch[];
+  parts: EditableTablePartPayload[];
 }
 
 export interface ReportSummary {

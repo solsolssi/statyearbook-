@@ -77,6 +77,44 @@ ON stat_tables(report_id, table_order);
 CREATE INDEX IF NOT EXISTS idx_stat_table_cells_table_position
 ON stat_table_cells(table_id, row_index, col_index);
 
+CREATE TABLE IF NOT EXISTS yearbook_edit_passwords (
+    report_id INTEGER NOT NULL,
+    table_key TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
+    password_iterations INTEGER NOT NULL,
+    is_initial INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (report_id, table_key),
+    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS yearbook_edit_sessions (
+    token_hash TEXT PRIMARY KEY,
+    report_id INTEGER NOT NULL,
+    table_key TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_yearbook_edit_sessions_expiry
+ON yearbook_edit_sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS yearbook_manual_edits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id INTEGER NOT NULL,
+    table_key TEXT NOT NULL,
+    session_token_hash TEXT NOT NULL,
+    changes_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_yearbook_manual_edits_table
+ON yearbook_manual_edits(report_id, table_key, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS report_update_batches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     base_report_id INTEGER NOT NULL,
@@ -834,6 +872,13 @@ def ensure_schema_columns(connection: DatabaseConnection) -> None:
     ensure_column(connection, "stat_table_cells", "text_color", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "stat_table_cells", "parse_warnings_json", "TEXT NOT NULL DEFAULT '[]'")
     ensure_column(connection, "stat_tables", "parse_warnings_json", "TEXT NOT NULL DEFAULT '[]'")
+    ensure_column(connection, "stat_tables", "source_department", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "stat_tables", "source_officer", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "stat_tables", "source_extension", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "stat_tables", "source_reference", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "stat_tables", "manually_edited_at", "TEXT")
+    ensure_column(connection, "stat_tables", "edited_after_run_id", "INTEGER")
+    ensure_column(connection, "yearbook_edit_passwords", "is_initial", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(connection, "annual_reports", "parse_warnings_json", "TEXT NOT NULL DEFAULT '[]'")
     ensure_column(connection, "annual_reports", "is_archived", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(connection, "annual_reports", "is_template", "INTEGER NOT NULL DEFAULT 0")

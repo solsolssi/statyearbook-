@@ -22,6 +22,12 @@ export const LINGUISTIC_CHECK_TYPES = new Set([
   "번역 검수",
 ]);
 
+export const REVIEW_REQUIRED_STATUSES = new Set(["확인 필요", "재검수 필요"]);
+
+export function isReviewRequiredStatus(status: string) {
+  return REVIEW_REQUIRED_STATUSES.has(status);
+}
+
 function exactCellGroupKey(check: ValidationIssue) {
   return [
     check.location,
@@ -89,7 +95,11 @@ export function validationDisplayGroupKey(check: ValidationIssue) {
 export function groupedValidationIssueCount(checks: ValidationIssue[], status: string) {
   return new Set(
     checks
-      .filter((check) => check.status === status)
+      .filter((check) =>
+        status === "확인 필요"
+          ? isReviewRequiredStatus(check.status)
+          : check.status === status,
+      )
       .map((check) => validationDisplayGroupKey(check)),
   ).size;
 }

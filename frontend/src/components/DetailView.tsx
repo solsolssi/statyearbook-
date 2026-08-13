@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
-  Download,
   FileCode2,
+  KeyRound,
+  Pencil,
+  X,
 } from "lucide-react";
 
+import { authenticateTableEdit } from "../api/reportApi";
 import type {
   StatTable,
   StatTablePart,
@@ -15,6 +18,7 @@ import type {
 import {
   LINGUISTIC_CHECK_TYPES,
   highlightCellKey,
+  isReviewRequiredStatus,
   relatedCellsForCheck,
   repeatedCalculationGroupKey,
   sortChecksByCalculationHierarchy,
@@ -24,12 +28,13 @@ import {
 import { firstFocusableCheck, resolveIssueLocation } from "../utils/validationLocation";
 import { useValidationSelection } from "../hooks/useValidationSelection";
 import { DataGrid } from "./DataGrid";
+import { DownloadMenu } from "./DownloadMenu";
 import { StatusBadge } from "./StatusBadge";
 import { VisualPanel } from "./VisualPanel";
-import { ValidationTypeFilter } from "./ValidationTypeFilter";
 import { DetailTabs, type DetailTab } from "./detail/DetailTabs";
 import { MetadataGrid } from "./detail/MetadataGrid";
 import { ValidationResultPanel } from "./detail/ValidationResultPanel";
+import { TableEditView } from "./TableEditView";
 
 interface CheckTargetLocation {
   row: string;
@@ -61,6 +66,9 @@ interface DetailViewProps {
   onShowAllValidationTypes: () => void;
   onHideAllValidationTypes: () => void;
   onBack: () => void;
+  reportId?: number;
+  onTableSaved?: (table: StatTable) => void;
+  onOpenPasswordSettings?: () => void;
 }
 
 function shouldExpandCalculationFamily(check: ValidationIssue) {
@@ -71,7 +79,7 @@ function aggregateStatus(checks: ValidationIssue[]) {
   if (checks.some((check) => check.status === "오류 의심")) {
     return { status: "오류 의심", severity: "critical" as const };
   }
-  if (checks.some((check) => check.status === "확인 필요")) {
+  if (checks.some((check) => isReviewRequiredStatus(check.status))) {
     return { status: "확인 필요", severity: "warning" as const };
   }
   return { status: "정상", severity: "info" as const };
@@ -307,7 +315,7 @@ function highlightToneForStatus(status: string): "pass" | "review" | "error" {
   if (status === "오류 의심") {
     return "error";
   }
-  if (status === "확인 필요") {
+  if (isReviewRequiredStatus(status)) {
     return "review";
   }
   return "pass";
@@ -618,8 +626,13 @@ export function DetailView({
   onShowAllValidationTypes,
   onHideAllValidationTypes,
   onBack,
+  reportId,
+  onTableSaved,
+  onOpenPasswordSettings,
 }: DetailViewProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>("checks");
+  const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
+  const [editToken, setEditToken] = useState<string | null>(null);
   const tableParts = useMemo(() => (table.parts.length > 0 ? table.parts : [rootTableAsPart(table)]), [table]);
   const [activePartId, setActivePartId] = useState<string>(tableParts[0]?.id ?? table.id);
   const activePart = tableParts.find((part) => part.id === activePartId) ?? tableParts[0];
@@ -629,7 +642,7 @@ export function DetailView({
     [activePart.checks, hiddenValidationTypes],
   );
   const passedRawChecks = useMemo(() => allRawChecks.filter((check) => check.status === "정상"), [allRawChecks]);
-  const reviewRawChecks = useMemo(() => allRawChecks.filter((check) => check.status === "확인 필요"), [allRawChecks]);
+  const reviewRawChecks = useMemo(() => allRawChecks.filter((check) => isReviewRequiredStatus(check.status)), [allRawChecks]);
   const errorRawChecks = useMemo(() => allRawChecks.filter((check) => check.status === "오류 의심"), [allRawChecks]);
   const displayChecks = useMemo(() => groupChecksForDisplay(activePart, allRawChecks), [activePart, allRawChecks]);
   const passedChecks = useMemo(() => groupChecksForDisplay(activePart, passedRawChecks), [activePart, passedRawChecks]);
@@ -677,6 +690,21 @@ export function DetailView({
     setActivePartId(tableParts[0]?.id ?? table.id);
   }, [table.id, tableParts]);
 
+  if (editToken && reportId) {
+    return (
+      <TableEditView
+        table={table}
+        reportId={reportId}
+        accessToken={editToken}
+        onCancel={() => setEditToken(null)}
+        onSaved={(updated) => {
+          setEditToken(null);
+          onTableSaved?.(updated);
+        }}
+      />
+    );
+  }
+
   return (
     <main className="detail-view">
       <header className="detail-header">
@@ -699,25 +727,37 @@ export function DetailView({
           </div>
         </div>
         <div className="detail-header__actions">
-          {!table.is_test_table ? (
-            <ValidationTypeFilter
-              types={validationTypes}
-              hiddenTypes={hiddenValidationTypes}
-              align="right"
-              onVisibilityChange={onValidationTypeVisibilityChange}
-              onShowAll={onShowAllValidationTypes}
-              onHideAll={onHideAllValidationTypes}
-            />
-          ) : (
-            <span className="test-report-detail-badge">검수 미실행</span>
-          )}
           <StatusBadge status={table.status} label={table.status_label} />
-          <button className="secondary-button detail-download" type="button">
-            <Download aria-hidden="true" size={16} />
-            <span>다운로드</span>
-          </button>
+          {reportId && !table.is_test_table ? (
+            <button
+              className="secondary-button detail-edit-button"
+              type="button"
+              onClick={() => setPasswordDialogOpen(true)}
+            >
+              <Pencil aria-hidden="true" size={16} />
+              <span>수정</span>
+            </button>
+          ) : null}
+          {table.is_test_table ? (
+            <span className="test-report-detail-badge">검수 미실행</span>
+          ) : null}
+          <DownloadMenu table={table} />
         </div>
       </header>
+
+      {passwordDialogOpen && reportId ? (
+        <EditPasswordDialog
+          reportId={reportId}
+          tableId={table.id}
+          tableTitle={table.title}
+          onClose={() => setPasswordDialogOpen(false)}
+          onAuthenticated={(token) => {
+            setPasswordDialogOpen(false);
+            setEditToken(token);
+          }}
+          onOpenSettings={onOpenPasswordSettings}
+        />
+      ) : null}
 
       <div className="detail-meta-strip">
         <span>
@@ -920,5 +960,92 @@ export function DetailView({
         </section>
       </div>
     </main>
+  );
+}
+
+function EditPasswordDialog({
+  reportId,
+  tableId,
+  tableTitle,
+  onClose,
+  onAuthenticated,
+  onOpenSettings,
+}: {
+  reportId: number;
+  tableId: string;
+  tableTitle: string;
+  onClose: () => void;
+  onAuthenticated: (token: string) => void;
+  onOpenSettings?: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!password || submitting) {
+      return;
+    }
+    setSubmitting(true);
+    setError("");
+    try {
+      const session = await authenticateTableEdit(reportId, tableId, password);
+      onAuthenticated(session.access_token);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "비밀번호를 확인하지 못했습니다.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="upload-dialog-backdrop" role="presentation">
+      <section
+        className="upload-dialog edit-password-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="edit-password-dialog-title"
+      >
+        <div className="upload-dialog__header">
+          <div>
+            <span className="section-label">
+              <KeyRound aria-hidden="true" size={15} />
+              수정 보호
+            </span>
+            <h2 id="edit-password-dialog-title">수정 비밀번호 입력</h2>
+            <p>{tableTitle} 통계에 설정된 비밀번호를 입력해 주세요.</p>
+          </div>
+          <button className="icon-button" type="button" aria-label="닫기" onClick={onClose}>
+            <X aria-hidden="true" size={20} />
+          </button>
+        </div>
+        <form className="edit-password-dialog__form" onSubmit={(event) => void submit(event)}>
+          <label>
+            <span>비밀번호</span>
+            <input
+              autoFocus
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </label>
+          {error ? <p className="form-error">{error}</p> : null}
+          <div className="upload-dialog__footer">
+            {onOpenSettings ? (
+              <button className="text-button" type="button" onClick={onOpenSettings}>
+                비밀번호 설정으로 이동
+              </button>
+            ) : null}
+            <button className="secondary-button" type="button" onClick={onClose}>
+              취소
+            </button>
+            <button className="primary-button" type="submit" disabled={!password || submitting}>
+              {submitting ? "확인 중" : "수정 시작"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }

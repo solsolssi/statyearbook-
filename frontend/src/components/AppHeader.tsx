@@ -17,7 +17,7 @@ import type {
 } from "../types";
 import type { UploadSubmission } from "../hooks/useReportImport";
 
-export type AppSection = "annual" | "source" | "keyStats" | "press";
+export type AppSection = "annual" | "source" | "keyStats" | "editAccess";
 
 interface AppHeaderProps {
   activeSection: AppSection;
@@ -49,7 +49,7 @@ const navItems: Array<{ id: AppSection; label: string }> = [
   { id: "annual", label: "통계 연보" },
   { id: "source", label: "통계 원장" },
   { id: "keyStats", label: "주요통계집" },
-  { id: "press", label: "보도자료" },
+  { id: "editAccess", label: "수정 권한" },
 ];
 
 const uploadModes: UploadModeOption[] = [
@@ -78,6 +78,10 @@ export function AppHeader({
 }: AppHeaderProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [comparisonOpen, setComparisonOpen] = useState(false);
+  const downloadableReports = useMemo(
+    () => availableReports.filter((report) => report.kind !== "test"),
+    [availableReports],
+  );
 
   return (
     <header className="app-header">
@@ -123,7 +127,7 @@ export function AppHeader({
         ) : null}
         {comparisonOpen ? (
           <ReportComparisonDialog
-            reports={availableReports.filter((report) => report.kind !== "test")}
+            reports={downloadableReports}
             onClose={() => setComparisonOpen(false)}
           />
         ) : null}

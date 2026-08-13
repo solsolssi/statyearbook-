@@ -72,6 +72,18 @@ describe("validation grouping baseline", () => {
     expect(validationDisplayGroupKey(item)).toBe("server::canonical-group");
   });
 
+  it("counts revalidation-required checks in the review bucket", () => {
+    const item = check({
+      id: "check-revalidate",
+      type: "번역 검수",
+      status: "재검수 필요",
+      severity: "warning",
+      display_group_key: "pending-language::1",
+    });
+
+    expect(groupedValidationIssueCount([item], "확인 필요")).toBe(1);
+  });
+
   it("keeps target and operand highlights distinct", () => {
     const item = check();
     expect(targetCellForCheck(item)).toEqual({

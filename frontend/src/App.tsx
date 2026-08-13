@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 
 import { AppHeader, type AppSection } from "./components/AppHeader";
 import { DetailView } from "./components/DetailView";
-import { PressPage } from "./components/PressPage";
+import { PasswordSettingsPage } from "./components/PasswordSettingsPage";
 import { ReportWorkspace } from "./components/ReportWorkspace";
 import { SourceStatisticsPage } from "./components/SourceStatisticsPage";
 import { useReport } from "./hooks/useReport";
@@ -153,13 +153,6 @@ export default function App() {
     }
   }
 
-  function handlePressTableOpen(tableId: string) {
-    setSelectedTableId(tableId);
-    void loadSelectedTableDetail(tableId);
-    setActiveSection("annual");
-    setDetailTableId(null);
-  }
-
   function handleReportChange(reportId: string) {
     setSelectedReportId(reportId);
     setSelectedTableId("");
@@ -246,9 +239,11 @@ export default function App() {
   }
 
   if (detailTable) {
+    const detailReportId = report.data?.summary.report_id ?? undefined;
     return (
       <DetailView
         table={detailTable}
+        reportId={detailReportId && detailReportId > 0 ? detailReportId : undefined}
         validationTypes={validationTypes}
         hiddenValidationTypes={hiddenValidationTypes}
         onValidationTypeVisibilityChange={handleValidationTypeVisibility}
@@ -258,6 +253,19 @@ export default function App() {
           setDetailTableId(null);
           setDetailTable(null);
           setDetailStatus("idle");
+        }}
+        onTableSaved={(updated) => {
+          setDetailTable(updated);
+          setDetailTableId(updated.id);
+          setSelectedTableId(updated.id);
+          setSelectedTableDetail(updated);
+          setReportRefreshKey((current) => current + 1);
+        }}
+        onOpenPasswordSettings={() => {
+          setDetailTableId(null);
+          setDetailTable(null);
+          setDetailStatus("idle");
+          setActiveSection("editAccess");
         }}
       />
     );
@@ -298,6 +306,10 @@ export default function App() {
       onTableListScrollTopChange={setTableListScrollTop}
     />
   );
+  const passwordReportId =
+    report.data.summary.report_id && report.data.summary.report_id > 0
+      ? report.data.summary.report_id
+      : report.data.available_reports.find((item) => item.kind !== "test")?.id;
 
   return (
     <main className="app-shell">
@@ -313,11 +325,11 @@ export default function App() {
 
       {activeSection === "annual" || activeSection === "keyStats" ? reportWorkspace : null}
       {activeSection === "source" ? <SourceStatisticsPage /> : null}
-      {activeSection === "press" ? (
-        <PressPage
-          insights={report.data.press_insights}
-          tables={tables}
-          onOpenTable={handlePressTableOpen}
+      {activeSection === "editAccess" && passwordReportId ? (
+        <PasswordSettingsPage
+          reportId={passwordReportId}
+          availableReports={report.data.available_reports}
+          onReportChange={handleReportChange}
         />
       ) : null}
     </main>
