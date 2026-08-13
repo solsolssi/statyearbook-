@@ -25,10 +25,6 @@
   background: #eef6fd;
 }
 
-.edit-password-dialog {
-  width: min(480px, calc(100vw - 32px));
-}
-
 .edit-password-dialog__form,
 .password-setting-form {
   display: grid;
@@ -688,6 +684,42 @@ button {
   line-height: 1.2;
 }
 
+.upload-dialog.edit-password-dialog {
+  gap: 14px;
+  width: min(460px, calc(100vw - 32px));
+  padding: 18px;
+}
+
+.upload-dialog.edit-password-dialog .upload-dialog__header h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.upload-dialog.edit-password-dialog .upload-dialog__header p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.upload-dialog.edit-password-dialog .edit-password-dialog__form {
+  gap: 12px;
+  padding: 0;
+}
+
+.upload-dialog.edit-password-dialog .edit-password-dialog__form input {
+  min-height: 36px;
+  padding: 7px 9px;
+}
+
+.upload-dialog.edit-password-dialog .upload-dialog__footer {
+  gap: 8px;
+}
+
+.upload-dialog.edit-password-dialog .text-button {
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .upload-mode-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1193,22 +1225,6 @@ button {
   width: min(720px, 100%);
 }
 
-.report-workbook-dialog__summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px;
-  background: var(--surface-muted);
-  border: 1px solid var(--line);
-}
-
-.report-workbook-dialog__summary span {
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 900;
-}
-
 .report-workbook-list {
   display: grid;
   gap: 8px;
@@ -1281,6 +1297,13 @@ button {
   font-weight: 800;
 }
 
+.report-workbook-report__selection {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
 .report-workbook-report__tables {
   display: grid;
   gap: 8px;
@@ -1303,28 +1326,11 @@ button {
   text-decoration: underline;
 }
 
-.report-workbook-select-all {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 7px;
-  min-height: 30px;
-  color: #315f8d;
-  font-size: 12px;
-  font-weight: 900;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.report-workbook-select-all input {
-  margin: 0;
-}
-
 .report-workbook-table-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 10px;
 }
 
 .report-workbook-table-actions span {
@@ -1341,6 +1347,14 @@ button {
   border: 1px solid #aac6e0;
   font-size: 12px;
   font-weight: 900;
+}
+
+.report-workbook-table-action-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .report-workbook-table-list {
@@ -1369,17 +1383,25 @@ button {
 }
 
 @media (max-width: 600px) {
-  .report-workbook-dialog__summary,
   .report-workbook-report__header {
     align-items: flex-start;
   }
 
-  .report-workbook-dialog__summary {
+  .report-workbook-table-actions {
+    align-items: flex-start;
     flex-direction: column;
+  }
+
+  .report-workbook-table-action-buttons {
+    justify-content: flex-start;
   }
 
   .report-workbook-report__header {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .report-workbook-report__selection {
+    white-space: normal;
   }
 
   .report-workbook-table-list {
@@ -1627,6 +1649,11 @@ button {
   min-height: 30px;
   min-width: 0;
   color: #425268;
+}
+
+.validation-type-filter__options label.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .validation-type-filter__options input {
@@ -2885,8 +2912,8 @@ button {
   top: calc(100% + 6px);
   right: 0;
   display: grid;
-  min-width: 136px;
-  padding: 6px;
+  min-width: 104px;
+  padding: 4px;
   background: var(--surface);
   border: 1px solid var(--line-strong);
   box-shadow: var(--shadow);
@@ -2895,12 +2922,13 @@ button {
 .download-menu__options button {
   display: flex;
   align-items: center;
-  min-height: 34px;
-  padding: 0 10px;
+  min-height: 28px;
+  padding: 0 8px;
   color: var(--text);
   background: transparent;
   border: 0;
-  font-weight: 850;
+  font-size: 12px;
+  font-weight: 800;
   text-align: left;
 }
 

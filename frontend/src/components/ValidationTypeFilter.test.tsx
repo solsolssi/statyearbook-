@@ -22,4 +22,26 @@ describe("ValidationTypeFilter", () => {
     fireEvent.click(outlier);
     expect(onVisibilityChange).toHaveBeenCalledWith("이상치 검수", true);
   });
+
+  it("keeps optional missing filters visible but disabled", () => {
+    const onVisibilityChange = vi.fn();
+    render(
+      <ValidationTypeFilter
+        types={["합계 검수", "파란색 표기 확인", "재검수 필요"]}
+        hiddenTypes={new Set()}
+        disabledTypes={new Set(["파란색 표기 확인", "재검수 필요"])}
+        onVisibilityChange={onVisibilityChange}
+        onShowAll={vi.fn()}
+        onHideAll={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("1/1")).toBeTruthy();
+    expect((screen.getByLabelText("파란색 표기 확인") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText("재검수 필요") as HTMLInputElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByText("모두 숨기기"));
+    expect(onVisibilityChange).toHaveBeenCalledWith("합계 검수", false);
+    expect(onVisibilityChange).not.toHaveBeenCalledWith("파란색 표기 확인", false);
+  });
 });

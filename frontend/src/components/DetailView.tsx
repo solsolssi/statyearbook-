@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   FileCode2,
-  KeyRound,
   Pencil,
   X,
 } from "lucide-react";
@@ -1009,10 +1008,6 @@ function EditPasswordDialog({
       >
         <div className="upload-dialog__header">
           <div>
-            <span className="section-label">
-              <KeyRound aria-hidden="true" size={15} />
-              수정 보호
-            </span>
             <h2 id="edit-password-dialog-title">수정 비밀번호 입력</h2>
             <p>{tableTitle} 통계에 설정된 비밀번호를 입력해 주세요.</p>
           </div>

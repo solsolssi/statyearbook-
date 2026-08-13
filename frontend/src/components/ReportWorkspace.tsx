@@ -30,9 +30,8 @@ function matchesWorkspaceFilter(
     filter === "all" ||
     table.status === filter ||
     (filter === "has_issues" &&
-      (table.is_test_table
-        ? table.status !== "normal"
-        : table.checks.some((check) => check.status !== "정상")));
+      (table.status !== "normal" ||
+        table.checks.some((check) => check.status !== "정상")));
 
   return hasQueryMatch && hasFilterMatch;
 }
@@ -48,6 +47,7 @@ interface ReportWorkspaceProps {
   query: string;
   filter: FilterValue;
   validationTypes: string[];
+  disabledValidationTypes: ReadonlySet<string>;
   validationCatalog: ValidationCatalogItem[];
   hiddenValidationTypes: ReadonlySet<string>;
   validationRunState: "idle" | "running" | "error";
@@ -82,6 +82,7 @@ export function ReportWorkspace({
   query,
   filter,
   validationTypes,
+  disabledValidationTypes,
   validationCatalog,
   hiddenValidationTypes,
   validationRunState,
@@ -133,6 +134,7 @@ export function ReportWorkspace({
           selectedReportId={selectedReportId || String(summary.report_id ?? "")}
           activeFilter={filter}
           validationTypes={validationTypes}
+          disabledValidationTypes={disabledValidationTypes}
           validationCatalog={validationCatalog}
           hiddenValidationTypes={hiddenValidationTypes}
           validationRunState={validationRunState}

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { StatTable, ValidationIssue } from "../types";
 import {
   DEFAULT_HIDDEN_VALIDATION_TYPES,
+  activeValidationTypesForTables,
   tablesWithValidationVisibility,
   validationTypesForTables,
 } from "./validationVisibility";
@@ -127,6 +128,49 @@ describe("validation visibility baseline", () => {
     ]);
     const [visible] = tablesWithValidationVisibility([source], new Set());
 
+    expect(visible.status).toBe("needs_review");
+    expect(visible.status_label).toBe("재검수 필요");
+    expect(activeValidationTypesForTables([source]).has("재검수 필요")).toBe(true);
+  });
+
+  it("can hide revalidation-required checks from the filtered view", () => {
+    const source = table([
+      issue("번역 검수", "재검수 필요", "warning"),
+      issue("합계 검수", "정상", "info"),
+    ]);
+    const [visible] = tablesWithValidationVisibility([source], new Set(["재검수 필요"]));
+
+    expect(visible.checks.map((check) => check.type)).toEqual(["합계 검수"]);
+    expect(visible.status).toBe("normal");
+    expect(visible.status_label).toBe("정상");
+  });
+
+  it("shows revalidation-required checks even when their original check type is hidden", () => {
+    const source = table([
+      issue("번역 검수", "재검수 필요", "warning"),
+      issue("합계 검수", "정상", "info"),
+    ]);
+    const [visible] = tablesWithValidationVisibility(
+      [source],
+      new Set(["합계 검수", "번역 검수"]),
+    );
+
+    expect(visible.checks.map((check) => check.type)).toEqual(["번역 검수"]);
+    expect(visible.status).toBe("needs_review");
+    expect(visible.status_label).toBe("재검수 필요");
+  });
+
+  it("keeps stale tables visible when only the revalidation-required filter is shown", () => {
+    const source = {
+      ...table([issue("합계 검수", "정상", "info")]),
+      validation_stale: true,
+    };
+    const [visible] = tablesWithValidationVisibility(
+      [source],
+      new Set(["합계 검수", "번역 검수"]),
+    );
+
+    expect(visible.checks).toEqual([]);
     expect(visible.status).toBe("needs_review");
     expect(visible.status_label).toBe("재검수 필요");
   });

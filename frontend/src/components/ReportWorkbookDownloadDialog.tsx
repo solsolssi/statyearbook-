@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 
 import {
@@ -15,14 +15,6 @@ type ReportTableCatalogState =
   | { status: "error"; tables: TableDownloadCatalogItem[]; error: string };
 
 type TableSelectionMode = "all" | "custom";
-
-interface SelectionCheckboxProps {
-  checked: boolean;
-  indeterminate?: boolean;
-  disabled?: boolean;
-  label: string;
-  onChange: () => void;
-}
 
 interface ReportWorkbookDownloadDialogProps {
   reports: ReportOption[];
@@ -120,17 +112,6 @@ export function ReportWorkbookDownloadDialog({
     setSelectedTableIds((current) => ({ ...current, [reportId]: [] }));
   }
 
-  function toggleAllTables(reportId: number) {
-    if (isRunning) {
-      return;
-    }
-    if (tableMode(reportId) === "all") {
-      clearTables(reportId);
-      return;
-    }
-    selectAllTables(reportId);
-  }
-
   function toggleTable(reportId: number, tableId: string, tables: TableDownloadCatalogItem[]) {
     if (isRunning) {
       return;
@@ -221,34 +202,35 @@ export function ReportWorkbookDownloadDialog({
           <p className="comparison-empty">다운로드할 연보가 없습니다.</p>
         ) : (
           <>
-            <div className="report-workbook-dialog__summary">
-              <SelectionCheckbox
-                checked={tableMode(report.id) === "all"}
-                indeterminate={tableMode(report.id) === "custom" && selectedTableCount > 0}
-                disabled={isRunning}
-                label="전체 통계 선택"
-                onChange={() => toggleAllTables(report.id)}
-              />
-              <span>
-                {report.year}년 · 통계 {selectedTableCount.toLocaleString()} / {report.table_count.toLocaleString()}개 선택
-              </span>
-            </div>
-
             <section className="report-workbook-report is-selected">
               <div className="report-workbook-report__header">
                 <span>
                   <strong>{report.title}</strong>
                   <small>{report.year}년 통계 번호를 선택하세요.</small>
                 </span>
+                <strong className="report-workbook-report__selection">
+                  {report.year}년 · 통계 {selectedTableCount.toLocaleString()} / {report.table_count.toLocaleString()}개 선택
+                </strong>
               </div>
               <div className="report-workbook-report__tables">
                 <div className="report-workbook-table-actions">
                   <span>통계 번호 선택</span>
-                  {tableMode(report.id) === "custom" && selectedTableCount > 0 ? (
-                    <button type="button" disabled={isRunning} onClick={() => clearTables(report.id)}>
+                  <div className="report-workbook-table-action-buttons">
+                    <button
+                      type="button"
+                      disabled={isRunning || tableMode(report.id) === "all"}
+                      onClick={() => selectAllTables(report.id)}
+                    >
+                      전체 선택
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isRunning || selectedTableCount === 0}
+                      onClick={() => clearTables(report.id)}
+                    >
                       선택 해제
                     </button>
-                  ) : null}
+                  </div>
                 </div>
 
                 {tableCatalogs[report.id]?.status === "loading" || !tableCatalogs[report.id] ? (
@@ -308,34 +290,5 @@ export function ReportWorkbookDownloadDialog({
         </div>
       </section>
     </div>
-  );
-}
-
-function SelectionCheckbox({
-  checked,
-  indeterminate = false,
-  disabled = false,
-  label,
-  onChange,
-}: SelectionCheckboxProps) {
-  const checkboxRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (checkboxRef.current) {
-      checkboxRef.current.indeterminate = indeterminate;
-    }
-  }, [indeterminate]);
-
-  return (
-    <label className="report-workbook-select-all">
-      <input
-        ref={checkboxRef}
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={onChange}
-      />
-      <span>{label}</span>
-    </label>
   );
 }

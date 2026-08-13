@@ -20,6 +20,7 @@ interface ReportSummaryPanelProps {
   selectedReportId: string;
   activeFilter: TableStatus | "all" | "has_issues";
   validationTypes: string[];
+  disabledValidationTypes: ReadonlySet<string>;
   validationCatalog: ValidationCatalogItem[];
   hiddenValidationTypes: ReadonlySet<string>;
   validationRunState: "idle" | "running" | "error";
@@ -67,6 +68,7 @@ export function ReportSummaryPanel({
   selectedReportId,
   activeFilter,
   validationTypes,
+  disabledValidationTypes,
   validationCatalog,
   hiddenValidationTypes,
   validationRunState,
@@ -225,6 +227,7 @@ export function ReportSummaryPanel({
             <ValidationTypeFilter
               types={validationTypes}
               hiddenTypes={hiddenValidationTypes}
+              disabledTypes={disabledValidationTypes}
               onVisibilityChange={onValidationTypeVisibilityChange}
               onShowAll={onShowAllValidationTypes}
               onHideAll={onHideAllValidationTypes}
@@ -245,9 +248,7 @@ export function ReportSummaryPanel({
                 <span>
                   {validationRunState === "running"
                     ? "검수 진행 중"
-                    : summary.validation_scope === "none"
-                      ? "검수 진행"
-                      : "검수 다시 진행"}
+                    : "검수 진행"}
                 </span>
               </button>
             </div>

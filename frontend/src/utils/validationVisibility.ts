@@ -17,20 +17,53 @@ export const VALIDATION_CHECK_TYPES = [
   "메타정보 검수",
   "이상치 검수",
   "파란색 표기 확인",
+  "재검수 필요",
 ] as const;
 
 export const DEFAULT_HIDDEN_VALIDATION_TYPES = new Set<string>(["이상치 검수"]);
 export const INTERNAL_VALIDATION_TYPES = new Set<string>(["검수 프로파일 확인"]);
+export const REVALIDATION_REQUIRED_FILTER = "재검수 필요";
+export const OPTIONAL_VALIDATION_TYPES = new Set<string>([
+  "파란색 표기 확인",
+  REVALIDATION_REQUIRED_FILTER,
+]);
+
+function allOrderedValidationTypes(preferredOrder: readonly string[]) {
+  const ordered = [...preferredOrder];
+  for (const type of VALIDATION_CHECK_TYPES) {
+    if (!ordered.includes(type)) {
+      ordered.push(type);
+    }
+  }
+  return ordered;
+}
+
+function tableChecks(table: ValidationTableLike): ValidationIssue[] {
+  const partChecks =
+    "parts" in table
+      ? table.parts.flatMap((part) => part.checks)
+      : [];
+  return [...table.checks, ...partChecks];
+}
+
+function tableHasStaleValidation(table: ValidationTableLike) {
+  return Boolean(
+    table.validation_stale ||
+      ("parts" in table && table.parts.some((part) => part.validation_stale)),
+  );
+}
 
 export function validationTypesForTables(
   tables: ValidationTableLike[],
   preferredOrder: readonly string[] = VALIDATION_CHECK_TYPES,
 ) {
   const discovered = new Set<string>(
-    preferredOrder.filter((type) => !INTERNAL_VALIDATION_TYPES.has(type)),
+    allOrderedValidationTypes(preferredOrder).filter(
+      (type) => !INTERNAL_VALIDATION_TYPES.has(type),
+    ),
   );
   for (const table of tables) {
-    for (const check of table.checks) {
+    for (const check of tableChecks(table)) {
       if (INTERNAL_VALIDATION_TYPES.has(check.type)) {
         continue;
       }
@@ -40,9 +73,36 @@ export function validationTypesForTables(
   return Array.from(discovered);
 }
 
+export function activeValidationTypesForTables(tables: ValidationTableLike[]) {
+  const active = new Set<string>();
+  for (const table of tables) {
+    if (tableHasStaleValidation(table)) {
+      active.add(REVALIDATION_REQUIRED_FILTER);
+    }
+    for (const check of tableChecks(table)) {
+      if (INTERNAL_VALIDATION_TYPES.has(check.type)) {
+        continue;
+      }
+      active.add(check.type);
+      if (check.status === REVALIDATION_REQUIRED_FILTER) {
+        active.add(REVALIDATION_REQUIRED_FILTER);
+      }
+    }
+  }
+  return active;
+}
+
 function visibleChecks(checks: ValidationIssue[], hiddenTypes: ReadonlySet<string>) {
   return checks.filter(
-    (check) => !INTERNAL_VALIDATION_TYPES.has(check.type) && !hiddenTypes.has(check.type),
+    (check) => {
+      if (INTERNAL_VALIDATION_TYPES.has(check.type)) {
+        return false;
+      }
+      if (check.status === REVALIDATION_REQUIRED_FILTER) {
+        return !hiddenTypes.has(REVALIDATION_REQUIRED_FILTER);
+      }
+      return !hiddenTypes.has(check.type);
+    },
   );
 }
 
@@ -69,7 +129,7 @@ function partWithVisibleChecks(part: StatTablePart, hiddenTypes: ReadonlySet<str
   if (part.is_test_table) {
     return { ...part, checks };
   }
-  if (part.validation_stale) {
+  if (part.validation_stale && !hiddenTypes.has(REVALIDATION_REQUIRED_FILTER)) {
     return {
       ...part,
       checks,
@@ -105,7 +165,7 @@ export function tablesWithValidationVisibility<T extends ValidationTableLike>(
     // take precedence over recalculating status from the now-stale checks;
     // otherwise fixing a previously failing cell would misleadingly show
     // the table as normal before validation runs again.
-    if (table.validation_stale) {
+    if (table.validation_stale && !hiddenTypes.has(REVALIDATION_REQUIRED_FILTER)) {
       return {
         ...table,
         checks,

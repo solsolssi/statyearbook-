@@ -13,6 +13,8 @@ import { deleteReport, fetchTable } from "./api/reportApi";
 import type { ReportOption, StatTable, TableStatus } from "./types";
 import {
   DEFAULT_HIDDEN_VALIDATION_TYPES,
+  OPTIONAL_VALIDATION_TYPES,
+  activeValidationTypesForTables,
   summaryWithValidationVisibility,
   tablesWithValidationVisibility,
   validationTypesForTables,
@@ -93,6 +95,24 @@ export default function App() {
         ...(detailTable ? [detailTable] : []),
       ], catalogTypes),
     [catalogTypes, detailTable, rawTables, selectedTableDetail],
+  );
+  const activeValidationTypes = useMemo(
+    () =>
+      activeValidationTypesForTables([
+        ...rawTables,
+        ...(selectedTableDetail ? [selectedTableDetail] : []),
+        ...(detailTable ? [detailTable] : []),
+      ]),
+    [detailTable, rawTables, selectedTableDetail],
+  );
+  const disabledValidationTypes = useMemo(
+    () =>
+      new Set(
+        validationTypes.filter(
+          (type) => OPTIONAL_VALIDATION_TYPES.has(type) && !activeValidationTypes.has(type),
+        ),
+      ),
+    [activeValidationTypes, validationTypes],
   );
   const tables = useMemo(
     () => tablesWithValidationVisibility(rawTables, hiddenValidationTypes),
@@ -283,6 +303,7 @@ export default function App() {
       query={query}
       filter={filter}
       validationTypes={validationTypes}
+      disabledValidationTypes={disabledValidationTypes}
       validationCatalog={validationCatalog}
       hiddenValidationTypes={hiddenValidationTypes}
       validationRunState={validationRunState}
