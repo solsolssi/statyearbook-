@@ -1,8 +1,16 @@
-import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Check, LoaderCircle, X } from "lucide-react";
+import { ArrowLeft, Check, LoaderCircle, Plus, Trash2, X } from "lucide-react";
 
-import { updateTableContent } from "../api/reportApi";
+import { cloneStatistic, deleteStatistic, updateTableContent } from "../api/reportApi";
 import type {
   ColumnDefinition,
   StatTable,
@@ -13,6 +21,7 @@ import type {
 import { formatCellValue } from "../utils/formatters";
 import { DownloadMenu } from "./DownloadMenu";
 import { StatusBadge } from "./StatusBadge";
+import { headerLayout } from "../utils/headerLayout";
 
 interface TableEditViewProps {
   table: StatTable;
@@ -20,6 +29,8 @@ interface TableEditViewProps {
   accessToken: string;
   onCancel: () => void;
   onSaved: (table: StatTable) => void;
+  onCreated?: (table: StatTable) => void;
+  onDeleted?: () => void;
 }
 
 export function TableEditView({
@@ -28,6 +39,8 @@ export function TableEditView({
   accessToken,
   onCancel,
   onSaved,
+  onCreated,
+  onDeleted,
 }: TableEditViewProps) {
   const [draft, setDraft] = useState<StatTable>(() => cloneTable(table));
   const parts = useMemo(() => editableParts(draft), [draft]);
@@ -125,6 +138,46 @@ export function TableEditView({
     }
   }
 
+  async function addStatistic() {
+    if (dirty && !window.confirm("저장하지 않은 수정은 새 통계에 반영되지 않습니다. 계속할까요?")) {
+      return;
+    }
+    const code = window.prompt("추가할 통계 번호를 입력해 주세요.", "");
+    if (!code?.trim()) {
+      return;
+    }
+    const title = window.prompt("추가할 통계 제목을 입력해 주세요.", `${table.title} 복사본`);
+    if (!title?.trim()) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const created = await cloneStatistic(reportId, table.id, accessToken, code.trim(), title.trim());
+      onCreated?.(created);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "통계를 추가하지 못했습니다.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeStatistic() {
+    if (!window.confirm(`‘${table.code} ${table.title}’ 통계를 연보에서 삭제할까요?`)) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await deleteStatistic(reportId, table.id, accessToken);
+      onDeleted?.();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "통계를 삭제하지 못했습니다.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <main className="detail-view table-edit-view">
       <header className="detail-header">
@@ -183,6 +236,20 @@ export function TableEditView({
         <div className="detail-header__actions">
           <StatusBadge status={draft.status} label={draft.status_label} />
           <span className="edit-mode-badge">수정 중</span>
+          <button className="secondary-button table-edit-structure-button" type="button" disabled={saving} onClick={() => void addStatistic()}>
+            <Plus aria-hidden="true" size={15} /> 통계 추가
+          </button>
+          <button className="secondary-button table-edit-delete-button" type="button" disabled={saving} onClick={() => void removeStatistic()}>
+            <Trash2 aria-hidden="true" size={15} /> 통계 삭제
+          </button>
+          <button
+            className="secondary-button table-edit-cancel-button"
+            type="button"
+            disabled={saving}
+            onClick={cancel}
+          >
+            <X aria-hidden="true" size={15} /> 취소
+          </button>
           <button
             className="primary-button"
             type="button"
@@ -533,6 +600,22 @@ function EditableDataGrid({
 }) {
   const [activeEditor, setActiveEditor] = useState<string | null>(null);
   const [editorAnchor, setEditorAnchor] = useState<HTMLElement | null>(null);
+  const [dragging, setDragging] = useState<{ kind: "row" | "column"; index: number } | null>(null);
+  const [dragOver, setDragOver] = useState<{ kind: "row" | "column"; index: number } | null>(null);
+  const [edgeTrimPreview, setEdgeTrimPreview] = useState<{
+    kind: "row" | "column";
+    keepCount: number;
+  } | null>(null);
+  const edgeGesture = useRef<{
+    kind: "row" | "column";
+    pointerId: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+    keepCount: number;
+  } | null>(null);
+  const suppressEdgeClick = useRef(false);
+  const headers = headerLayout(columns);
 
   function openEditor(editorKey: string, trigger: HTMLElement) {
     const cell = trigger.closest("th, td");
@@ -553,6 +636,42 @@ function EditableDataGrid({
     );
   }
 
+  function updateColumnHeader(
+    index: number,
+    values: { label: string; labelEn: string; parentPath: string; parentPathEn: string; footnote: string },
+  ) {
+    const path = [...splitHeaderPath(values.parentPath), values.label.trim()].filter(Boolean);
+    const pathEn = [...splitHeaderPath(values.parentPathEn), values.labelEn.trim()].filter(Boolean);
+    const previousParent = headerParentPath(columns[index]);
+    const previousParentEn = headerParentPathEn(columns[index]);
+    onColumnsChange(columns.map((column, columnIndex) => {
+      const sharesParent = previousParent.length > 0 &&
+        JSON.stringify(headerParentPath(column)) === JSON.stringify(previousParent);
+      if (columnIndex !== index && !sharesParent) {
+        return column;
+      }
+      const leaf = columnIndex === index ? values.label.trim() : headerLeaf(column);
+      const leafEn = columnIndex === index ? values.labelEn.trim() : headerLeafEn(column);
+      const nextPath = [...splitHeaderPath(values.parentPath), leaf].filter(Boolean);
+      const nextPathEn = [
+        ...(
+          previousParentEn.length > 0 || columnIndex === index
+            ? splitHeaderPath(values.parentPathEn)
+            : headerParentPathEn(column)
+        ),
+        leafEn,
+      ].filter(Boolean);
+      return {
+        ...column,
+        label: nextPath.join(" / ") || leaf,
+        label_en: nextPathEn.join(" / "),
+        header_path: nextPath,
+        header_path_en: nextPathEn,
+        ...(columnIndex === index ? { footnote_marker: values.footnote } : {}),
+      };
+    }));
+  }
+
   function updateRow(index: number, key: string, value: string) {
     updateRowValues(index, { [key]: value });
   }
@@ -565,53 +684,372 @@ function EditableDataGrid({
     );
   }
 
+  function addColumn() {
+    const parentPathInput = window.prompt(
+      "상위 헤더를 입력해 주세요. 여러 단계는 /로 구분합니다. (예: 방문 발급 / 국내)",
+      "",
+    );
+    if (parentPathInput === null) return;
+    const label = window.prompt("새 열 이름을 입력해 주세요.", "새 열");
+    if (!label?.trim()) return;
+    const parentPathEnInput = window.prompt("상위 영문 헤더를 입력해 주세요. 없으면 비워 두세요.", "");
+    if (parentPathEnInput === null) return;
+    const labelEn = window.prompt("새 열의 영문 이름을 입력해 주세요. 없으면 비워 두세요.", "");
+    if (labelEn === null) return;
+    const headerPath = [...splitHeaderPath(parentPathInput), label.trim()];
+    const headerPathEn = [...splitHeaderPath(parentPathEnInput), labelEn.trim()].filter(Boolean);
+    const key = `new_column_${Date.now()}`;
+    onColumnsChange([
+      ...columns,
+      {
+        key,
+        label: headerPath.join(" / "),
+        label_en: headerPathEn.join(" / "),
+        header_path: headerPath,
+        header_path_en: headerPathEn,
+        align: "right",
+        source_col_index: columns.length,
+        source_col_indexes: [columns.length],
+      },
+    ]);
+  }
+
+  function removeColumn(index: number) {
+    if (columns.length <= 1) {
+      window.alert("표에는 열이 한 개 이상 있어야 합니다.");
+      return;
+    }
+    onColumnsChange(columns.filter((_, columnIndex) => columnIndex !== index));
+  }
+
+  function addRow() {
+    const row: Record<string, string | number> = {
+      _row_index: -Date.now(),
+      _row_label: "",
+    };
+    for (const column of columns) {
+      row[column.key] = "";
+    }
+    onRowsChange([...rows, row]);
+  }
+
+  function removeRow(index: number) {
+    onRowsChange(rows.filter((_, rowIndex) => rowIndex !== index));
+  }
+
+  function startDrag(
+    event: DragEvent<HTMLElement>,
+    kind: "row" | "column",
+    index: number,
+  ) {
+    closeEditor();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", `${kind}:${index}`);
+    setDragging({ kind, index });
+    setDragOver(null);
+  }
+
+  function finishDrag() {
+    setDragging(null);
+    setDragOver(null);
+  }
+
+  function dropAt(kind: "row" | "column", index: number) {
+    if (!dragging || dragging.kind !== kind || dragging.index === index) {
+      finishDrag();
+      return;
+    }
+    if (kind === "column") {
+      const next = [...columns];
+      const [moved] = next.splice(dragging.index, 1);
+      next.splice(index, 0, moved);
+      onColumnsChange(next);
+    } else {
+      const next = [...rows];
+      const [moved] = next.splice(dragging.index, 1);
+      next.splice(index, 0, moved);
+      onRowsChange(next);
+    }
+    finishDrag();
+  }
+
+  function dropToDelete() {
+    if (!dragging) {
+      return;
+    }
+    if (dragging.kind === "column") {
+      removeColumn(dragging.index);
+    } else {
+      removeRow(dragging.index);
+    }
+    finishDrag();
+  }
+
+  function startEdgeResize(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    kind: "row" | "column",
+  ) {
+    closeEditor();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    const keepCount = kind === "row" ? rows.length : columns.length;
+    edgeGesture.current = {
+      kind,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+      keepCount,
+    };
+    setEdgeTrimPreview({ kind, keepCount });
+  }
+
+  function updateEdgeResize(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    kind: "row" | "column",
+  ) {
+    const gesture = edgeGesture.current;
+    if (!gesture || gesture.kind !== kind || gesture.pointerId !== event.pointerId) {
+      return;
+    }
+    const inwardDistance = kind === "row"
+      ? gesture.startY - event.clientY
+      : gesture.startX - event.clientX;
+    if (inwardDistance < 4) {
+      return;
+    }
+    gesture.moved = true;
+    const table = event.currentTarget.parentElement?.querySelector("table");
+    if (!(table instanceof HTMLTableElement)) {
+      return;
+    }
+
+    if (kind === "row") {
+      const rowElements = Array.from(table.tBodies[0]?.rows ?? []);
+      const keepCount = rowElements.filter(
+        (rowElement) => {
+          const rect = rowElement.getBoundingClientRect();
+          return event.clientY > rect.top + rect.height / 2;
+        },
+      ).length;
+      gesture.keepCount = keepCount;
+      setEdgeTrimPreview({ kind, keepCount });
+      return;
+    }
+
+    const columnElements = Array.from(table.tHead?.rows[0]?.cells ?? []);
+    const keepCount = Math.max(
+      1,
+      columnElements.filter(
+        (columnElement) => {
+          const rect = columnElement.getBoundingClientRect();
+          return event.clientX > rect.left + rect.width / 2;
+        },
+      ).length,
+    );
+    gesture.keepCount = keepCount;
+    setEdgeTrimPreview({ kind, keepCount });
+  }
+
+  function finishEdgeResize(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    kind: "row" | "column",
+  ) {
+    const gesture = edgeGesture.current;
+    if (!gesture || gesture.kind !== kind || gesture.pointerId !== event.pointerId) {
+      return;
+    }
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    if (gesture.moved) {
+      suppressEdgeClick.current = true;
+      window.setTimeout(() => {
+        suppressEdgeClick.current = false;
+      }, 0);
+      if (kind === "row" && gesture.keepCount < rows.length) {
+        onRowsChange(rows.slice(0, gesture.keepCount));
+      }
+      if (kind === "column" && gesture.keepCount < columns.length) {
+        onColumnsChange(columns.slice(0, gesture.keepCount));
+      }
+    }
+    edgeGesture.current = null;
+    setEdgeTrimPreview(null);
+  }
+
+  function cancelEdgeResize() {
+    edgeGesture.current = null;
+    setEdgeTrimPreview(null);
+  }
+
+  function clickEdgeAdd(kind: "row" | "column") {
+    if (suppressEdgeClick.current) {
+      return;
+    }
+    if (kind === "row") {
+      addRow();
+    } else {
+      addColumn();
+    }
+  }
+
   return (
-    <div
-      className={[
-        "data-grid",
-        "editable-data-grid",
-        `data-grid--${theme}`,
-        stickyHeader ? "data-grid--sticky-header" : "",
-      ].filter(Boolean).join(" ")}
-    >
-      <table>
+    <div className={`editable-grid-shell${dragging ? " is-dragging" : ""}`}>
+      <div
+        className={[
+          "data-grid",
+          "editable-data-grid",
+          `data-grid--${theme}`,
+          stickyHeader && headers.length === 1 ? "data-grid--sticky-header" : "",
+        ].filter(Boolean).join(" ")}
+      >
+        <div className="editable-table-stage">
+          <button
+            className={`editable-grid-edge-add editable-grid-column-edge-add${dragging?.kind === "column" ? " is-delete-target" : ""}`}
+            type="button"
+            aria-label={dragging?.kind === "column" ? "열 삭제 영역" : "열 추가"}
+            title="클릭해 열 추가 · 셀 절반 이상 안쪽으로 끌어 끝 열 삭제"
+            onClick={() => clickEdgeAdd("column")}
+            onPointerDown={(event) => startEdgeResize(event, "column")}
+            onPointerMove={(event) => updateEdgeResize(event, "column")}
+            onPointerUp={(event) => finishEdgeResize(event, "column")}
+            onPointerCancel={cancelEdgeResize}
+            onDragOver={(event) => {
+              if (dragging?.kind !== "column") return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+            }}
+            onDrop={(event) => {
+              if (dragging?.kind !== "column") return;
+              event.preventDefault();
+              dropToDelete();
+            }}
+          >
+            {dragging?.kind === "column" ? (
+              <Trash2 aria-hidden="true" size={13} />
+            ) : (
+              <Plus aria-hidden="true" size={13} />
+            )}
+          </button>
+          <button
+            className={`editable-grid-edge-add editable-grid-row-edge-add${dragging?.kind === "row" ? " is-delete-target" : ""}`}
+            type="button"
+            aria-label={dragging?.kind === "row" ? "행 삭제 영역" : "행 추가"}
+            title="클릭해 행 추가 · 셀 절반 이상 안쪽으로 끌어 끝 행 삭제"
+            onClick={() => clickEdgeAdd("row")}
+            onPointerDown={(event) => startEdgeResize(event, "row")}
+            onPointerMove={(event) => updateEdgeResize(event, "row")}
+            onPointerUp={(event) => finishEdgeResize(event, "row")}
+            onPointerCancel={cancelEdgeResize}
+            onDragOver={(event) => {
+              if (dragging?.kind !== "row") return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+            }}
+            onDrop={(event) => {
+              if (dragging?.kind !== "row") return;
+              event.preventDefault();
+              dropToDelete();
+            }}
+          >
+            {dragging?.kind === "row" ? (
+              <Trash2 aria-hidden="true" size={13} />
+            ) : (
+              <Plus aria-hidden="true" size={13} />
+            )}
+          </button>
+        <table>
         <colgroup>
           {columns.map((column) => (
             <col key={column.key} style={column.width ? { width: column.width } : undefined} />
           ))}
         </colgroup>
         <thead>
-          <tr>
-            {columns.map((column, columnIndex) => {
+          {headers.map((headerRow, headerLevel) => (
+          <tr key={`header-${headerLevel}`}>
+            {headerRow.map((header) => {
+              if (!header.isLeaf) {
+                return (
+                  <th
+                    key={header.key}
+                    colSpan={header.colSpan}
+                    rowSpan={header.rowSpan}
+                    className="align-center editable-grid-group-header"
+                  >
+                    <span>{header.label}</span>
+                    {header.labelEn ? <small>{header.labelEn}</small> : null}
+                  </th>
+                );
+              }
+              const columnIndex = header.columnIndexes[0];
+              const column = columns[columnIndex];
               const editorKey = `header-${columnIndex}-${column.key}`;
               return (
-                <th key={column.key} className={`align-${column.align}`}>
+                <th
+                  key={header.key}
+                  colSpan={header.colSpan}
+                  rowSpan={header.rowSpan}
+                  className={[
+                    `align-${column.align}`,
+                    edgeTrimPreview?.kind === "column" && columnIndex >= edgeTrimPreview.keepCount
+                      ? "is-trim-preview"
+                      : "",
+                    dragOver?.kind === "column" && dragOver.index === columnIndex
+                      ? "is-drag-over"
+                      : "",
+                  ].filter(Boolean).join(" ")}
+                  draggable
+                  title="헤더를 잡고 움직여 열 순서 변경 · 삭제 영역에 놓아 제거"
+                  onDragStart={(event) => startDrag(event, "column", columnIndex)}
+                  onDragEnd={finishDrag}
+                  onDragOver={(event) => {
+                    if (dragging?.kind !== "column") return;
+                    event.preventDefault();
+                    setDragOver({ kind: "column", index: columnIndex });
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    dropAt("column", columnIndex);
+                  }}
+                >
                   <button
                     className="editable-grid-trigger"
                     type="button"
+                    draggable
                     aria-label={`${column.label} 헤더 수정`}
+                    onDragStart={(event) => {
+                      event.stopPropagation();
+                      startDrag(event, "column", columnIndex);
+                    }}
+                    onDragEnd={(event) => {
+                      event.stopPropagation();
+                      finishDrag();
+                    }}
                     onClick={(event) => openEditor(editorKey, event.currentTarget)}
                   >
                     <span>
-                      {column.label}
+                      {header.label}
                       {column.footnote_marker ? (
                         <sup className="data-grid__footnote">{column.footnote_marker}</sup>
                       ) : null}
                     </span>
-                    {column.label_en ? <small>{column.label_en}</small> : null}
+                    {header.labelEn ? <small>{header.labelEn}</small> : null}
                   </button>
                   {activeEditor === editorKey ? (
                     <GridEditPopover
                       label="헤더 수정"
-                      value={column.label}
-                      valueEn={column.label_en ?? ""}
+                      value={headerLeaf(column)}
+                      valueEn={headerLeafEn(column)}
+                      parentPath={headerParentPath(column).join(" / ")}
+                      parentPathEn={headerParentPathEn(column).join(" / ")}
+                      showParentPath
                       footnote={column.footnote_marker ?? ""}
                       anchor={editorAnchor}
                       onApply={(values) => {
-                        updateColumn(columnIndex, {
+                        updateColumnHeader(columnIndex, {
                           label: values.value,
-                          label_en: values.valueEn,
-                          footnote_marker: values.footnote,
+                          labelEn: values.valueEn,
+                          parentPath: values.parentPath,
+                          parentPathEn: values.parentPathEn,
+                          footnote: values.footnote,
                         });
                         closeEditor();
                       }}
@@ -622,6 +1060,7 @@ function EditableDataGrid({
               );
             })}
           </tr>
+          ))}
         </thead>
         <tbody>
           {rows.map((row, rowIndex) => {
@@ -629,26 +1068,62 @@ function EditableDataGrid({
             const summaryKind = summaryRowKind(row, firstColumnKey);
             return (
               <tr
-                className={
+                className={[
                   summaryKind === "total"
                     ? "data-grid__summary-row"
                     : summaryKind === "subtotal"
                       ? "data-grid__subtotal-row"
-                      : ""
-                }
+                      : "",
+                  edgeTrimPreview?.kind === "row" && rowIndex >= edgeTrimPreview.keepCount
+                    ? "is-trim-preview"
+                    : "",
+                  dragOver?.kind === "row" && dragOver.index === rowIndex
+                    ? "is-drag-over"
+                    : "",
+                ].filter(Boolean).join(" ")}
                 key={`${row._row_index ?? rowIndex}-${rowIndex}`}
+                draggable
+                title="행의 아무 셀이나 잡고 움직여 순서 변경 · 삭제 영역에 놓아 제거"
+                onDragStart={(event) => startDrag(event, "row", rowIndex)}
+                onDragEnd={finishDrag}
+                onDragOver={(event) => {
+                  if (dragging?.kind !== "row") return;
+                  event.preventDefault();
+                  setDragOver({ kind: "row", index: rowIndex });
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  dropAt("row", rowIndex);
+                }}
               >
-                {columns.map((column) => {
+                {columns.map((column, columnIndex) => {
                   const editorKey = `cell-${rowIndex}-${column.key}`;
                   const value = String(row[column.key] ?? "");
                   const valueEn = String(row[`${column.key}_en`] ?? "");
                   const footnote = String(row[`${column.key}_footnote`] ?? "");
                   return (
-                    <td key={column.key} className={`align-${column.align}`}>
+                    <td
+                      key={column.key}
+                      className={[
+                        `align-${column.align}`,
+                        edgeTrimPreview?.kind === "column" && columnIndex >= edgeTrimPreview.keepCount
+                          ? "is-trim-preview"
+                          : "",
+                      ].filter(Boolean).join(" ")}
+                    >
                       <button
                         className="editable-grid-trigger"
                         type="button"
+                        draggable
                         aria-label={`${rowIndex + 1}행 ${column.label} 수정`}
+                        onDragStart={(event) => {
+                          event.stopPropagation();
+                          startDrag(event, "row", rowIndex);
+                        }}
+                        onDragEnd={(event) => {
+                          event.stopPropagation();
+                          finishDrag();
+                        }}
                         onClick={(event) => openEditor(editorKey, event.currentTarget)}
                       >
                         <span>
@@ -682,7 +1157,9 @@ function EditableDataGrid({
             );
           })}
         </tbody>
-      </table>
+        </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -693,10 +1170,13 @@ function GridEditPopover({
   value,
   valueEn,
   footnote,
+  parentPath = "",
+  parentPathEn = "",
   anchor,
   showCode = false,
   showEnglish = true,
   showFootnote = true,
+  showParentPath = false,
   onApply,
   onCancel,
 }: {
@@ -705,11 +1185,21 @@ function GridEditPopover({
   value: string;
   valueEn: string;
   footnote: string;
+  parentPath?: string;
+  parentPathEn?: string;
   anchor: HTMLElement | null;
   showCode?: boolean;
   showEnglish?: boolean;
   showFootnote?: boolean;
-  onApply: (values: { code?: string; value: string; valueEn: string; footnote: string }) => void;
+  showParentPath?: boolean;
+  onApply: (values: {
+    code?: string;
+    value: string;
+    valueEn: string;
+    footnote: string;
+    parentPath: string;
+    parentPathEn: string;
+  }) => void;
   onCancel: () => void;
 }) {
   const [position, setPosition] = useState({ left: 0, top: 0 });
@@ -717,6 +1207,8 @@ function GridEditPopover({
   const [draftValue, setDraftValue] = useState(value);
   const [draftValueEn, setDraftValueEn] = useState(valueEn);
   const [draftFootnote, setDraftFootnote] = useState(footnote);
+  const [draftParentPath, setDraftParentPath] = useState(parentPath);
+  const [draftParentPathEn, setDraftParentPathEn] = useState(parentPathEn);
 
   useLayoutEffect(() => {
     if (!anchor) {
@@ -747,7 +1239,9 @@ function GridEditPopover({
     setDraftValue(value);
     setDraftValueEn(valueEn);
     setDraftFootnote(footnote);
-  }, [code, value, valueEn, footnote]);
+    setDraftParentPath(parentPath);
+    setDraftParentPathEn(parentPathEn);
+  }, [code, value, valueEn, footnote, parentPath, parentPathEn]);
 
   if (!anchor) {
     return null;
@@ -762,6 +1256,12 @@ function GridEditPopover({
             <input value={draftCode} onChange={(event) => setDraftCode(event.target.value)} />
           </label>
         ) : null}
+        {showParentPath ? (
+          <label>
+            <span>상위 헤더</span>
+            <input value={draftParentPath} placeholder="예: 방문 발급 / 국내" onChange={(event) => setDraftParentPath(event.target.value)} />
+          </label>
+        ) : null}
         <label>
           <span>표시값</span>
           <input autoFocus value={draftValue} onChange={(event) => setDraftValue(event.target.value)} />
@@ -770,6 +1270,12 @@ function GridEditPopover({
           <label>
             <span>영문값</span>
             <input value={draftValueEn} onChange={(event) => setDraftValueEn(event.target.value)} />
+          </label>
+        ) : null}
+        {showParentPath && showEnglish ? (
+          <label>
+            <span>상위 영문 헤더</span>
+            <input value={draftParentPathEn} onChange={(event) => setDraftParentPathEn(event.target.value)} />
           </label>
         ) : null}
         {showFootnote ? (
@@ -789,6 +1295,8 @@ function GridEditPopover({
               value: draftValue,
               valueEn: draftValueEn,
               footnote: draftFootnote,
+              parentPath: draftParentPath,
+              parentPathEn: draftParentPathEn,
             })
           }
         >
@@ -947,12 +1455,22 @@ export function buildTableUpdatePayload(
         title_en: nextTitleEn.trim(),
       }];
     }),
+    deleted_part_ids: [],
     parts: draftParts.map((part, partIndex) => {
       const baseline = originalParts.find((item) => item.id === part.id) ?? originalParts[partIndex];
       const suffix = original.parts.length > 0
         ? (part.code.match(/\s+표\s*\d+$/)?.[0] ?? ` 표${partIndex + 1}`)
         : "";
-      const columns = part.columns.flatMap((column) => {
+      const replaceStructure = tablePartColumnsChanged(baseline, part) || tablePartHeaderPathsChanged(baseline, part);
+      const replaceRows = !replaceStructure && tablePartRowsChanged(baseline, part);
+      const columns = replaceStructure ? part.columns.map((column, columnIndex) => ({
+        source_col_indexes: [columnIndex],
+        label: column.label,
+        label_en: column.label_en ?? "",
+        header_path: headerPath(column),
+        header_path_en: headerPathEn(column),
+        footnote_marker: column.footnote_marker ?? "",
+      })) : part.columns.flatMap((column) => {
         const previous = baseline.columns.find((item) => item.key === column.key);
         if (
           previous &&
@@ -970,6 +1488,19 @@ export function buildTableUpdatePayload(
         }];
       });
       const cells = part.rows.flatMap((row, rowIndex) => {
+        if (replaceStructure || replaceRows) {
+          return part.columns.map((column, columnIndex) => ({
+            row_index: (replaceStructure ? headerDepth(part.columns) : (part.metadata.header_count ?? 0)) + rowIndex,
+            col_index: replaceStructure
+              ? columnIndex
+              : (columnIndex === 0
+                  ? sourceColumnIndexes(column).at(-1) ?? columnIndex
+                  : sourceColumnIndexes(column)[0] ?? columnIndex),
+            value: String(row[column.key] ?? ""),
+            value_en: String(row[`${column.key}_en`] ?? ""),
+            footnote_marker: String(row[`${column.key}_footnote`] ?? ""),
+          }));
+        }
         const sourceRowIndex = Number(row._row_index ?? (part.metadata.header_count ?? 0) + rowIndex);
         const previousRow = baseline.rows.find(
           (item) => Number(item._row_index) === sourceRowIndex,
@@ -1002,7 +1533,7 @@ export function buildTableUpdatePayload(
         title: `${draft.title.trim()}${suffix}`,
         title_en: draft.title_en.trim(),
         unit: part.unit,
-        header_count: part.metadata.header_count ?? 0,
+        header_count: replaceStructure ? headerDepth(part.columns) : (part.metadata.header_count ?? 0),
         metadata: {
           base_date: part.metadata.base_date,
           note: part.metadata.note,
@@ -1014,9 +1545,70 @@ export function buildTableUpdatePayload(
         },
         columns,
         cells,
+        replace_structure: replaceStructure,
+        replace_rows: replaceRows,
       };
     }),
   };
+}
+
+function tablePartColumnsChanged(original: StatTablePart, draft: StatTablePart) {
+  if (original.columns.length !== draft.columns.length) {
+    return true;
+  }
+  return original.columns.some((column, index) => column.key !== draft.columns[index]?.key);
+}
+
+function tablePartRowsChanged(original: StatTablePart, draft: StatTablePart) {
+  if (original.rows.length !== draft.rows.length) {
+    return true;
+  }
+  return original.rows.some(
+    (row, index) => Number(row._row_index) !== Number(draft.rows[index]?._row_index),
+  );
+}
+
+function tablePartHeaderPathsChanged(original: StatTablePart, draft: StatTablePart) {
+  if (headerDepth(original.columns) <= 1 && headerDepth(draft.columns) <= 1) {
+    return false;
+  }
+  return original.columns.some((column, index) => {
+    const next = draft.columns[index] ?? column;
+    return JSON.stringify(headerPath(column)) !== JSON.stringify(headerPath(next)) ||
+      JSON.stringify(headerPathEn(column)) !== JSON.stringify(headerPathEn(next));
+  });
+}
+
+function splitHeaderPath(value: string) {
+  return value.split("/").map((item) => item.trim()).filter(Boolean);
+}
+
+function headerPath(column: ColumnDefinition) {
+  return column.header_path?.filter(Boolean) ?? splitHeaderPath(column.label);
+}
+
+function headerPathEn(column: ColumnDefinition) {
+  return column.header_path_en?.filter(Boolean) ?? splitHeaderPath(column.label_en ?? "");
+}
+
+function headerParentPath(column: ColumnDefinition) {
+  return headerPath(column).slice(0, -1);
+}
+
+function headerParentPathEn(column: ColumnDefinition) {
+  return headerPathEn(column).slice(0, -1);
+}
+
+function headerLeaf(column: ColumnDefinition) {
+  return headerPath(column).at(-1) ?? column.label;
+}
+
+function headerLeafEn(column: ColumnDefinition) {
+  return headerPathEn(column).at(-1) ?? column.label_en ?? "";
+}
+
+function headerDepth(columns: ColumnDefinition[]) {
+  return Math.max(1, ...columns.map((column) => headerPath(column).length));
 }
 
 function isDomainHierarchyItem(hierarchyCode: string, tableCode: string): boolean {

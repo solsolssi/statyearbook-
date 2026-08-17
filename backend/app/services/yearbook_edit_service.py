@@ -17,6 +17,7 @@ from app.models.yearbook_edits import (
     TableContentUpdateRequest,
     ReportEditAccess,
     StatisticEditAccess,
+    StatisticCloneRequest,
     TableEditSession,
 )
 from app.services.database_report_service import DatabaseReportService, base_table_code
@@ -296,10 +297,15 @@ class YearbookEditService:
                             report_id,
                         ),
                     )
-                    for column in part.columns:
-                        apply_column_patch(connection, part_id, part.header_count, column)
-                    for cell in part.cells:
-                        upsert_cell(connection, part_id, cell)
+                    if part.replace_structure:
+                        replace_table_structure(connection, part_id, part)
+                    elif part.replace_rows:
+                        replace_table_rows(connection, part_id, part)
+                    else:
+                        for column in part.columns:
+                            apply_column_patch(connection, part_id, part.header_count, column)
+                        for cell in part.cells:
+                            upsert_cell(connection, part_id, cell)
 
                 connection.execute(
                     """
@@ -336,6 +342,168 @@ class YearbookEditService:
         if updated is None:
             raise YearbookEditError("수정된 표를 다시 불러오지 못했습니다.")
         return updated
+
+    def clone_statistic(
+        self,
+        *,
+        report_id: int,
+        table_id: str,
+        access_token: str,
+        payload: StatisticCloneRequest,
+    ) -> StatTable:
+        """Create a new statistic from an authenticated statistic's structure."""
+
+        token_hash = hash_token(access_token)
+        new_code = payload.code.strip()
+        new_title = payload.title.strip()
+        with connect(self._db_path) as connection:
+            init_db(connection)
+            rows = resolve_table_rows(connection, report_id, table_id)
+            table_key = access_key_for_rows(rows)
+            self._require_session(connection, report_id, table_key, token_hash)
+            existing_codes = {
+                str(row["code"])
+                for row in connection.execute(
+                    "SELECT code FROM stat_tables WHERE report_id = ?",
+                    (report_id,),
+                ).fetchall()
+            }
+            new_codes = [
+                f"{new_code}{part_suffix(str(row['code']))}" for row in rows
+            ]
+            duplicate = next((code for code in new_codes if code in existing_codes), None)
+            if duplicate is not None or len(set(new_codes)) != len(new_codes):
+                raise YearbookEditError(f"이미 사용 중인 표 번호입니다: {duplicate or new_code}")
+            latest_run = connection.execute(
+                "SELECT id FROM validation_runs WHERE report_id = ? ORDER BY completed_at DESC, id DESC LIMIT 1",
+                (report_id,),
+            ).fetchone()
+            edited_after_run_id = int(latest_run["id"]) if latest_run is not None else 0
+            max_order = int(connection.execute(
+                "SELECT COALESCE(MAX(table_order), 0) AS value FROM stat_tables WHERE report_id = ?",
+                (report_id,),
+            ).fetchone()["value"])
+            created_ids: list[int] = []
+            with connection:
+                for index, row in enumerate(rows, start=1):
+                    suffix = part_suffix(str(row["code"]))
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO stat_tables (
+                            report_id, code, title, title_en, section_title,
+                            section_title_en, domain, unit, base_date, section_file,
+                            table_order, cell_range, note, source, extracted_at,
+                            raw_context, parse_warnings_json, source_department,
+                            source_officer, source_extension, source_reference,
+                            manually_edited_at, edited_after_run_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                  CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                        """,
+                        (
+                            report_id,
+                            f"{new_code}{suffix}",
+                            f"{new_title}{suffix}",
+                            str(row["title_en"] or ""),
+                            str(row["section_title"] or ""),
+                            str(row["section_title_en"] or ""),
+                            str(row["domain"] or ""),
+                            str(row["unit"] or ""),
+                            str(row["base_date"] or ""),
+                            str(row["section_file"] or ""),
+                            max_order + index,
+                            str(row["cell_range"] or ""),
+                            str(row["note"] or ""),
+                            str(row["source"] or ""),
+                            str(row["raw_context"] or ""),
+                            str(row["parse_warnings_json"] or "[]"),
+                            str(row["source_department"] or ""),
+                            str(row["source_officer"] or ""),
+                            str(row["source_extension"] or ""),
+                            str(row["source_reference"] or ""),
+                            edited_after_run_id,
+                        ),
+                    )
+                    created_id = int(cursor.lastrowid)
+                    created_ids.append(created_id)
+                    connection.execute(
+                        """
+                        INSERT INTO stat_table_cells (
+                            table_id, row_index, col_index, text_value, numeric_value,
+                            is_header, footnote_marker, source_coordinate, text_color,
+                            parse_warnings_json
+                        )
+                        SELECT ?, row_index, col_index, text_value, numeric_value,
+                               is_header, footnote_marker, source_coordinate, text_color,
+                               parse_warnings_json
+                        FROM stat_table_cells WHERE table_id = ?
+                        """,
+                        (created_id, int(row["id"])),
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO yearbook_manual_edits (
+                        report_id, table_key, session_token_hash, changes_json
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        report_id,
+                        table_key,
+                        token_hash,
+                        json.dumps(
+                            {"action": "clone_statistic", "code": new_code, "title": new_title},
+                            ensure_ascii=False,
+                        ),
+                    ),
+                )
+        created_table_id = (
+            f"db-{created_ids[0]}" if len(created_ids) == 1 else f"group-{new_code}"
+        )
+        created = DatabaseReportService(self._db_path).get_table(created_table_id, report_id)
+        if created is None:
+            raise YearbookEditError("추가한 통계를 다시 불러오지 못했습니다.")
+        return created
+
+    def delete_statistic(
+        self,
+        *,
+        report_id: int,
+        table_id: str,
+        access_token: str,
+    ) -> int:
+        token_hash = hash_token(access_token)
+        with connect(self._db_path) as connection:
+            init_db(connection)
+            rows = resolve_table_rows(connection, report_id, table_id)
+            table_key = access_key_for_rows(rows)
+            self._require_session(connection, report_id, table_key, token_hash)
+            total = int(connection.execute(
+                "SELECT COUNT(*) AS count FROM stat_tables WHERE report_id = ?",
+                (report_id,),
+            ).fetchone()["count"])
+            if total <= len(rows):
+                raise YearbookEditError("연보의 마지막 통계는 삭제할 수 없습니다.")
+            codes = [str(row["code"]) for row in rows]
+            ids = [int(row["id"]) for row in rows]
+            placeholders = ", ".join("?" for _ in ids)
+            with connection:
+                connection.execute(
+                    f"DELETE FROM stat_tables WHERE report_id = ? AND id IN ({placeholders})",
+                    [report_id, *ids],
+                )
+                code_placeholders = ", ".join("?" for _ in codes)
+                connection.execute(
+                    f"DELETE FROM report_incremental_table_mappings WHERE report_id = ? AND table_code IN ({code_placeholders})",
+                    [report_id, *codes],
+                )
+                connection.execute(
+                    "DELETE FROM yearbook_edit_passwords WHERE report_id = ? AND table_key = ?",
+                    (report_id, table_key),
+                )
+                connection.execute(
+                    "DELETE FROM yearbook_edit_sessions WHERE report_id = ? AND table_key = ?",
+                    (report_id, table_key),
+                )
+        return len(rows)
 
     @staticmethod
     def _require_report(connection: DatabaseConnection, report_id: int) -> DatabaseRow:
@@ -534,6 +702,11 @@ def replace_code_prefix(code: str, old_prefix: str, new_prefix: str) -> str:
     return code
 
 
+def part_suffix(code: str) -> str:
+    match = re.search(r"\s+표\s*\d+$", code)
+    return match.group(0) if match else ""
+
+
 def duplicate_target_codes(target_codes: dict[int, str]) -> list[str]:
     seen: set[str] = set()
     duplicates: list[str] = []
@@ -596,6 +769,76 @@ def apply_column_patch(
         value=value,
         footnote_marker=patch.footnote_marker,
         is_header=True,
+    )
+
+
+def replace_table_structure(
+    connection: DatabaseConnection,
+    table_id: int,
+    part: EditableTablePart,
+) -> None:
+    """Replace a user-edited table matrix as one atomic structure change.
+
+    The editor supplies a header path for every visible column. When a user
+    adds or removes rows/columns, recreate the complete header matrix from
+    those paths instead of flattening merged headers into a literal `A / B`
+    label. Repeated parent values are intentionally stored for every child;
+    this preserves parent/child semantics for validation while the UI renders
+    identical neighbouring values as one merged header cell.
+    """
+
+    if not part.columns:
+        raise YearbookEditError("표에는 열이 한 개 이상 있어야 합니다.")
+    connection.execute("DELETE FROM stat_table_cells WHERE table_id = ?", (table_id,))
+    header_depth = max(1, part.header_count, *(len(column.header_path) for column in part.columns))
+    for column_index, column in enumerate(part.columns):
+        path = [item.strip() for item in column.header_path if item.strip()] or [column.label]
+        path_en = [item.strip() for item in column.header_path_en if item.strip()]
+        for row_index in range(header_depth):
+            path_index = min(row_index, len(path) - 1)
+            value = bilingual_value(
+                path[path_index],
+                path_en[min(row_index, len(path_en) - 1)] if path_en else "",
+            )
+            upsert_raw_cell(
+                connection,
+                table_id=table_id,
+                row_index=row_index,
+                col_index=column_index,
+                value=value,
+                footnote_marker=column.footnote_marker if row_index == len(path) - 1 else "",
+                is_header=True,
+            )
+    for cell in part.cells:
+        upsert_cell(connection, table_id, cell)
+    max_row = max((cell.row_index for cell in part.cells), default=0)
+    max_col = len(part.columns) - 1
+    connection.execute(
+        "UPDATE stat_tables SET cell_range = ? WHERE id = ?",
+        (f"R1C1:R{max(max_row, header_depth - 1) + 1}C{max_col + 1}", table_id),
+    )
+
+
+def replace_table_rows(
+    connection: DatabaseConnection,
+    table_id: int,
+    part: EditableTablePart,
+) -> None:
+    """Replace body rows while preserving the table's original header grid."""
+
+    connection.execute(
+        "DELETE FROM stat_table_cells WHERE table_id = ? AND is_header = 0",
+        (table_id,),
+    )
+    for cell in part.cells:
+        upsert_cell(connection, table_id, cell)
+    bounds = connection.execute(
+        "SELECT COALESCE(MAX(row_index), 0) max_row, COALESCE(MAX(col_index), 0) max_col FROM stat_table_cells WHERE table_id = ?",
+        (table_id,),
+    ).fetchone()
+    connection.execute(
+        "UPDATE stat_tables SET cell_range = ? WHERE id = ?",
+        (f"R1C1:R{int(bounds['max_row']) + 1}C{int(bounds['max_col']) + 1}", table_id),
     )
 
 

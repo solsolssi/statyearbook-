@@ -122,6 +122,24 @@ describe("validation visibility baseline", () => {
     expect(visible.checks.map((check) => check.type)).toEqual(["합계 검수"]);
   });
 
+  it("keeps incremental mapping problems in the review queue even without validation checks", () => {
+    const source = {
+      ...table([]),
+      status: "needs_review" as const,
+      status_label: "증분 연결",
+      generation_status: "mapping_review",
+      generation_status_label: "증분 연결",
+    };
+    const [visible] = tablesWithValidationVisibility(
+      [source],
+      DEFAULT_HIDDEN_VALIDATION_TYPES,
+    );
+
+    expect(visible.checks).toEqual([]);
+    expect(visible.status).toBe("needs_review");
+    expect(visible.status_label).toBe("증분 연결");
+  });
+
   it("labels pending language checks as revalidation work", () => {
     const source = table([
       issue("번역 검수", "재검수 필요", "warning"),

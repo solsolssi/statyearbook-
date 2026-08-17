@@ -6,7 +6,12 @@ import {
   X,
 } from "lucide-react";
 
-import { authenticateTableEdit } from "../api/reportApi";
+import {
+  authenticateTableEdit,
+  fetchTable,
+  previewIncrementalMapping,
+  setIncrementalMapping,
+} from "../api/reportApi";
 import type {
   StatTable,
   StatTablePart,
@@ -29,7 +34,6 @@ import { useValidationSelection } from "../hooks/useValidationSelection";
 import { DataGrid } from "./DataGrid";
 import { DownloadMenu } from "./DownloadMenu";
 import { StatusBadge } from "./StatusBadge";
-import { VisualPanel } from "./VisualPanel";
 import { DetailTabs, type DetailTab } from "./detail/DetailTabs";
 import { MetadataGrid } from "./detail/MetadataGrid";
 import { ValidationResultPanel } from "./detail/ValidationResultPanel";
@@ -66,7 +70,9 @@ interface DetailViewProps {
   onHideAllValidationTypes: () => void;
   onBack: () => void;
   reportId?: number;
+  isDraft?: boolean;
   onTableSaved?: (table: StatTable) => void;
+  onTableDeleted?: () => void;
   onOpenPasswordSettings?: () => void;
 }
 
@@ -526,6 +532,13 @@ function rootTableAsPart(table: StatTable): StatTablePart {
     generation_status: table.generation_status,
     generation_status_label: table.generation_status_label,
     generation_message: table.generation_message,
+    incremental_source_key: table.incremental_source_key,
+    incremental_match_method: table.incremental_match_method,
+    incremental_confidence: table.incremental_confidence,
+    incremental_reason_code: table.incremental_reason_code,
+    incremental_evidence: table.incremental_evidence,
+    incremental_candidates: table.incremental_candidates,
+    incremental_confirmed_by_user: table.incremental_confirmed_by_user,
     update_mode: table.update_mode,
     source_dataset_title: table.source_dataset_title,
   };
@@ -541,6 +554,38 @@ function updateModeLabel(mode?: string) {
     mixed: "복합 갱신",
   };
   return labels[mode ?? ""] ?? "정책 확인 필요";
+}
+
+function incrementalReasonLabel(code?: string) {
+  const labels: Record<string, string> = {
+    CONFIRMED_KEY: "전년도에서 확정한 연결 키",
+    AUTO_IDENTITY_MATCH: "제목·번호·메타정보·표 구조 자동 연결",
+    NO_INCREMENT_CANDIDATE: "증분 후보 없음",
+    NO_RELIABLE_CANDIDATE: "신뢰할 수 있는 후보 없음",
+    AMBIGUOUS_CANDIDATE: "후보가 둘 이상이거나 점수 차이가 작음",
+    MISSING_ITEM_METADATA: "표항목 정보 없음",
+    UNDESCRIBED_VALUE_ITEMS: "값의 항목 설명 누락",
+    HEADER_STRUCTURE_MISMATCH: "헤더 구조 변경",
+    ROW_STRUCTURE_MISMATCH: "행 구조 변경",
+    ROW_LABEL_MISMATCH: "행 항목 변경",
+    NO_TARGET_VALUES: "목표 데이터 없음",
+    STRUCTURE_REBUILT: "증분 구조로 표 재구성 완료",
+    STRUCTURE_VERIFIED: "기존 구조에 값 반영 완료",
+    YEAR_APPENDED: "새 연도 추가 완료",
+    YEAR_ROW_UPDATED: "기존 목표연도 갱신 완료",
+    GROUPED_YEAR_ROWS_APPENDED: "새 연도 묶음 행 추가 완료",
+    YEAR_COLUMN_APPENDED: "새 연도 열 추가 완료",
+    YEAR_COLUMN_UPDATED: "기존 목표연도 열 갱신 완료",
+    YEAR_COLUMN_ROW_MISMATCH: "연도 열의 행 항목 연결 확인 필요",
+    TARGET_YEAR_MISSING: "증분 기준연도 없음",
+    YEAR_SEQUENCE_CONFLICT: "증분 연도 순서 확인 필요",
+    REFERENCE_TABLE_AMBIGUOUS: "완성 연보의 대응 표 확인 필요",
+    REFERENCE_STRUCTURE_MISMATCH: "완성 연보 대조 결과 구조 불일치",
+    REFERENCE_VALUE_MISMATCH: "완성 연보 대조 결과 값 불일치",
+    MANUAL_EDIT_REQUIRES_REVIEW: "수정된 표 재확인 필요",
+    NEW_INCREMENT_CREATED: "새 증분으로 통계 생성",
+  };
+  return labels[code || ""] || code || "연결 확인 필요";
 }
 
 function CalculationUsageList({ part, check }: { part: StatTablePart; check: DisplayCheck }) {
@@ -626,7 +671,9 @@ export function DetailView({
   onHideAllValidationTypes,
   onBack,
   reportId,
+  isDraft = false,
   onTableSaved,
+  onTableDeleted,
   onOpenPasswordSettings,
 }: DetailViewProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>("checks");
@@ -685,6 +732,42 @@ export function DetailView({
     selection.resetScrollSignal();
   }
 
+  async function handleIncrementalMapping(candidateKey?: string) {
+    if (!reportId) {
+      return;
+    }
+    const sourceKey = candidateKey || window.prompt(
+        "이 통계의 M 연결 키를 입력해 주세요. 저장하기 전에 헤더와 행 구조를 다시 검증합니다.",
+        activePart.incremental_source_key || "",
+      );
+    if (!sourceKey?.trim()) {
+      return;
+    }
+    try {
+      const preview = await previewIncrementalMapping(
+        reportId,
+        activePart.code,
+        sourceKey.trim(),
+      );
+      const confirmed = window.confirm(
+        preview.compatible
+          ? `${preview.title || preview.source_key} 증분의 ${preview.applied_cell_count.toLocaleString()}개 셀을 이 통계에 반영할까요?`
+          : `${preview.message}\n\n값은 반영하지 않고 연결 키를 저장해 증분 연결 확인 상태로 둘까요?`,
+      );
+      if (!confirmed) return;
+      const result = await setIncrementalMapping(reportId, activePart.code, sourceKey.trim());
+      const updated = await fetchTable(table.id, String(reportId));
+      onTableSaved?.(updated);
+      window.alert(
+        result.applied
+          ? `연결 키를 저장하고 ${result.applied_cell_count.toLocaleString()}개 셀에 증분값을 반영했습니다.`
+          : result.message,
+      );
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "연결 키를 반영하지 못했습니다.");
+    }
+  }
+
   useEffect(() => {
     setActivePartId(tableParts[0]?.id ?? table.id);
   }, [table.id, tableParts]);
@@ -699,6 +782,14 @@ export function DetailView({
         onSaved={(updated) => {
           setEditToken(null);
           onTableSaved?.(updated);
+        }}
+        onCreated={(created) => {
+          setEditToken(null);
+          onTableSaved?.(created);
+        }}
+        onDeleted={() => {
+          setEditToken(null);
+          onTableDeleted?.();
         }}
       />
     );
@@ -737,8 +828,17 @@ export function DetailView({
               <span>수정</span>
             </button>
           ) : null}
+          {reportId && isDraft && !table.is_test_table ? (
+            <button
+              className="secondary-button detail-incremental-key-button"
+              type="button"
+              onClick={() => void handleIncrementalMapping()}
+            >
+              <span>연결 키 입력</span>
+            </button>
+          ) : null}
           {table.is_test_table ? (
-            <span className="test-report-detail-badge">검수 미실행</span>
+            <span className="generation-detail-badge">검수 미실행</span>
           ) : null}
           <DownloadMenu table={table} />
         </div>
@@ -784,7 +884,7 @@ export function DetailView({
           <div className="detail-section detail-section--original">
             <div className="content-title-row">
               <div className="original-title-group">
-                <h2>{table.is_test_table ? "테스트 생성 표" : "원본 표"}</h2>
+                <h2>{table.is_test_table ? "생성 표" : "원본 표"}</h2>
                 {tableParts.length > 1 ? (
                   <div className="part-tabs" aria-label="하위 표 선택">
                     {tableParts.map((part) => (
@@ -829,13 +929,35 @@ export function DetailView({
           />
 
           <section className="detail-content">
+            {isDraft && activePart.generation_status === "mapping_review" ? (
+              <section className="incremental-connection-panel" aria-label="증분 연결 확인">
+                <div>
+                  <strong>{incrementalReasonLabel(activePart.incremental_reason_code)}</strong>
+                  <p>{activePart.generation_message || "자동 연결 근거를 확인하고 필요한 경우 M키를 직접 입력해 주세요."}</p>
+                </div>
+                {activePart.incremental_candidates?.length ? (
+                  <div className="incremental-candidate-list">
+                    {activePart.incremental_candidates.map((candidate) => (
+                      <button
+                        type="button"
+                        key={candidate.source_key}
+                        onClick={() => void handleIncrementalMapping(candidate.source_key)}
+                      >
+                        <span>{candidate.title}</span>
+                        <small>{candidate.source_key} · 일치도 {Math.round(candidate.score * 100)}%</small>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
             {activeTab === "checks" ? (
               table.is_test_table ? (
                 <section className="detail-section generation-detail-panel">
                   <div className="content-title-row">
                     <div>
                       <h2>{activePart.generation_status_label || table.generation_status_label}</h2>
-                      <p>이 테스트 연보에는 검수를 실행하지 않았습니다.</p>
+                      <p>이 생성 표에는 검수를 실행하지 않았습니다.</p>
                     </div>
                   </div>
                   <p className="generation-detail-message">
@@ -900,49 +1022,6 @@ export function DetailView({
                 onMove={selection.move}
               />
               )
-            ) : null}
-
-            {activeTab === "changes" ? (
-              <div className="detail-section">
-                <div className="content-title-row">
-                  <div>
-                    <h2>전년도 비교</h2>
-                  </div>
-                </div>
-                <div className="change-table">
-                  <div className="change-table__header">
-                    <span>구분</span>
-                    <span>항목</span>
-                    <span>전년도 파일</span>
-                    <span>올해 파일</span>
-                    <span>상태</span>
-                  </div>
-                  {activePart.changes.map((change) => (
-                    <div className="change-table__row" key={change.id}>
-                      <span>{change.category}</span>
-                      <strong>{change.item}</strong>
-                      <span>{change.previous}</span>
-                      <span>{change.current}</span>
-                      <span>{change.status}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {activeTab === "visuals" ? (
-              <div className="detail-section">
-                <div className="content-title-row">
-                  <div>
-                    <h2>시각화</h2>
-                  </div>
-                </div>
-                <div className="visual-grid">
-                  {activePart.visualizations.map((visualization) => (
-                    <VisualPanel visualization={visualization} key={visualization.id} />
-                  ))}
-                </div>
-              </div>
             ) : null}
 
             {activeTab === "metadata" ? (

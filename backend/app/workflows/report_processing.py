@@ -316,11 +316,9 @@ class ReportProcessingWorkflow:
                 report,
                 persisted_source_path=str(job["source_file_path"]),
                 force_new=True,
-                origin_kind=(
-                    "uploaded_update"
-                    if options.import_mode == "completed_report_update"
-                    else "uploaded"
-                ),
+                # Full-file uploads follow the same editable draft lifecycle
+                # as increment uploads: parse first, then confirm explicitly.
+                origin_kind="upload_draft",
                 base_report_id=options.base_report_id,
             )
             update = None

@@ -45,4 +45,3 @@ export function MetadataGrid({ part, difference }: MetadataGridProps) {
     </dl>
   );
 }
-

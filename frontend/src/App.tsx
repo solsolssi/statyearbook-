@@ -9,7 +9,7 @@ import { useReport } from "./hooks/useReport";
 import { useReportImport } from "./hooks/useReportImport";
 import { useReportValidation } from "./hooks/useReportValidation";
 import { useValidationCatalog } from "./hooks/useValidationCatalog";
-import { deleteReport, fetchTable } from "./api/reportApi";
+import { confirmIncrementReport, deleteReport, fetchTable } from "./api/reportApi";
 import type { ReportOption, StatTable, TableStatus } from "./types";
 import {
   DEFAULT_HIDDEN_VALIDATION_TYPES,
@@ -229,6 +229,25 @@ export default function App() {
     }
   }
 
+  async function handleConfirmIncrementDraft(): Promise<boolean> {
+    const reportId = report.data?.summary.report_id;
+    if (!reportId || !["incremental_draft", "upload_draft"].includes(report.data?.summary.origin_kind ?? "")) {
+      return false;
+    }
+    if (!window.confirm("연보 초안을 확정할까요? 확정 후에도 표 수정과 검수는 가능합니다.")) {
+      return false;
+    }
+    try {
+      await confirmIncrementReport(reportId);
+      setReportRefreshKey((current) => current + 1);
+      window.alert("연보를 확정했습니다.");
+      return true;
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "연보 초안을 확정하지 못했습니다.");
+      return false;
+    }
+  }
+
   if (report.status === "loading") {
     return <div className="state-page">데이터를 불러오는 중입니다.</div>;
   }
@@ -260,10 +279,14 @@ export default function App() {
 
   if (detailTable) {
     const detailReportId = report.data?.summary.report_id ?? undefined;
+    const detailIsDraft = ["incremental_draft", "upload_draft"].includes(
+      report.data?.summary.origin_kind ?? "",
+    );
     return (
       <DetailView
         table={detailTable}
         reportId={detailReportId && detailReportId > 0 ? detailReportId : undefined}
+        isDraft={detailIsDraft}
         validationTypes={validationTypes}
         hiddenValidationTypes={hiddenValidationTypes}
         onValidationTypeVisibilityChange={handleValidationTypeVisibility}
@@ -279,6 +302,14 @@ export default function App() {
           setDetailTableId(updated.id);
           setSelectedTableId(updated.id);
           setSelectedTableDetail(updated);
+          setReportRefreshKey((current) => current + 1);
+        }}
+        onTableDeleted={() => {
+          setDetailTableId(null);
+          setDetailTable(null);
+          setSelectedTableId("");
+          setSelectedTableDetail(null);
+          setDetailStatus("idle");
           setReportRefreshKey((current) => current + 1);
         }}
         onOpenPasswordSettings={() => {
@@ -322,6 +353,11 @@ export default function App() {
       }}
       deleteState={deleteState}
       onDeleteReport={handleDeleteReport}
+      onConfirmIncrementDraft={handleConfirmIncrementDraft}
+      onCreatedIncrementalTable={(tableId) => {
+        setReportRefreshKey((current) => current + 1);
+        handleOpen(tableId);
+      }}
       onSelect={handleSelect}
       onOpen={handleOpen}
       onTableListScrollTopChange={setTableListScrollTop}

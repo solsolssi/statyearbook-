@@ -162,7 +162,7 @@ class BlueReviewExtractionTests(unittest.TestCase):
             [(row["location"], row["status"], row["row_index"], row["col_index"]) for row in checks],
             [
                 ("5행 5열", "확인 필요", 4, 4),
-                ("6행 1열", "확인 필요", 5, 0),
+                ("6행 1열", "재검수 필요", 5, 0),
             ],
         )
         self.assertEqual(checks[0]["expected_value"], "통과")

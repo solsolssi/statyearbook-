@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, CircleHelp } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleHelp, GitBranch } from "lucide-react";
 
 import type { TableStatus } from "../types";
 
@@ -24,7 +24,7 @@ interface StatusBadgeProps {
 
 export function StatusBadge({ status, label }: StatusBadgeProps) {
   const config = statusConfig[status];
-  const Icon = config.icon;
+  const Icon = label === "증분 연결" ? GitBranch : config.icon;
 
   return (
     <span className={`status-badge status-badge--${status}`}>

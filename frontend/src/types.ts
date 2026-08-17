@@ -13,6 +13,9 @@ export interface ColumnDefinition {
   key: string;
   label: string;
   label_en?: string;
+  /** Header levels from the outer group to the leaf label. */
+  header_path?: string[];
+  header_path_en?: string[];
   align: "left" | "right" | "center";
   width?: string;
   source_col_index?: number;
@@ -98,6 +101,47 @@ export interface TableHierarchyItem {
   title_en?: string;
 }
 
+export interface IncrementalConnectionCandidate {
+  source_key: string;
+  title: string;
+  score: number;
+  title_score: number;
+  structure_score: number;
+  metadata_score: number;
+  number_score: number;
+}
+
+export interface IncrementalConnectionItem {
+  table_code: string;
+  table_id: number | null;
+  title: string;
+  source_key: string;
+  match_method: string;
+  confidence: number;
+  mapping_status: string;
+  generation_status: string;
+  generation_message: string;
+  reason_code: string;
+  evidence: Record<string, unknown>;
+  candidates: IncrementalConnectionCandidate[];
+  confirmed_by_user: boolean;
+}
+
+export interface IncrementalConnectionOverview {
+  report_id: number;
+  connections: IncrementalConnectionItem[];
+  unmatched_increments: IncrementalConnectionItem[];
+  ignored_increments: IncrementalConnectionItem[];
+  summary: {
+    total: number;
+    connected: number;
+    review: number;
+    unmatched: number;
+    deleted: number;
+    identified_physical_tables: number;
+  };
+}
+
 export interface StatTablePart {
   id: string;
   code: string;
@@ -118,6 +162,13 @@ export interface StatTablePart {
   generation_status?: string;
   generation_status_label?: string;
   generation_message?: string;
+  incremental_source_key?: string;
+  incremental_match_method?: string;
+  incremental_confidence?: number;
+  incremental_reason_code?: string;
+  incremental_evidence?: Record<string, unknown>;
+  incremental_candidates?: IncrementalConnectionCandidate[];
+  incremental_confirmed_by_user?: boolean;
   update_mode?: string;
   source_dataset_title?: string;
   validation_stale?: boolean;
@@ -153,6 +204,13 @@ export interface StatTable {
   generation_status?: string;
   generation_status_label?: string;
   generation_message?: string;
+  incremental_source_key?: string;
+  incremental_match_method?: string;
+  incremental_confidence?: number;
+  incremental_reason_code?: string;
+  incremental_evidence?: Record<string, unknown>;
+  incremental_candidates?: IncrementalConnectionCandidate[];
+  incremental_confirmed_by_user?: boolean;
   update_mode?: string;
   source_dataset_title?: string;
   validation_stale?: boolean;
@@ -176,6 +234,13 @@ export interface StatTableSummary {
   generation_status?: string;
   generation_status_label?: string;
   generation_message?: string;
+  incremental_source_key?: string;
+  incremental_match_method?: string;
+  incremental_confidence?: number;
+  incremental_reason_code?: string;
+  incremental_evidence?: Record<string, unknown>;
+  incremental_candidates?: IncrementalConnectionCandidate[];
+  incremental_confirmed_by_user?: boolean;
   update_mode?: string;
   source_dataset_title?: string;
   validation_stale?: boolean;
@@ -206,6 +271,8 @@ export interface EditableColumnPatch {
   source_col_indexes: number[];
   label: string;
   label_en: string;
+  header_path?: string[];
+  header_path_en?: string[];
   footnote_marker: string;
 }
 
@@ -243,6 +310,8 @@ export interface EditableTablePartPayload {
   };
   columns: EditableColumnPatch[];
   cells: EditableCellPatch[];
+  replace_structure: boolean;
+  replace_rows: boolean;
 }
 
 export interface TableContentUpdatePayload {
@@ -253,6 +322,7 @@ export interface TableContentUpdatePayload {
   section_title_en: string;
   domain: string;
   hierarchy_patches: EditableHierarchyPatch[];
+  deleted_part_ids: string[];
   parts: EditableTablePartPayload[];
 }
 
@@ -445,97 +515,4 @@ export interface ReportComparisonSummary {
   deleted_table_count: number;
   changed_cell_count: number;
   tables: ReportTableDifference[];
-}
-
-export interface ReproductionReportOption {
-  id: number;
-  year: number;
-  title: string;
-  is_archived: boolean;
-}
-
-export interface ReproductionPeriodRule {
-  mode: "latest_n" | "single_period" | string;
-  count: number;
-  first_period: string;
-  last_period: string;
-  target_period: string;
-  anchor: string;
-}
-
-export interface ReproductionSourceCandidate {
-  dataset_id: number;
-  external_id: string;
-  title: string;
-  title_similarity: number;
-  value_coverage: number;
-  header_coverage: number;
-  has_target_period: boolean;
-}
-
-export interface ReproductionTableAnalysis {
-  table_id: number;
-  code: string;
-  title: string;
-  table_order: number;
-  mapping_status: "mapped" | "review" | "unmapped";
-  generation_status: "basic_recipe" | "custom_recipe";
-  materializer: string;
-  source_dataset_id: number | null;
-  source_external_id: string;
-  source_title: string;
-  match_method: string;
-  confidence: number;
-  reason: string;
-  period_rule: ReproductionPeriodRule;
-  candidates: ReproductionSourceCandidate[];
-  recipe_status: string;
-  comparison_status: string;
-  compared_cell_count: number;
-  mismatch_count: number;
-  comparison_error: string;
-}
-
-export interface ReproductionBuildSummary {
-  id: number;
-  report_id: number;
-  report_year: number;
-  target_data_year: number;
-  status: string;
-  total_tables: number;
-  exact_tables: number;
-  mismatch_tables: number;
-  source_difference_tables: number;
-  carried_forward_tables: number;
-  static_tables: number;
-  empty_tables: number;
-  deleted_tables: number;
-  source_missing_tables: number;
-  unavailable_tables: number;
-  recipe_required_tables: number;
-  mapping_review_tables: number;
-  compared_cells: number;
-  mismatch_cells: number;
-  source_difference_cells: number;
-  created_at: string;
-  completed_at: string;
-}
-
-export interface YearbookReproductionOverview {
-  report_id: number;
-  report_year: number;
-  report_title: string;
-  target_data_period: string;
-  summary: {
-    total_tables: number;
-    mapped_tables: number;
-    review_tables: number;
-    unmapped_tables: number;
-    basic_recipe_candidates: number;
-    custom_recipe_required: number;
-    draft_recipes: number;
-  };
-  latest_build: ReproductionBuildSummary | null;
-  available_reports: ReproductionReportOption[];
-  tables: ReproductionTableAnalysis[];
 }

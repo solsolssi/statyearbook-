@@ -165,7 +165,6 @@ export function ValidationRunDialog({
       >
         <div className="upload-dialog__header">
           <div>
-            <span className="section-label">선택 연보 검수</span>
             <h2 id="validation-run-title">검수 항목 선택</h2>
             <p>{reportTitle}</p>
           </div>
@@ -283,15 +282,7 @@ export function ValidationRunDialog({
           </label>
         </div>
 
-        <div className="upload-dialog__footer">
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={isRunning}
-            onClick={onClose}
-          >
-            취소
-          </button>
+        <div className="upload-dialog__footer upload-dialog__footer--end">
           <button
             type="button"
             className="primary-button"

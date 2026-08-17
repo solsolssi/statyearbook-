@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 
 import type { ColumnDefinition, ValidationHighlightCell, ValidationHighlightRow } from "../types";
 import { formatCellValue } from "../utils/formatters";
+import { headerLayout } from "../utils/headerLayout";
 
 interface HighlightLocation {
   rowText?: string;
@@ -149,6 +150,7 @@ export function DataGrid({
   }, [scrollSignal]);
 
   const highlightTone = highlight?.tone ?? "review";
+  const headers = headerLayout(columns);
 
   return (
     <div
@@ -156,7 +158,7 @@ export function DataGrid({
         "data-grid",
         `data-grid--${theme}`,
         `data-grid--highlight-${highlightTone}`,
-        stickyHeader ? "data-grid--sticky-header" : "",
+        stickyHeader && headers.length === 1 ? "data-grid--sticky-header" : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -168,9 +170,12 @@ export function DataGrid({
           ))}
         </colgroup>
         <thead>
-          <tr>
-            {columns.map((column, columnIndex) => {
-              const sourceIndexes = sourceColumnIndexes(column, columnIndex);
+          {headers.map((headerRow, headerLevel) => (
+          <tr key={`header-${headerLevel}`}>
+            {headerRow.map((header) => {
+              const sourceIndexes = header.columnIndexes.flatMap((columnIndex) =>
+                sourceColumnIndexes(columns[columnIndex], columnIndex),
+              );
               const exactHeaderRole = exactHighlightCells
                 .filter((cell) => cell.row_index < headerCount && sourceIndexes.includes(cell.col_index))
                 .some((cell) => cell.role === "target")
@@ -180,7 +185,9 @@ export function DataGrid({
                   : undefined;
               const isHeaderHighlight =
                 exactHeaderRole === "target" ||
-                (!hasExactHighlights && headerTargets.some((target) => columnMatches(column, target.columnText)));
+                (!hasExactHighlights && header.columnIndexes.some((columnIndex) =>
+                  headerTargets.some((target) => columnMatches(columns[columnIndex], target.columnText)),
+                ));
               const shouldAttachHeaderRef = isHeaderHighlight && !didAttachHighlightedHeaderRef;
               if (shouldAttachHeaderRef) {
                 didAttachHighlightedHeaderRef = true;
@@ -189,8 +196,10 @@ export function DataGrid({
               return (
                 <th
                   className={[
-                    `align-${column.align}`,
-                    !hasExactHighlights && columnTargets.some((target) => columnMatches(column, target.columnText))
+                    header.columnIndexes.length === 1 ? `align-${columns[header.columnIndexes[0]].align}` : "align-center",
+                    !hasExactHighlights && header.columnIndexes.some((columnIndex) =>
+                      columnTargets.some((target) => columnMatches(columns[columnIndex], target.columnText)),
+                    )
                       ? "data-grid__column-highlight"
                       : "",
                     exactHeaderRole === "related" ? "data-grid__header-related-highlight" : "",
@@ -198,20 +207,23 @@ export function DataGrid({
                   ]
                     .filter(Boolean)
                     .join(" ")}
-                  key={column.key}
+                  colSpan={header.colSpan}
+                  rowSpan={header.rowSpan}
+                  key={header.key}
                   ref={shouldAttachHeaderRef ? highlightedHeaderRef : undefined}
                 >
                   <span>
-                    {column.label}
-                    {column.footnote_marker ? (
-                      <sup className="data-grid__footnote">{column.footnote_marker}</sup>
+                    {header.label}
+                    {header.isLeaf && header.columnIndexes.length === 1 && columns[header.columnIndexes[0]].footnote_marker ? (
+                      <sup className="data-grid__footnote">{columns[header.columnIndexes[0]].footnote_marker}</sup>
                     ) : null}
                   </span>
-                  {column.label_en ? <small>{column.label_en}</small> : null}
+                  {header.labelEn ? <small>{header.labelEn}</small> : null}
                 </th>
               );
             })}
           </tr>
+          ))}
         </thead>
         <tbody>
           {visibleRows.map((row, rowIndex) => {

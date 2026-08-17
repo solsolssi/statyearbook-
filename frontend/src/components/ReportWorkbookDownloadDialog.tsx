@@ -184,7 +184,6 @@ export function ReportWorkbookDownloadDialog({
       <section className="upload-dialog report-workbook-dialog" role="dialog" aria-modal="true">
         <div className="upload-dialog__header">
           <div>
-            <span className="section-label">연보 다운</span>
             <h2>연보 다운로드</h2>
           </div>
           <button
@@ -270,15 +269,7 @@ export function ReportWorkbookDownloadDialog({
           </>
         )}
 
-        <div className="upload-dialog__footer">
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={isRunning}
-            onClick={onClose}
-          >
-            닫기
-          </button>
+        <div className="upload-dialog__footer upload-dialog__footer--end">
           <button
             type="button"
             className="primary-button"

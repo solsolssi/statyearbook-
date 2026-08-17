@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
 from datetime import datetime
 import json
 from pathlib import Path
@@ -40,32 +39,21 @@ from app.ingest.table_shape import wide_row_oriented_text_table_header_count
 from app.validation.models import restore_hyphenated_line_breaks
 from app.validation.presentation import validation_issue_from_row
 from app.validation.spec_repository import load_rule_specs_by_id
-from app.yearbook_data.relational_materializer import (
-    source_items,
-    source_matrix,
-)
 
-
-TEST_REPORT_ID = -1
-GENERATED_TABLE_STATUSES = {
-    "exact",
-    "source_difference",
-    "carried_forward",
-    "static",
-    "empty",
-    "new_table",
-}
 
 GENERATION_STATUS_LABELS = {
-    "exact": "원장 일치",
-    "source_difference": "원장 기준 생성",
+    "exact": "생성값 일치",
+    "source_difference": "업로드값 반영",
     "carried_forward": "이전 값 승계",
     "static": "고정 통계",
     "empty": "빈 값 유지",
     "unavailable": "생성 확인 필요",
-    "source_missing": "원장 데이터 없음",
-    "mapping_review": "원장 연결 확인",
+    "source_missing": "증분 데이터 없음",
+    "mapping_review": "증분 연결",
     "recipe_required": "생성 규칙 필요",
+    "increment_applied": "증분 반영",
+    "increment_no_change": "증분 변경 없음",
+    "new_table": "신규 통계 확인",
 }
 
 
@@ -78,15 +66,6 @@ class DatabaseReportService:
         self._db_path = db_path
 
     def get_payload_for_report(self, report_id: int | None = None) -> ReportPayload:
-        if report_id == TEST_REPORT_ID:
-            tables, report, run = self._test_report_tables()
-            return ReportPayload(
-                summary=test_report_summary(report, run, tables),
-                tables=tables,
-                press_insights=[],
-                available_reports=self.list_reports(),
-                available_templates=self.list_templates(),
-            )
         report = self._resolve_report(report_id)
         tables = self.list_tables(
             report_id,
@@ -108,15 +87,6 @@ class DatabaseReportService:
         clients use this projection and request one table detail on demand.
         """
 
-        if report_id == TEST_REPORT_ID:
-            tables, report, run = self._test_report_tables()
-            return ReportOverviewPayload(
-                summary=test_report_summary(report, run, tables),
-                tables=[table_summary(table) for table in tables],
-                press_insights=[],
-                available_reports=self.list_reports(),
-                available_templates=self.list_templates(),
-            )
         report = self._resolve_report(report_id)
         tables = self.list_tables(
             report_id,
@@ -215,9 +185,6 @@ class DatabaseReportService:
         include_highlights: bool = True,
         include_passing_checks: bool = True,
     ) -> list[StatTable]:
-        if report_id == TEST_REPORT_ID:
-            tables, _, _ = self._test_report_tables()
-            return tables
         report = self._resolve_report(report_id)
         if report is None:
             return []
@@ -303,9 +270,6 @@ class DatabaseReportService:
         ]
 
     def get_table(self, table_id: str, report_id: int | None = None) -> StatTable | None:
-        if report_id == TEST_REPORT_ID:
-            tables, _, _ = self._test_report_tables()
-            return next((table for table in tables if table.id == table_id), None)
         report = self._resolve_report(report_id)
         if report is None:
             return None
@@ -397,7 +361,7 @@ class DatabaseReportService:
             init_db(connection)
             rows = connection.execute(
                 """
-                SELECT r.id, r.year, r.title, r.source_file_name, r.imported_at
+                SELECT r.id, r.year, r.title, r.source_file_name, r.imported_at, r.origin_kind
                 FROM annual_reports r
                 WHERE COALESCE(r.is_archived, 0) = 0
                   AND COALESCE(r.origin_kind, 'uploaded') != 'ledger_generated'
@@ -409,7 +373,11 @@ class DatabaseReportService:
                 {
                     "id": int(row["id"]),
                     "year": int(row["year"]),
-                    "title": row["title"],
+                    "title": (
+                        f"{row['title']} · 초안"
+                        if str(row["origin_kind"] or "") in {"incremental_draft", "upload_draft"}
+                        else row["title"]
+                    ),
                     "file_name": decode_display_text(row["source_file_name"]),
                     "imported_at": row["imported_at"],
                     "table_count": self._logical_table_count(connection, int(row["id"])),
@@ -417,12 +385,14 @@ class DatabaseReportService:
                 }
                 for row in rows
             ]
-            test_option = self._test_report_option(connection)
-            return [*reports, test_option] if test_option is not None else reports
+            # The former virtual "test report" was a read-only view over a
+            # global-ledger build.  Increment uploads now create real drafts,
+            # so legacy build artefacts must not appear in the report selector.
+            return reports
 
     def delete_report(self, report_id: int) -> ReportDeleteResult | None:
-        if report_id == TEST_REPORT_ID or report_id <= 0:
-            raise ValueError("시스템 테스트 연보는 삭제할 수 없습니다.")
+        if report_id <= 0:
+            raise ValueError("삭제할 연보를 찾을 수 없습니다.")
 
         with connect(self._db_path) as connection:
             init_db(connection)
@@ -442,18 +412,6 @@ class DatabaseReportService:
                     raise ValueError("숨김 템플릿 연보는 삭제할 수 없습니다.")
                 if int(report["is_archived"] or 0):
                     raise ValueError("보관된 기준 연보는 삭제할 수 없습니다.")
-
-                child_count = int(
-                    connection.execute(
-                        "SELECT COUNT(*) AS count FROM annual_reports WHERE base_report_id = ?",
-                        (report_id,),
-                    ).fetchone()["count"]
-                )
-                if child_count > 0:
-                    raise ValueError(
-                        f"이 연보를 기준으로 만든 연보 {child_count}개가 있어 삭제할 수 없습니다. "
-                        "파생 연보를 먼저 삭제해 주세요."
-                    )
 
                 table_count = int(
                     connection.execute(
@@ -508,133 +466,6 @@ class DatabaseReportService:
                 }
                 for row in rows
             ]
-
-    def _test_report_option(
-        self,
-        connection: DatabaseConnection,
-    ) -> dict[str, object] | None:
-        context = latest_test_run_context(connection)
-        if context is None:
-            return None
-        report, run = context
-        return {
-            "id": TEST_REPORT_ID,
-            "year": 0,
-            "title": "테스트 연보",
-            "file_name": "원장 기반 생성 결과 · 검수 미실행",
-            "imported_at": str(run["completed_at"] or run["created_at"] or ""),
-            "table_count": self._logical_table_count(connection, int(report["id"])),
-            "kind": "test",
-        }
-
-    def _test_report_tables(
-        self,
-    ) -> tuple[list[StatTable], DatabaseRow, DatabaseRow]:
-        with connect(self._db_path) as connection:
-            init_db(connection)
-            context = latest_test_run_context(connection)
-            if context is None:
-                raise ValueError("완료된 테스트 연보 생성 결과가 없습니다.")
-            report, run = context
-            table_rows = connection.execute(
-                """
-                SELECT *
-                FROM stat_tables
-                WHERE report_id = ?
-                ORDER BY table_order, id
-                """,
-                (int(report["id"]),),
-            ).fetchall()
-            table_ids = [int(row["id"]) for row in table_rows]
-            baseline_cells = load_cells_by_table(connection, table_ids)
-            result_rows = connection.execute(
-                """
-                SELECT r.*, d.title AS source_dataset_title
-                FROM yearbook_reproduction_table_results r
-                LEFT JOIN statistical_datasets d ON d.id = r.source_dataset_id
-                WHERE r.run_id = ?
-                """,
-                (int(run["id"]),),
-            ).fetchall()
-            result_by_table = {
-                int(row["baseline_table_id"]): row for row in result_rows
-            }
-            generated_by_table: dict[int, dict[tuple[int, int], str]] = defaultdict(dict)
-            generated_rows = connection.execute(
-                """
-                SELECT r.baseline_table_id, c.row_index, c.col_index,
-                       c.generated_value
-                FROM yearbook_reproduction_cell_results c
-                JOIN yearbook_reproduction_table_results r
-                  ON r.id = c.table_result_id
-                WHERE r.run_id = ?
-                ORDER BY r.baseline_table_id, c.row_index, c.col_index
-                """,
-                (int(run["id"]),),
-            ).fetchall()
-            for row in generated_rows:
-                generated_by_table[int(row["baseline_table_id"])][
-                    (int(row["row_index"]), int(row["col_index"]))
-                ] = str(row["generated_value"] or "")
-            policies = {
-                str(row["table_code"]): str(row["update_mode"])
-                for row in connection.execute(
-                    """
-                    SELECT table_code, update_mode
-                    FROM yearbook_table_update_policies
-                    """
-                )
-            }
-
-            physical_tables: list[StatTable] = []
-            for table_row in table_rows:
-                table_id = int(table_row["id"])
-                result = result_by_table.get(table_id)
-                generated = generated_by_table.get(table_id, {})
-                display_cells = overlay_generated_cells(
-                    baseline_cells.get(table_id, []),
-                    generated,
-                )
-                table = self._row_to_table(
-                    connection,
-                    report,
-                    table_row,
-                    None,
-                    cells=display_cells,
-                    check_rows=[],
-                    specs_by_rule_id={},
-                    include_highlights=False,
-                )
-                physical_tables.append(
-                    decorate_test_table(
-                        table,
-                        result=result,
-                        update_mode=policies.get(str(table_row["code"]), ""),
-                    )
-                )
-            existing_codes = {str(row["code"]) for row in table_rows}
-            new_entries = connection.execute(
-                """
-                SELECT m.*, d.title AS source_dataset_title
-                FROM yearbook_edition_manifest m
-                LEFT JOIN statistical_datasets d ON d.id = m.source_dataset_id
-                WHERE m.edition_year = ?
-                  AND m.lifecycle_status = 'new'
-                ORDER BY m.table_order, m.id
-                """,
-                (int(run["report_year"]),),
-            ).fetchall()
-            for entry in new_entries:
-                if str(entry["table_code"]) in existing_codes:
-                    continue
-                physical_tables.append(
-                    source_native_new_table(
-                        connection,
-                        entry=entry,
-                        report=report,
-                    )
-                )
-            return group_table_parts(physical_tables), report, run
 
     def _latest_report(self) -> DatabaseRow | None:
         with connect(self._db_path) as connection:
@@ -737,6 +568,18 @@ class DatabaseReportService:
             """,
             (int(report["id"]), int(table_row["id"])),
         ).fetchone()
+        incremental_mapping = connection.execute(
+            """
+            SELECT source_key, match_method, confidence, reason_code,
+                   evidence_json, candidates_json, confirmed_by_user
+            FROM report_incremental_table_mappings
+            WHERE report_id = ? AND table_code = ?
+            """,
+            (int(report["id"]), str(table_row["code"])),
+        ).fetchone()
+        if generation is not None and str(generation["generation_status"]) in {"mapping_review", "new_table"}:
+            status = TableStatus.NEEDS_REVIEW
+            status_label = generation_status_label(str(generation["generation_status"]))
         update = connection.execute(
             """
             SELECT d.change_type, d.changed_cell_count
@@ -810,6 +653,31 @@ class DatabaseReportService:
                 else ""
             ),
             generation_message=str(generation["generation_message"] or "") if generation else "",
+            incremental_source_key=(
+                str(incremental_mapping["source_key"] or "") if incremental_mapping else ""
+            ),
+            incremental_match_method=(
+                str(incremental_mapping["match_method"] or "") if incremental_mapping else ""
+            ),
+            incremental_confidence=(
+                float(incremental_mapping["confidence"] or 0) if incremental_mapping else 0
+            ),
+            incremental_reason_code=(
+                str(incremental_mapping["reason_code"] or "") if incremental_mapping else ""
+            ),
+            incremental_evidence=(
+                json_object(str(incremental_mapping["evidence_json"] or "{}"))
+                if incremental_mapping
+                else {}
+            ),
+            incremental_candidates=(
+                json_object_list(str(incremental_mapping["candidates_json"] or "[]"))
+                if incremental_mapping
+                else []
+            ),
+            incremental_confirmed_by_user=(
+                bool(incremental_mapping["confirmed_by_user"]) if incremental_mapping else False
+            ),
             validation_stale=validation_stale,
         )
 
@@ -846,6 +714,13 @@ def table_summary(table: StatTable) -> StatTableSummary:
         generation_status=table.generation_status,
         generation_status_label=table.generation_status_label,
         generation_message=table.generation_message,
+        incremental_source_key=table.incremental_source_key,
+        incremental_match_method=table.incremental_match_method,
+        incremental_confidence=table.incremental_confidence,
+        incremental_reason_code=table.incremental_reason_code,
+        incremental_evidence=table.incremental_evidence,
+        incremental_candidates=table.incremental_candidates,
+        incremental_confirmed_by_user=table.incremental_confirmed_by_user,
         update_mode=table.update_mode,
         source_dataset_title=table.source_dataset_title,
         validation_stale=table.validation_stale,
@@ -860,275 +735,20 @@ def json_list(value: str) -> list[str]:
     return [str(item) for item in parsed] if isinstance(parsed, list) else []
 
 
-def latest_test_run_context(
-    connection: DatabaseConnection,
-) -> tuple[DatabaseRow, DatabaseRow] | None:
-    run = connection.execute(
-        """
-        SELECT rr.*
-        FROM yearbook_reproduction_runs rr
-        JOIN annual_reports ar ON ar.id = rr.baseline_report_id
-        WHERE rr.status = 'completed'
-          AND COALESCE(ar.is_archived, 0) = 0
-        ORDER BY rr.report_year DESC, rr.completed_at DESC, rr.id DESC
-        LIMIT 1
-        """
-    ).fetchone()
-    if run is None:
-        return None
-    report = connection.execute(
-        "SELECT * FROM annual_reports WHERE id = ?",
-        (int(run["baseline_report_id"]),),
-    ).fetchone()
-    return (report, run) if report is not None else None
+def json_object(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
-def overlay_generated_cells(
-    baseline_cells: list[DatabaseRow],
-    generated: dict[tuple[int, int], str],
-) -> list[DatabaseRow]:
-    if not generated:
-        return baseline_cells
-    by_coordinate = {
-        (int(cell["row_index"]), int(cell["col_index"])): dict(cell)
-        for cell in baseline_cells
-    }
-    header_limit = max(
-        (
-            int(cell["row_index"])
-            for cell in baseline_cells
-            if bool(cell["is_header"])
-        ),
-        default=-1,
-    )
-    for (row_index, col_index), value in generated.items():
-        cell = by_coordinate.get((row_index, col_index))
-        if cell is None:
-            cell = {
-                "table_id": 0,
-                "row_index": row_index,
-                "col_index": col_index,
-                "text_value": "",
-                "numeric_value": None,
-                "is_header": int(row_index <= header_limit),
-                "footnote_marker": "",
-            }
-            by_coordinate[(row_index, col_index)] = cell
-        cell["text_value"] = value
-        cell["numeric_value"] = None
-    return [
-        by_coordinate[key]
-        for key in sorted(by_coordinate)
-    ]
-
-
-def decorate_test_table(
-    table: StatTable,
-    *,
-    result: DatabaseRow | None,
-    update_mode: str,
-) -> StatTable:
-    generation_status = str(result["status"]) if result is not None else "not_built"
-    mismatch_count = int(result["mismatch_count"] or 0) if result is not None else 0
-    error = str(result["error_message"] or "") if result is not None else ""
-    labels = {
-        "exact": "생성 완료",
-        "source_difference": "원장값 반영",
-        "carried_forward": "이전 값 승계",
-        "static": "고정 표 유지",
-        "empty": "빈 값 유지",
-        "source_missing": "원장 기간 없음",
-        "mapping_review": "원장 연결 확인",
-        "unavailable": "생성 규칙 필요",
-        "recipe_required": "개별 규칙 필요",
-        "deleted": "삭제 표",
-        "not_built": "생성 결과 없음",
-    }
-    if generation_status == "source_difference":
-        message = (
-            f"원장값으로 생성했습니다. 기존 연보와 {mismatch_count:,}개 셀이 다르며 "
-            "테스트 연보에는 원장값을 표시합니다."
-        )
-    elif generation_status == "exact":
-        message = "원장값으로 생성했으며 기존 연보 레이아웃과 모든 셀이 일치합니다."
-    elif generation_status in {"carried_forward", "static", "empty"}:
-        message = error or labels[generation_status]
-    else:
-        partial = (
-            int(result["mismatch_count"] or 0)
-            if result is not None
-            else 0
-        )
-        message = error or "현재 자동 생성하지 못해 기준 연보의 표 형태를 표시합니다."
-        if partial:
-            message = (
-                f"가능한 범위까지 원장값을 적용한 현재 생성 상태입니다. 문제: {message}"
-            )
-    status = (
-        TableStatus.NORMAL
-        if generation_status in GENERATED_TABLE_STATUSES
-        else TableStatus.NEEDS_REVIEW
-    )
-    status_label = labels.get(generation_status, generation_status or "생성 확인")
-    source_dataset_title = (
-        str(result["source_dataset_title"] or "") if result is not None else ""
-    )
-    metadata = table.metadata.model_copy(
-        update={
-            "original_file": "원장 기반 테스트 연보",
-            "note": "검수 미실행 · " + message,
-        }
-    )
-    return table.model_copy(
-        deep=True,
-        update={
-            "status": status,
-            "status_label": status_label,
-            "checks": [],
-            "is_test_table": True,
-            "generation_status": generation_status,
-            "generation_status_label": status_label,
-            "generation_message": message,
-            "update_mode": update_mode,
-            "source_dataset_title": source_dataset_title,
-            "summary": [message, *table.summary],
-            "metadata": metadata,
-        },
-    )
-
-
-def source_native_new_table(
-    connection: DatabaseConnection,
-    *,
-    entry: DatabaseRow,
-    report: DatabaseRow,
-) -> StatTable:
-    dataset_id = (
-        int(entry["source_dataset_id"])
-        if entry["source_dataset_id"] is not None
-        else None
-    )
-    target_period = str(entry["target_period"] or "")
-    target_year = int(target_period[:4]) if target_period[:4].isdigit() else int(report["year"])
-    source_rows = source_matrix(connection, dataset_id, target_year) if dataset_id else []
-    items = source_items(connection, dataset_id) if dataset_id else {}
-    active_numbers = {
-        item_data_no
-        for source_row in source_rows
-        for item_data_no in source_row
-    }
-    ordered_items = [
-        item
-        for item_data_no, item in items.items()
-        if item_data_no in active_numbers
-    ]
-    columns = [
-        ColumnDefinition(
-            key=f"source_{item.item_data_no}",
-            label=(item.full_name or item.item_name).replace(">", " / "),
-            align="left" if index == 0 else "right",
-            source_col_index=index,
-            source_col_indexes=[index],
-        )
-        for index, item in enumerate(ordered_items)
-    ]
-    rows: list[dict[str, Any]] = []
-    for row_offset, source_row in enumerate(source_rows, start=1):
-        output: dict[str, Any] = {
-            "_row_index": row_offset,
-            "_row_label": "",
-        }
-        for index, item in enumerate(ordered_items):
-            value = source_row.get(item.item_data_no)
-            output[f"source_{item.item_data_no}"] = value.value if value is not None else ""
-            if index == 0 and value is not None:
-                output["_row_label"] = value.value
-        rows.append(output)
-
-    title = str(
-        entry["title"]
-        or entry["source_dataset_title"]
-        or f"신규 통계 {entry['table_code']}"
-    )
-    if source_rows and columns:
-        generation_status = "new_table"
-        generation_status_label = "신규 표 미리보기"
-        generation_message = (
-            "신규 통계를 원장 항목 순서로 구성했습니다. 영문·주석·출처와 최종 "
-            "레이아웃은 게시 전에 승인해야 합니다."
-        )
-        status = TableStatus.NORMAL
-    else:
-        generation_status = "source_missing"
-        generation_status_label = "신규 원장 확인"
-        generation_message = "신규 통계의 대상기간 원장값 또는 항목정보가 없습니다."
-        status = TableStatus.NEEDS_REVIEW
-    metadata = TableMetadata(
-        original_file="원장 기반 테스트 연보",
-        sheet_name="신규 통계",
-        note="검수 미실행 · " + generation_message,
-        source=str(entry["source_dataset_title"] or ""),
-        base_date=target_period or str(report["year"]),
-        extracted_at=str(entry["updated_at"] or entry["created_at"] or ""),
-        header_count=1,
-    )
-    return StatTable(
-        id=f"test-new-{entry['id']}",
-        code=str(entry["table_code"]),
-        title=title,
-        title_en="",
-        section_title="신규 통계",
-        section_title_en="",
-        domain="신규",
-        unit=str(entry["unit"] or "-"),
-        sheet_name="신규 통계",
-        status=status,
-        status_label=generation_status_label,
-        year_range=str(report["year"]),
-        updated_at=date_only(str(entry["updated_at"] or "")),
-        theme=theme_from_code(str(entry["table_code"])),
-        hierarchy=[
-            TableHierarchyItem(
-                code=str(entry["table_code"]),
-                title=title,
-            )
-        ],
-        columns=columns,
-        rows=rows,
-        summary=[generation_message],
-        key_figures=[],
-        checks=[],
-        changes=[],
-        visualizations=[],
-        metadata=metadata,
-        is_test_table=True,
-        generation_status=generation_status,
-        generation_status_label=generation_status_label,
-        generation_message=generation_message,
-        update_mode="full_snapshot",
-        source_dataset_title=str(entry["source_dataset_title"] or ""),
-    )
-
-
-def test_report_summary(
-    report: DatabaseRow,
-    run: DatabaseRow,
-    tables: list[StatTable],
-) -> ReportSummary:
-    counts = Counter(table.generation_status for table in tables)
-    return ReportSummary(
-        report_id=TEST_REPORT_ID,
-        file_name="원장 기반 생성 결과 · 검수 미실행",
-        base_year=str(run["report_year"]),
-        total_tables=len(tables),
-        normal_count=sum(table.status == "normal" for table in tables),
-        needs_review_count=sum(table.status == "needs_review" for table in tables),
-        suspected_error_count=0,
-        issue_counts={},
-        is_test_report=True,
-        validation_available=False,
-        generation_counts=dict(counts),
-    )
+def json_object_list(value: str) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
 
 
 def chunks(values: list[int], size: int = 800) -> list[list[int]]:
@@ -1428,6 +1048,13 @@ def table_to_part(table: StatTable) -> StatTablePart:
         generation_status=table.generation_status,
         generation_status_label=table.generation_status_label,
         generation_message=table.generation_message,
+        incremental_source_key=table.incremental_source_key,
+        incremental_match_method=table.incremental_match_method,
+        incremental_confidence=table.incremental_confidence,
+        incremental_reason_code=table.incremental_reason_code,
+        incremental_evidence=table.incremental_evidence,
+        incremental_candidates=table.incremental_candidates,
+        incremental_confirmed_by_user=table.incremental_confirmed_by_user,
         update_mode=table.update_mode,
         source_dataset_title=table.source_dataset_title,
         validation_stale=table.validation_stale,
@@ -1450,50 +1077,6 @@ def combined_status(tables: list[StatTable]) -> tuple[TableStatus, str]:
     return TableStatus.NORMAL, "정상"
 
 
-def combined_generation(tables: list[StatTable]) -> dict[str, object]:
-    test_tables = [table for table in tables if table.is_test_table]
-    if not test_tables:
-        return {}
-    unresolved = [
-        table
-        for table in test_tables
-        if table.generation_status not in GENERATED_TABLE_STATUSES
-    ]
-    source = (
-        unresolved[0]
-        if unresolved
-        else next(
-            (
-                table
-                for table in test_tables
-                if table.generation_status == "source_difference"
-            ),
-            test_tables[0],
-        )
-    )
-    messages = [
-        f"{table.code}: {table.generation_message}"
-        for table in test_tables
-        if table.generation_message
-    ]
-    update_modes = sorted({table.update_mode for table in test_tables if table.update_mode})
-    source_titles = sorted(
-        {
-            table.source_dataset_title
-            for table in test_tables
-            if table.source_dataset_title
-        }
-    )
-    return {
-        "is_test_table": True,
-        "generation_status": source.generation_status,
-        "generation_status_label": source.generation_status_label,
-        "generation_message": " / ".join(messages),
-        "update_mode": update_modes[0] if len(update_modes) == 1 else "mixed",
-        "source_dataset_title": ", ".join(source_titles),
-    }
-
-
 def group_table_parts(tables: list[StatTable]) -> list[StatTable]:
     grouped_tables: list[StatTable] = []
     groups: dict[str, list[StatTable]] = {}
@@ -1514,9 +1097,6 @@ def group_table_parts(tables: list[StatTable]) -> list[StatTable]:
 
         first = parts[0]
         status, status_label = combined_status(parts)
-        generation = combined_generation(parts)
-        if generation:
-            status_label = str(generation["generation_status_label"])
         combined_checks = [check for part in parts for check in part.checks]
         combined_changes = [change for part in parts for change in part.changes]
         combined_visualizations = [visualization for part in parts for visualization in part.visualizations]
@@ -1535,7 +1115,6 @@ def group_table_parts(tables: list[StatTable]) -> list[StatTable]:
                     "visualizations": combined_visualizations,
                     "parts": [table_to_part(part) for part in parts],
                     "validation_stale": any(part.validation_stale for part in parts),
-                    **generation,
                 },
             )
         )
@@ -2383,6 +1962,8 @@ def build_columns(
                 key=f"c{col_index}",
                 label=label,
                 label_en=label_en,
+                header_path=label_parts or [label],
+                header_path_en=english_parts,
                 align=column_alignment(col_index, label, label_en),
                 width=column_width(col_index, label, label_en),
                 source_col_index=col_index,

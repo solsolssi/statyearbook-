@@ -30,6 +30,10 @@ DATA_MIGRATIONS = (
         "classify_linguistic_candidate_sources_v1",
         schema.classify_linguistic_candidate_sources,
     ),
+    (
+        "detach_report_lineage_on_delete_v1",
+        schema.detach_report_lineage_on_delete,
+    ),
 )
 
 

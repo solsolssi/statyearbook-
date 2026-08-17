@@ -143,7 +143,7 @@ class ReportUpdateService:
                 "SELECT base_report_id FROM report_update_batches WHERE id = ?",
                 (batch_id,),
             ).fetchone()
-            if batch is None:
+            if batch is None or batch["base_report_id"] is None:
                 return 0
             base_run = latest_run_id(connection, int(batch["base_report_id"]))
             if base_run is None:

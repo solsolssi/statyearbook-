@@ -8,6 +8,10 @@ import type {
 } from "../types";
 
 type ValidationTableLike = StatTable | StatTableSummary;
+type GenerationReviewLike = Pick<
+  ValidationTableLike,
+  "generation_status" | "generation_status_label"
+>;
 
 export const VALIDATION_CHECK_TYPES = [
   "합계 검수",
@@ -27,6 +31,14 @@ export const OPTIONAL_VALIDATION_TYPES = new Set<string>([
   "파란색 표기 확인",
   REVALIDATION_REQUIRED_FILTER,
 ]);
+
+const GENERATION_REVIEW_STATUS_LABELS: Record<string, string> = {
+  mapping_review: "증분 연결",
+  new_table: "신규 통계 확인",
+  source_missing: "증분 데이터 없음",
+  unavailable: "생성 확인 필요",
+  recipe_required: "생성 규칙 필요",
+};
 
 function allOrderedValidationTypes(preferredOrder: readonly string[]) {
   const ordered = [...preferredOrder];
@@ -124,10 +136,32 @@ function statusFromChecks(checks: ValidationIssue[]): { status: TableStatus; sta
   return { status: "normal", status_label: "정상" };
 }
 
+function statusFromGenerationReview(
+  table: GenerationReviewLike,
+): { status: TableStatus; status_label: string } | null {
+  const generationStatus = table.generation_status ?? "";
+  const fallbackLabel = GENERATION_REVIEW_STATUS_LABELS[generationStatus];
+  if (!fallbackLabel) {
+    return null;
+  }
+  return {
+    status: "needs_review",
+    status_label: table.generation_status_label || fallbackLabel,
+  };
+}
+
 function partWithVisibleChecks(part: StatTablePart, hiddenTypes: ReadonlySet<string>): StatTablePart {
   const checks = visibleChecks(part.checks, hiddenTypes);
   if (part.is_test_table) {
     return { ...part, checks };
+  }
+  const generationStatus = statusFromGenerationReview(part);
+  if (generationStatus) {
+    return {
+      ...part,
+      checks,
+      ...generationStatus,
+    };
   }
   if (part.validation_stale && !hiddenTypes.has(REVALIDATION_REQUIRED_FILTER)) {
     return {
@@ -159,6 +193,17 @@ export function tablesWithValidationVisibility<T extends ValidationTableLike>(
         ...("parts" in table
           ? { parts: table.parts.map((part) => partWithVisibleChecks(part, hiddenTypes)) }
           : {}),
+      } as T;
+    }
+    const generationStatus = statusFromGenerationReview(table);
+    if (generationStatus) {
+      return {
+        ...table,
+        checks,
+        ...("parts" in table
+          ? { parts: table.parts.map((part) => partWithVisibleChecks(part, hiddenTypes)) }
+          : {}),
+        ...generationStatus,
       } as T;
     }
     // A manual change invalidates the prior validation result.  This must

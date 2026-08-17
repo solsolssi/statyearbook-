@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ClipboardCheck, Database, Download, LoaderCircle, Trash2 } from "lucide-react";
+import { CheckCircle2, ClipboardCheck, Database, Download, GitBranch, LoaderCircle, Trash2 } from "lucide-react";
 
 import type {
   ReportOption,
@@ -10,6 +10,7 @@ import type {
 import { ValidationTypeFilter } from "./ValidationTypeFilter";
 import { ValidationRunDialog } from "./ValidationRunDialog";
 import { ReportWorkbookDownloadDialog } from "./ReportWorkbookDownloadDialog";
+import { IncrementalConnectionsDialog } from "./IncrementalConnectionsDialog";
 
 type SummaryFilter = TableStatus | "all";
 
@@ -37,6 +38,9 @@ interface ReportSummaryPanelProps {
     sourceValidationRunId?: number;
   }) => Promise<boolean>;
   onDeleteReport: (report: ReportOption) => Promise<boolean>;
+  onConfirmIncrementDraft?: () => Promise<boolean>;
+  onOpenTable?: (tableCode: string) => void;
+  onCreatedIncrementalTable?: (tableId: string) => void;
 }
 
 const summaryCards: Array<{
@@ -53,13 +57,6 @@ const summaryCards: Array<{
   { filter: "needs_review", label: "확인 필요", countKey: "needs_review_count", tone: "review" },
   { filter: "suspected_error", label: "오류 의심", countKey: "suspected_error_count", tone: "error" },
 ];
-
-const testSummaryLabels: Record<string, string> = {
-  "전체 표": "전체 표",
-  정상: "생성 가능",
-  "확인 필요": "생성 확인",
-  "오류 의심": "생성 실패",
-};
 
 export function ReportSummaryPanel({
   summary,
@@ -80,10 +77,13 @@ export function ReportSummaryPanel({
   onHideAllValidationTypes,
   onRunValidation,
   onDeleteReport,
+  onConfirmIncrementDraft,
+  onOpenTable,
+  onCreatedIncrementalTable,
 }: ReportSummaryPanelProps) {
   const [validationDialogOpen, setValidationDialogOpen] = useState(false);
   const [downloadDialogOpen, setDownloadDialogOpen] = useState(false);
-  const isTestReport = Boolean(summary.is_test_report);
+  const [connectionsDialogOpen, setConnectionsDialogOpen] = useState(false);
   const currentReportOption =
     summary.report_id && summary.report_id > 0
       ? {
@@ -122,20 +122,19 @@ export function ReportSummaryPanel({
   const canDeleteSelectedReport = Boolean(
     selectedReport &&
       selectedReport.id > 0 &&
-      selectedReport.kind !== "test" &&
-      !isTestReport,
+      selectedReport.kind !== "test",
   );
   const canRunValidation = Boolean(
-    !isTestReport && summary.validation_available !== false && summary.report_id,
+    summary.validation_available !== false && summary.report_id,
   );
-  const showValidationTypeFilter = !isTestReport && validationTypes.length > 0;
+  const showValidationTypeFilter = validationTypes.length > 0;
   const canDownloadSelectedReport = Boolean(
     selectedReport &&
       selectedReport.id > 0 &&
-      selectedReport.kind !== "test" &&
-      !isTestReport,
+      selectedReport.kind !== "test",
   );
   const downloadReports = canDownloadSelectedReport && selectedReport ? [selectedReport] : [];
+  const isIncrementDraft = ["incremental_draft", "upload_draft"].includes(summary.origin_kind ?? "");
 
   async function handleDeleteClick() {
     if (!selectedReport || !canDeleteSelectedReport || deleteState === "deleting") {
@@ -183,7 +182,27 @@ export function ReportSummaryPanel({
             <span>{deleteState === "deleting" ? "삭제 중" : "연보 삭제"}</span>
           </button>
         ) : null}
-        {canDownloadSelectedReport ? (
+        {isIncrementDraft && onConfirmIncrementDraft ? (
+          <button
+            className="summary-confirm-button"
+            type="button"
+            onClick={() => void onConfirmIncrementDraft()}
+          >
+            <CheckCircle2 aria-hidden="true" size={17} />
+            연보 확정
+          </button>
+        ) : null}
+        {isIncrementDraft && summary.report_id ? (
+          <button
+            className="summary-connections-button"
+            type="button"
+            onClick={() => setConnectionsDialogOpen(true)}
+          >
+            <GitBranch aria-hidden="true" size={17} />
+            증분 연결
+          </button>
+        ) : null}
+        {canDownloadSelectedReport && !isIncrementDraft ? (
           <button
             className="summary-download-button"
             type="button"
@@ -210,9 +229,7 @@ export function ReportSummaryPanel({
             onClick={() => onFilterChange(card.filter)}
           >
             <span>
-              {isTestReport
-                ? testSummaryLabels[card.label]
-                : summary.validation_scope === "none" && card.label === "정상"
+              {summary.validation_scope === "none" && card.label === "정상"
                   ? "검수 전"
                   : card.label}
             </span>
@@ -256,13 +273,6 @@ export function ReportSummaryPanel({
         </div>
       ) : null}
 
-      {isTestReport ? (
-        <div className="test-report-notice">
-          <strong>원장 기반 테스트 생성</strong>
-          <span>검수는 실행하지 않았으며, 생성하지 못한 표도 기준 레이아웃과 문제를 표시합니다.</span>
-        </div>
-      ) : null}
-
       {validationDialogOpen && selectedReport ? (
         <ValidationRunDialog
           reportId={selectedReport.id}
@@ -271,6 +281,17 @@ export function ReportSummaryPanel({
           state={validationRunState}
           onClose={() => setValidationDialogOpen(false)}
           onRun={onRunValidation}
+        />
+      ) : null}
+      {connectionsDialogOpen && summary.report_id ? (
+        <IncrementalConnectionsDialog
+          reportId={summary.report_id}
+          onClose={() => setConnectionsDialogOpen(false)}
+          onOpenTable={(tableCode) => {
+            setConnectionsDialogOpen(false);
+            onOpenTable?.(tableCode);
+          }}
+          onCreatedTable={onCreatedIncrementalTable}
         />
       ) : null}
       {downloadDialogOpen ? (

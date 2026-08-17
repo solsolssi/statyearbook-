@@ -28,8 +28,6 @@ export type UploadSubmission =
 
 export type UploadState = "idle" | "uploading" | "error";
 
-const TEST_REPORT_ID = -1;
-
 export function useReportImport(onCompleted: (job: ReportImportJob) => void) {
   const [uploadState, setUploadState] = useState<UploadState>("idle");
 
@@ -58,10 +56,10 @@ export function useReportImport(onCompleted: (job: ReportImportJob) => void) {
           });
           window.alert(
             [
-              `${submission.targetYear}년 연보를 생성했습니다.`,
-              `원장 값: 신규 ${result.inserted_values.toLocaleString()}건 · 갱신 ${result.updated_values.toLocaleString()}건 · 동일 ${result.unchanged_values.toLocaleString()}건`,
-              `표 생성: 완료 ${result.generated_table_count.toLocaleString()}개 · 확인 필요 ${result.review_table_count.toLocaleString()}개`,
-              "기준 연보 스냅샷과 저장된 갱신 정책만 사용했습니다.",
+              `${submission.targetYear}년 연보 초안을 생성했습니다.`,
+              `업로드 데이터: 표 ${result.datasets.toLocaleString()}개 · 항목 ${result.items.toLocaleString()}개 · 값 ${result.values.toLocaleString()}개`,
+              `반영: 완료 ${result.generated_table_count.toLocaleString()}개 · 증분 연결 ${result.review_table_count.toLocaleString()}개`,
+              "선택한 기준 연보와 이번 증분 파일만 사용했습니다.",
               result.new_table_count > 0
                 ? `신규 통계 임시 표 ${result.new_table_count.toLocaleString()}개`
                 : "",
@@ -74,9 +72,9 @@ export function useReportImport(onCompleted: (job: ReportImportJob) => void) {
           );
           onCompleted({
             id: 0,
-            report_id: TEST_REPORT_ID,
+            report_id: result.generated_report_id,
             run_id: null,
-            source_file_name: "통계 원장 엑셀",
+            source_file_name: "증분 업로드 연보 초안",
             status: "completed",
             current_stage: "source_data_import",
             progress_percent: 100,

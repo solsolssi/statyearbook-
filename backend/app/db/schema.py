@@ -117,7 +117,7 @@ ON yearbook_manual_edits(report_id, table_key, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS report_update_batches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    base_report_id INTEGER NOT NULL,
+    base_report_id INTEGER,
     report_id INTEGER NOT NULL,
     update_kind TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'completed',
@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS report_update_batches (
     deleted_table_count INTEGER NOT NULL DEFAULT 0,
     changed_cell_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (base_report_id) REFERENCES annual_reports(id) ON DELETE CASCADE,
+    FOREIGN KEY (base_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL,
     FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE
 );
 
@@ -213,6 +213,69 @@ CREATE TABLE IF NOT EXISTS generated_report_table_status (
     FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE,
     FOREIGN KEY (table_id) REFERENCES stat_tables(id) ON DELETE CASCADE,
     FOREIGN KEY (source_table_id) REFERENCES stat_tables(id) ON DELETE SET NULL
+);
+
+-- Increment files belong to the draft annual report that they produced.  They
+-- are intentionally separate from the optional, whole-source ledger tables.
+CREATE TABLE IF NOT EXISTS report_incremental_uploads (
+    report_id INTEGER PRIMARY KEY,
+    base_report_id INTEGER,
+    target_year INTEGER NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    source_hash TEXT NOT NULL DEFAULT '',
+    matcher_version INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE,
+    FOREIGN KEY (base_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS report_incremental_table_mappings (
+    report_id INTEGER NOT NULL,
+    table_code TEXT NOT NULL,
+    source_key TEXT NOT NULL DEFAULT '',
+    match_method TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0,
+    mapping_status TEXT NOT NULL DEFAULT 'review',
+    reason_code TEXT NOT NULL DEFAULT '',
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    candidates_json TEXT NOT NULL DEFAULT '[]',
+    confirmed_by_user INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (report_id, table_code),
+    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_incremental_mappings_key
+ON report_incremental_table_mappings(report_id, source_key);
+
+-- Cell-level provenance makes changing a manually selected increment key
+-- reversible.  Only values written by the increment workflow are restored;
+-- subsequent user edits are never overwritten during a remap.
+CREATE TABLE IF NOT EXISTS report_incremental_cell_overlays (
+    report_id INTEGER NOT NULL,
+    table_id INTEGER NOT NULL,
+    row_index INTEGER NOT NULL,
+    col_index INTEGER NOT NULL,
+    source_key TEXT NOT NULL DEFAULT '',
+    base_text TEXT NOT NULL DEFAULT '',
+    applied_text TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (report_id, table_id, row_index, col_index),
+    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE,
+    FOREIGN KEY (table_id) REFERENCES stat_tables(id) ON DELETE CASCADE
+);
+
+-- A source M key is stable even when a publication number changes.  Recipes
+-- learned from a completed edition record only layout behavior; they never
+-- copy values from the browse-only statistical ledger.
+CREATE TABLE IF NOT EXISTS report_incremental_update_recipes (
+    source_key TEXT PRIMARY KEY,
+    update_mode TEXT NOT NULL,
+    retention_mode TEXT NOT NULL DEFAULT 'replace',
+    window_size INTEGER NOT NULL DEFAULT 0,
+    learned_from_report_id INTEGER,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (learned_from_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS series_import_batches (
@@ -885,6 +948,11 @@ def ensure_schema_columns(connection: DatabaseConnection) -> None:
     ensure_column(connection, "annual_reports", "origin_kind", "TEXT NOT NULL DEFAULT 'uploaded'")
     ensure_column(connection, "annual_reports", "base_report_id", "INTEGER")
     ensure_column(connection, "annual_reports", "layout_report_id", "INTEGER")
+    ensure_column(connection, "report_incremental_uploads", "matcher_version", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection, "report_incremental_table_mappings", "reason_code", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "report_incremental_table_mappings", "evidence_json", "TEXT NOT NULL DEFAULT '{}'")
+    ensure_column(connection, "report_incremental_table_mappings", "candidates_json", "TEXT NOT NULL DEFAULT '[]'")
+    ensure_column(connection, "report_incremental_table_mappings", "confirmed_by_user", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(connection, "yearbook_reproduction_runs", "source_snapshot_id", "INTEGER")
     ensure_column(connection, "source_snapshot_batches", "visible_through_year", "INTEGER")
     ensure_column(connection, "statistical_dataset_items", "is_deleted", "INTEGER NOT NULL DEFAULT 0")
@@ -1043,6 +1111,136 @@ def ensure_column(
 
 def is_postgres_connection(connection: object) -> bool:
     return bool(getattr(connection, "is_postgres", False))
+
+
+def detach_report_lineage_on_delete(connection: DatabaseConnection) -> None:
+    """Keep derived report records when their selected base report is removed."""
+
+    if is_postgres_connection(connection):
+        connection.execute("ALTER TABLE report_update_batches ALTER COLUMN base_report_id DROP NOT NULL")
+        connection.execute(
+            "ALTER TABLE report_update_batches DROP CONSTRAINT IF EXISTS report_update_batches_base_report_id_fkey"
+        )
+        connection.execute(
+            """
+            ALTER TABLE report_update_batches
+            ADD CONSTRAINT report_update_batches_base_report_id_fkey
+            FOREIGN KEY (base_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL
+            """
+        )
+        connection.execute("ALTER TABLE report_incremental_uploads ALTER COLUMN base_report_id DROP NOT NULL")
+        connection.execute(
+            "ALTER TABLE report_incremental_uploads DROP CONSTRAINT IF EXISTS report_incremental_uploads_base_report_id_fkey"
+        )
+        connection.execute(
+            """
+            ALTER TABLE report_incremental_uploads
+            ADD CONSTRAINT report_incremental_uploads_base_report_id_fkey
+            FOREIGN KEY (base_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL
+            """
+        )
+        return
+
+    if _sqlite_needs_nullable_set_null_base_fk(connection, "report_update_batches"):
+        _rebuild_report_update_batches_for_detached_base(connection)
+    if _sqlite_needs_nullable_set_null_base_fk(connection, "report_incremental_uploads"):
+        _rebuild_report_incremental_uploads_for_detached_base(connection)
+
+
+def _sqlite_needs_nullable_set_null_base_fk(connection: DatabaseConnection, table_name: str) -> bool:
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone() is None:
+        return False
+
+    columns = {str(row["name"]): row for row in connection.execute(f"PRAGMA table_info({table_name})")}
+    base_column = columns.get("base_report_id")
+    if base_column is not None and int(base_column["notnull"] or 0):
+        return True
+
+    for row in connection.execute(f"PRAGMA foreign_key_list({table_name})"):
+        if str(row["from"]) == "base_report_id" and str(row["table"]) == "annual_reports":
+            return str(row["on_delete"]).upper() != "SET NULL"
+    return True
+
+
+def _rebuild_report_update_batches_for_detached_base(connection: DatabaseConnection) -> None:
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("DROP TABLE IF EXISTS report_update_batches_new")
+    connection.execute(
+        """
+        CREATE TABLE report_update_batches_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            base_report_id INTEGER,
+            report_id INTEGER NOT NULL,
+            update_kind TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'completed',
+            changed_table_count INTEGER NOT NULL DEFAULT 0,
+            unchanged_table_count INTEGER NOT NULL DEFAULT 0,
+            added_table_count INTEGER NOT NULL DEFAULT 0,
+            deleted_table_count INTEGER NOT NULL DEFAULT 0,
+            changed_cell_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (base_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL,
+            FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO report_update_batches_new (
+            id, base_report_id, report_id, update_kind, status,
+            changed_table_count, unchanged_table_count, added_table_count,
+            deleted_table_count, changed_cell_count, created_at
+        )
+        SELECT
+            id, base_report_id, report_id, update_kind, status,
+            changed_table_count, unchanged_table_count, added_table_count,
+            deleted_table_count, changed_cell_count, created_at
+        FROM report_update_batches
+        """
+    )
+    connection.execute("DROP TABLE report_update_batches")
+    connection.execute("ALTER TABLE report_update_batches_new RENAME TO report_update_batches")
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_report_update_batches_report
+        ON report_update_batches(report_id, created_at DESC, id DESC)
+        """
+    )
+    connection.execute("PRAGMA foreign_keys = ON")
+
+
+def _rebuild_report_incremental_uploads_for_detached_base(connection: DatabaseConnection) -> None:
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("DROP TABLE IF EXISTS report_incremental_uploads_new")
+    connection.execute(
+        """
+        CREATE TABLE report_incremental_uploads_new (
+            report_id INTEGER PRIMARY KEY,
+            base_report_id INTEGER,
+            target_year INTEGER NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            source_hash TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE,
+            FOREIGN KEY (base_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO report_incremental_uploads_new (
+            report_id, base_report_id, target_year, payload_json, source_hash, created_at
+        )
+        SELECT report_id, base_report_id, target_year, payload_json, source_hash, created_at
+        FROM report_incremental_uploads
+        """
+    )
+    connection.execute("DROP TABLE report_incremental_uploads")
+    connection.execute("ALTER TABLE report_incremental_uploads_new RENAME TO report_incremental_uploads")
+    connection.execute("PRAGMA foreign_keys = ON")
 
 
 def canonicalize_validation_results(connection: DatabaseConnection) -> None:

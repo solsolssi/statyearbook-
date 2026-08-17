@@ -34,12 +34,9 @@ from app.models.source_statistics import (
     SourceStatisticDetail,
     SourceStatisticsOverview,
 )
-from app.models.yearbook_reproduction import (
-    ReproductionBuildSummary,
-    YearbookReproductionOverview,
-)
 from app.models.report_updates import ReportComparisonSummary
 from app.models.yearbook_edits import (
+    StatisticCloneRequest,
     TableContentUpdateRequest,
     ReportEditAccess,
     ReportEditAuthenticationRequest,
@@ -50,25 +47,18 @@ from app.application.imports import ReportImportApplicationService
 from app.application.report_queries import ReportQueryService
 from app.application.validation_operations import ValidationApplicationService
 from app.services.report_service import get_report_service
-from app.services.database_report_service import TEST_REPORT_ID
 from app.services.report_import_service import (
     ReportImportRequest,
     ReportUploadError,
 )
 from app.services.source_statistics_service import SourceStatisticsService
-from app.services.yearbook_reproduction_service import YearbookReproductionService
-from app.services.yearbook_reproduction_build_service import (
-    YearbookReproductionBuildService,
-)
-from app.services.ledger_yearbook_service import LedgerYearbookService
+from app.services.incremental_yearbook_service import IncrementalYearbookService
 from app.services.report_update_service import ReportComparisonService
 from app.services.yearbook_edit_service import (
     YearbookEditAuthenticationError,
     YearbookEditError,
     YearbookEditService,
 )
-from app.yearbook_data.relational_import import RelationalSourceDataImporter
-from app.yearbook_data.relational_import import FULL_INFO_COLUMNS, tabular_rows
 from app.workflows.report_processing import (
     ReportProcessingError,
     ReportProcessingWorkflow,
@@ -93,46 +83,23 @@ async def import_source_statistics(
     item_file: UploadFile = File(),
     value_file: UploadFile = File(),
 ) -> SourceDataImportResult:
-    """Import normalized source-system Excel exports for a selected report context."""
-
-    ledger_service = LedgerYearbookService()
-    try:
-        ledger_service.validate_request(
-            base_report_id=base_report_id,
-            target_year=target_year,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
+    """Create an editable draft from one report-scoped increment upload."""
     with TemporaryDirectory() as directory:
         root = Path(directory)
-        info_path = await save_uploaded_excel(info_file, root)
-        item_path = await save_uploaded_excel(item_file, root)
-        value_path = await save_uploaded_excel(value_file, root)
-        headers, rows = tabular_rows(info_path)
-        next(rows, None)
-        rows.close()
-        importer = RelationalSourceDataImporter()
-        if FULL_INFO_COLUMNS.issubset(set(headers)):
-            result = importer.import_full(
-                info_path=info_path,
-                item_path=item_path,
-                value_path=value_path,
-            )
-        else:
-            result = importer.import_delta(
-                info_path=info_path,
-                item_path=item_path,
-                value_path=value_path,
-                target_year=target_year,
-            )
+        # The three system exports may share a generic filename.  Keep their
+        # temporary paths distinct so one selected file can never overwrite
+        # another before parsing.
+        info_path = await save_uploaded_excel(info_file, root, "info")
+        item_path = await save_uploaded_excel(item_file, root, "item")
+        value_path = await save_uploaded_excel(value_file, root, "value")
         try:
-            generated = ledger_service.generate(
+            generated = IncrementalYearbookService().create_draft(
                 base_report_id=base_report_id,
                 target_year=target_year,
-                source_batch_id=result.batch_id,
-                mode=mode,
                 title=title,
+                info_path=info_path,
+                item_path=item_path,
+                value_path=value_path,
             )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
@@ -141,54 +108,115 @@ async def import_source_statistics(
         base_report_id=base_report_id,
         target_year=target_year,
         generated_report_id=generated.report_id,
-        reproduction_run_id=generated.reproduction_run_id,
-        source_snapshot_id=generated.source_snapshot_id,
+        datasets=generated.datasets,
+        items=generated.items,
+        values=generated.values,
+        inserted_values=generated.values,
         generated_table_count=generated.generated_table_count,
         review_table_count=generated.review_table_count,
         deleted_table_count=generated.deleted_table_count,
         new_table_count=generated.new_table_count,
-        **result.__dict__,
+        source_snapshot_id=0,
     )
 
 
-async def save_uploaded_excel(upload: UploadFile, directory: Path) -> Path:
+@router.put("/reports/{report_id}/incremental-mappings/{table_code}")
+def set_incremental_mapping(
+    report_id: int,
+    table_code: str,
+    source_key: str = Query(min_length=1),
+) -> dict[str, str | int | bool]:
+    try:
+        return IncrementalYearbookService().set_mapping(
+            report_id=report_id,
+            table_code=table_code,
+            source_key=source_key,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/reports/{report_id}/incremental-mappings/{table_code}/preview")
+def preview_incremental_mapping(
+    report_id: int,
+    table_code: str,
+    source_key: str = Query(min_length=1),
+) -> dict[str, object]:
+    try:
+        return IncrementalYearbookService().preview_mapping(
+            report_id=report_id,
+            table_code=table_code,
+            source_key=source_key,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/reports/{report_id}/incremental-connections")
+def list_incremental_connections(report_id: int) -> dict[str, object]:
+    try:
+        return IncrementalYearbookService().list_connections(report_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post("/reports/{report_id}/incremental-connections/{source_key}/create-statistic")
+def create_statistic_from_increment(
+    report_id: int,
+    source_key: str,
+    table_code: str = Query(min_length=1),
+    title: str = Query(min_length=1),
+) -> dict[str, object]:
+    try:
+        return IncrementalYearbookService().create_statistic_from_increment(
+            report_id=report_id,
+            source_key=source_key,
+            table_code=table_code,
+            title=title,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/reports/{report_id}/incremental-connections/{table_code}/keep-existing")
+def keep_existing_increment_table(report_id: int, table_code: str) -> dict[str, object]:
+    try:
+        return IncrementalYearbookService().keep_existing_table(
+            report_id=report_id,
+            table_code=table_code,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/reports/{report_id}/incremental-connections/{source_key}/ignore")
+def ignore_unmatched_increment(report_id: int, source_key: str) -> dict[str, object]:
+    try:
+        return IncrementalYearbookService().ignore_unmatched_increment(
+            report_id=report_id,
+            source_key=source_key,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/reports/{report_id}/confirm-increment")
+def confirm_increment_report(report_id: int) -> dict[str, bool]:
+    try:
+        IncrementalYearbookService().confirm_draft(report_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"confirmed": True}
+
+
+async def save_uploaded_excel(upload: UploadFile, directory: Path, role: str) -> Path:
     safe_name = Path(upload.filename or "").name
     suffix = Path(safe_name).suffix.lower()
     if suffix not in {".xls", ".xlsx"}:
         raise HTTPException(status_code=415, detail=".xls, .xlsx 파일만 업로드할 수 있습니다.")
-    destination = directory / safe_name
+    destination = directory / f"{role}_{safe_name}"
     destination.write_bytes(await upload.read())
     return destination
-
-
-@router.get(
-    "/yearbook-reproduction",
-    response_model=YearbookReproductionOverview,
-)
-def get_yearbook_reproduction(
-    report_id: int | None = Query(default=None),
-    report_year: int | None = Query(default=None, ge=1900, le=2200),
-) -> YearbookReproductionOverview:
-    try:
-        return YearbookReproductionService().overview(
-            report_id=report_id,
-            report_year=report_year,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-
-
-@router.post(
-    "/yearbook-reproduction/build",
-    response_model=ReproductionBuildSummary,
-)
-def build_yearbook_reproduction(
-    report_id: int = Query(),
-) -> ReproductionBuildSummary:
-    try:
-        return YearbookReproductionBuildService().run(report_id=report_id)
-    except ValueError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @router.post("/report-comparisons", response_model=ReportComparisonSummary)
@@ -220,11 +248,13 @@ def get_source_statistic(
 
 @router.get("/report", response_model=ReportPayload)
 def get_report(report_id: int | None = Query(default=None)) -> ReportPayload:
+    IncrementalYearbookService().refresh_automatic_mappings(report_id)
     return ReportQueryService(get_report_service()).legacy_payload(report_id)
 
 
 @router.get("/report/overview", response_model=ReportOverviewPayload)
 def get_report_overview(report_id: int | None = Query(default=None)) -> ReportOverviewPayload:
+    IncrementalYearbookService().refresh_automatic_mappings(report_id)
     return ReportQueryService(get_report_service()).overview(report_id)
 
 
@@ -340,16 +370,60 @@ def update_table_content(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
+@router.post(
+    "/reports/{report_id}/tables/{table_id}/clone",
+    response_model=StatTable,
+)
+def clone_statistic(
+    report_id: int,
+    table_id: str,
+    payload: StatisticCloneRequest,
+    authorization: str | None = Header(default=None),
+) -> StatTable:
+    scheme, _, access_token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not access_token:
+        raise HTTPException(status_code=401, detail="수정 비밀번호 인증이 필요합니다.")
+    try:
+        return YearbookEditService().clone_statistic(
+            report_id=report_id,
+            table_id=table_id,
+            access_token=access_token,
+            payload=payload,
+        )
+    except YearbookEditAuthenticationError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
+    except YearbookEditError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.delete("/reports/{report_id}/tables/{table_id}")
+def delete_statistic(
+    report_id: int,
+    table_id: str,
+    authorization: str | None = Header(default=None),
+) -> dict[str, int]:
+    scheme, _, access_token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not access_token:
+        raise HTTPException(status_code=401, detail="수정 비밀번호 인증이 필요합니다.")
+    try:
+        return {
+            "deleted_table_count": YearbookEditService().delete_statistic(
+                report_id=report_id,
+                table_id=table_id,
+                access_token=access_token,
+            )
+        }
+    except YearbookEditAuthenticationError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
+    except YearbookEditError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
 @router.post("/validation/run", response_model=ValidationRunResult)
 def run_validation(
     payload: ValidationRunRequest | None = None,
     report_id: int | None = Query(default=None),
 ) -> ValidationRunResult:
-    if report_id == TEST_REPORT_ID:
-        raise HTTPException(
-            status_code=400,
-            detail="테스트 연보는 생성 상태 확인용이며 검수를 실행하지 않습니다.",
-        )
     request = payload or ValidationRunRequest()
     try:
         return ValidationApplicationService().run(

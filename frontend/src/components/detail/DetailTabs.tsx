@@ -1,9 +1,7 @@
-export type DetailTab = "checks" | "changes" | "visuals" | "metadata";
+export type DetailTab = "checks" | "metadata";
 
 const TABS: Array<{ id: DetailTab; label: string }> = [
   { id: "checks", label: "검수 결과" },
-  { id: "changes", label: "전년도 비교" },
-  { id: "visuals", label: "시각화" },
   { id: "metadata", label: "출처·메타정보" },
 ];
 
@@ -26,9 +24,7 @@ export function DetailTabs({ activeTab, onChange, isTestTable = false }: DetailT
           <span>
             {isTestTable && tab.id === "checks"
               ? "생성 상태"
-              : isTestTable && tab.id === "changes"
-                ? "생성 변경 정보"
-                : tab.label}
+              : tab.label}
           </span>
         </button>
       ))}

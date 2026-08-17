@@ -10,6 +10,7 @@ from app.models.yearbook_edits import (
     EditableHierarchyPatch,
     EditableMetadata,
     EditableTablePart,
+    StatisticCloneRequest,
     TableContentUpdateRequest,
 )
 from app.services.yearbook_edit_service import (
@@ -19,6 +20,151 @@ from app.services.yearbook_edit_service import (
 
 
 class YearbookEditServiceTest(unittest.TestCase):
+    def test_preserves_parent_header_paths_when_replacing_structure(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            report_id, table_id = create_fixture(db_path)
+            service = YearbookEditService(db_path)
+            session = service.authenticate(
+                report_id=report_id,
+                table_id=f"db-{table_id}",
+                password="4567",
+            )
+
+            updated = service.update_table(
+                report_id=report_id,
+                table_id=f"db-{table_id}",
+                access_token=session.access_token,
+                payload=TableContentUpdateRequest(
+                    code="1-1-1",
+                    title="테스트 표",
+                    parts=[
+                        EditableTablePart(
+                            id=f"db-{table_id}",
+                            code="1-1-1",
+                            title="테스트 표",
+                            header_count=2,
+                            metadata=EditableMetadata(),
+                            replace_structure=True,
+                            columns=[
+                                EditableColumnPatch(
+                                    source_col_indexes=[0], label="구분", header_path=["구분"],
+                                ),
+                                EditableColumnPatch(
+                                    source_col_indexes=[1], label="발급 / 대면",
+                                    header_path=["발급", "대면"],
+                                ),
+                                EditableColumnPatch(
+                                    source_col_indexes=[2], label="발급 / 온라인",
+                                    header_path=["발급", "온라인"],
+                                ),
+                            ],
+                            cells=[
+                                EditableCellPatch(row_index=2, col_index=0, value="합계"),
+                                EditableCellPatch(row_index=2, col_index=1, value="10"),
+                                EditableCellPatch(row_index=2, col_index=2, value="20"),
+                            ],
+                        )
+                    ],
+                ),
+            )
+
+            self.assertEqual(updated.metadata.header_count, 2)
+            self.assertEqual(updated.columns[1].header_path, ["발급", "대면"])
+            self.assertEqual(updated.rows[0]["c2"], 20)
+            with connect(db_path) as connection:
+                headers = connection.execute(
+                    "SELECT row_index, col_index, text_value FROM stat_table_cells "
+                    "WHERE table_id = ? AND is_header = 1 ORDER BY row_index, col_index",
+                    (table_id,),
+                ).fetchall()
+            self.assertEqual(
+                [(row["row_index"], row["col_index"], row["text_value"]) for row in headers],
+                [(0, 0, "구분"), (0, 1, "발급"), (0, 2, "발급"),
+                 (1, 0, "구분"), (1, 1, "대면"), (1, 2, "온라인")],
+            )
+
+    def test_replaces_rows_and_columns_as_one_structure_change(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            report_id, table_id = create_fixture(db_path)
+            service = YearbookEditService(db_path)
+            session = service.authenticate(
+                report_id=report_id,
+                table_id=f"db-{table_id}",
+                password="4567",
+            )
+
+            updated = service.update_table(
+                report_id=report_id,
+                table_id=f"db-{table_id}",
+                access_token=session.access_token,
+                payload=TableContentUpdateRequest(
+                    code="1-1-1",
+                    title="테스트 표",
+                    parts=[
+                        EditableTablePart(
+                            id=f"db-{table_id}",
+                            code="1-1-1",
+                            title="테스트 표",
+                            header_count=1,
+                            metadata=EditableMetadata(),
+                            replace_structure=True,
+                            columns=[
+                                EditableColumnPatch(source_col_indexes=[0], label="구분"),
+                                EditableColumnPatch(source_col_indexes=[1], label="값"),
+                                EditableColumnPatch(source_col_indexes=[2], label="새 열"),
+                            ],
+                            cells=[
+                                EditableCellPatch(row_index=1, col_index=0, value="합계"),
+                                EditableCellPatch(row_index=1, col_index=1, value="10"),
+                                EditableCellPatch(row_index=1, col_index=2, value="20"),
+                                EditableCellPatch(row_index=2, col_index=0, value="추가 행"),
+                                EditableCellPatch(row_index=2, col_index=1, value="1"),
+                                EditableCellPatch(row_index=2, col_index=2, value="2"),
+                            ],
+                        )
+                    ],
+                ),
+            )
+
+            self.assertEqual([column.label for column in updated.columns], ["구분", "값", "새 열"])
+            self.assertEqual(len(updated.rows), 2)
+            self.assertEqual(updated.rows[1]["c2"], 2)
+
+    def test_clones_and_deletes_a_statistic_with_the_authenticated_session(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            report_id, table_id = create_fixture(db_path)
+            insert_table(db_path, report_id, code="9-9-9", title="삭제 후 남을 통계", extension="0000")
+            service = YearbookEditService(db_path)
+            session = service.authenticate(
+                report_id=report_id,
+                table_id=f"db-{table_id}",
+                password="4567",
+            )
+
+            created = service.clone_statistic(
+                report_id=report_id,
+                table_id=f"db-{table_id}",
+                access_token=session.access_token,
+                payload=StatisticCloneRequest(code="1-1-8", title="추가 통계"),
+            )
+            self.assertEqual(created.code, "1-1-8")
+            self.assertEqual(created.title, "추가 통계")
+            self.assertGreater(len(created.rows), 0)
+
+            deleted = service.delete_statistic(
+                report_id=report_id,
+                table_id=f"db-{table_id}",
+                access_token=session.access_token,
+            )
+            self.assertEqual(deleted, 1)
+            with connect(db_path) as connection:
+                self.assertIsNone(connection.execute(
+                    "SELECT 1 FROM stat_tables WHERE id = ?", (table_id,)
+                ).fetchone())
+
     def test_password_authentication_and_table_update(self) -> None:
         with TemporaryDirectory() as directory:
             db_path = Path(directory) / "report.sqlite"

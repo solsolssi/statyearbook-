@@ -24,6 +24,8 @@ class ColumnDefinition(BaseModel):
     key: str
     label: str
     label_en: str | None = None
+    header_path: list[str] = Field(default_factory=list)
+    header_path_en: list[str] = Field(default_factory=list)
     align: Literal["left", "right", "center"] = "right"
     width: str | None = None
     source_col_index: int | None = None
@@ -129,6 +131,13 @@ class StatTablePart(BaseModel):
     generation_status: str = ""
     generation_status_label: str = ""
     generation_message: str = ""
+    incremental_source_key: str = ""
+    incremental_match_method: str = ""
+    incremental_confidence: float = 0
+    incremental_reason_code: str = ""
+    incremental_evidence: dict[str, Any] = Field(default_factory=dict)
+    incremental_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    incremental_confirmed_by_user: bool = False
     update_mode: str = ""
     source_dataset_title: str = ""
     validation_stale: bool = False
@@ -164,6 +173,13 @@ class StatTable(BaseModel):
     generation_status: str = ""
     generation_status_label: str = ""
     generation_message: str = ""
+    incremental_source_key: str = ""
+    incremental_match_method: str = ""
+    incremental_confidence: float = 0
+    incremental_reason_code: str = ""
+    incremental_evidence: dict[str, Any] = Field(default_factory=dict)
+    incremental_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    incremental_confirmed_by_user: bool = False
     update_mode: str = ""
     source_dataset_title: str = ""
     validation_stale: bool = False
@@ -189,6 +205,13 @@ class StatTableSummary(BaseModel):
     generation_status: str = ""
     generation_status_label: str = ""
     generation_message: str = ""
+    incremental_source_key: str = ""
+    incremental_match_method: str = ""
+    incremental_confidence: float = 0
+    incremental_reason_code: str = ""
+    incremental_evidence: dict[str, Any] = Field(default_factory=dict)
+    incremental_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    incremental_confirmed_by_user: bool = False
     update_mode: str = ""
     source_dataset_title: str = ""
     validation_stale: bool = False

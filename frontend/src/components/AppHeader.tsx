@@ -55,14 +55,14 @@ const navItems: Array<{ id: AppSection; label: string }> = [
 const uploadModes: UploadModeOption[] = [
   {
     id: "completed_report_new",
-    title: "완성 연보 새로 업로드",
+    title: "전체 연보 업로드",
     detail: "HWPX, MD 연보를 새 연보로 저장합니다.",
     icon: FileText,
   },
   {
     id: "append_year",
-    title: "기준 연보에 새 연도 원장 추가",
-    detail: "선택한 연보의 형식을 기준으로 다음 연도 원장 데이터를 반영합니다.",
+    title: "증분 업로드",
+    detail: "선택한 연보의 형식을 기준으로 다음 연도 데이터를 반영합니다.",
     icon: Database,
   },
 ];
@@ -282,8 +282,7 @@ function UploadDecisionDialog({
       >
         <div className="upload-dialog__header">
           <div>
-            <span className="section-label">연보 업로드</span>
-            <h2 id="upload-dialog-title">업로드 기준 선택</h2>
+            <h2 id="upload-dialog-title">연보 업로드</h2>
           </div>
           <button className="icon-button" type="button" aria-label="닫기" onClick={onClose}>
             <X aria-hidden="true" size={20} />
@@ -369,12 +368,11 @@ function UploadDecisionDialog({
             />
             <button type="button" onClick={() => completedInputRef.current?.click()}>
               <Upload aria-hidden="true" size={18} />
-              <span>연보 파일 선택</span>
+              <span>{completedFile ? completedFile.name : "연보 파일 선택"}</span>
             </button>
-            <p>{completedFile ? completedFile.name : "HWPX, MD 파일 1개를 선택하세요."}</p>
           </div>
         ) : (
-          <div className="upload-file-picker">
+          <div className="upload-file-picker upload-file-picker--source">
             <SourceFilePicker
               label="표정보"
               inputRef={sourceInputRefs.info}
@@ -393,8 +391,6 @@ function UploadDecisionDialog({
               file={sourceFileSet.valueFile}
               onFileChange={(file) => setSourceFile("value", file)}
             />
-            <SourceFileStatus files={sourceFileSet} />
-            <p>각 파일을 지정해서 선택하세요. `.xls`, `.xlsx` 모두 지원합니다.</p>
           </div>
         )}
 
@@ -535,29 +531,6 @@ function comparisonLabel(changeType: ReportTableDifference["change_type"]): stri
   }[changeType];
 }
 
-function SourceFileStatus({
-  files,
-}: {
-  files: {
-    infoFile: File | null;
-    itemFile: File | null;
-    valueFile: File | null;
-  };
-}) {
-  const parts = [
-    `표정보: ${files.infoFile?.name ?? "미선택"}`,
-    `표항목: ${files.itemFile?.name ?? "미선택"}`,
-    `표데이터: ${files.valueFile?.name ?? "미선택"}`,
-  ];
-  return (
-    <div className="source-file-status">
-      <span className={files.infoFile && files.itemFile && files.valueFile ? "is-ready" : ""}>
-        {parts.join(" · ")}
-      </span>
-    </div>
-  );
-}
-
 function SourceFilePicker({
   label,
   inputRef,
@@ -570,8 +543,7 @@ function SourceFilePicker({
   onFileChange: (file: File | null) => void;
 }) {
   return (
-    <div className="source-file-picker">
-      <strong>{label}</strong>
+    <div className={file ? "source-file-picker is-selected" : "source-file-picker"}>
       <input
         ref={inputRef}
         className="visually-hidden"
@@ -583,10 +555,9 @@ function SourceFilePicker({
         }}
       />
       <button type="button" onClick={() => inputRef.current?.click()}>
-        <Upload aria-hidden="true" size={18} />
-        <span>연보 파일 선택</span>
+        <strong>{label}</strong>
+        <span>{file?.name ?? "파일 선택"}</span>
       </button>
-      <span>{file?.name ?? "미선택"}</span>
     </div>
   );
 }

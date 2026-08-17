@@ -66,6 +66,8 @@ interface ReportWorkspaceProps {
     sourceValidationRunId?: number;
   }) => Promise<boolean>;
   onDeleteReport: (report: ReportOption) => Promise<boolean>;
+  onConfirmIncrementDraft?: () => Promise<boolean>;
+  onCreatedIncrementalTable?: (tableId: string) => void;
   onSelect: (tableId: string) => void;
   onOpen: (tableId: string) => void;
   onTableListScrollTopChange: (scrollTop: number) => void;
@@ -96,6 +98,8 @@ export function ReportWorkspace({
   onHideAllValidationTypes,
   onRunValidation,
   onDeleteReport,
+  onConfirmIncrementDraft,
+  onCreatedIncrementalTable,
   onSelect,
   onOpen,
   onTableListScrollTopChange,
@@ -146,10 +150,15 @@ export function ReportWorkspace({
           onHideAllValidationTypes={onHideAllValidationTypes}
           onRunValidation={onRunValidation}
           onDeleteReport={onDeleteReport}
+          onConfirmIncrementDraft={onConfirmIncrementDraft}
+          onOpenTable={(tableCode) => {
+            const target = tables.find((table) => table.code === tableCode);
+            if (target) onOpen(target.id);
+          }}
+          onCreatedIncrementalTable={onCreatedIncrementalTable}
         />
         <TableList
           tables={filteredTables}
-          isTestReport={Boolean(summary.is_test_report)}
           activeTableId={activeId}
           query={query}
           filter={filter}

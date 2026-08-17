@@ -2,7 +2,6 @@ import type {
   ReportPayload,
   ReportComparisonSummary,
   ReportDeleteResult,
-  ReproductionBuildSummary,
   SourceDataImportResult,
   SourceStatisticDetail,
   SourceStatisticsOverview,
@@ -10,9 +9,9 @@ import type {
   TableContentUpdatePayload,
   ReportEditAccess,
   TableEditSession,
+  IncrementalConnectionOverview,
   ValidationCatalogItem,
   ValidationReuseRunOption,
-  YearbookReproductionOverview,
 } from "../types";
 
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
@@ -117,30 +116,6 @@ export async function fetchSourceStatistic(
   );
 }
 
-export async function fetchYearbookReproduction(
-  options: { reportId?: string; reportYear?: number } = {},
-): Promise<YearbookReproductionOverview> {
-  return requestJson<YearbookReproductionOverview>(
-    apiPath("/api/yearbook-reproduction", {
-      report_id: options.reportId,
-      report_year:
-        options.reportYear === undefined ? undefined : String(options.reportYear),
-    }),
-    undefined,
-    "연보 재현 준비 상태를 불러오지 못했습니다.",
-  );
-}
-
-export async function runYearbookReproduction(
-  reportId: number,
-): Promise<ReproductionBuildSummary> {
-  return requestJson<ReproductionBuildSummary>(
-    apiPath("/api/yearbook-reproduction/build", { report_id: String(reportId) }),
-    { method: "POST" },
-    "연보 셀 재현 비교를 실행하지 못했습니다.",
-  );
-}
-
 export async function fetchTable(tableId: string, reportId?: string): Promise<StatTable> {
   return requestJson<StatTable>(
     apiPath(`/api/tables/${encodeURIComponent(tableId)}`, { report_id: reportId }),
@@ -224,6 +199,42 @@ export async function updateTableContent(
   );
 }
 
+export async function cloneStatistic(
+  reportId: number,
+  tableId: string,
+  accessToken: string,
+  code: string,
+  title: string,
+): Promise<StatTable> {
+  return requestJson<StatTable>(
+    `/api/reports/${reportId}/tables/${encodeURIComponent(tableId)}/clone`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ code, title }),
+    },
+    "통계를 추가하지 못했습니다.",
+  );
+}
+
+export async function deleteStatistic(
+  reportId: number,
+  tableId: string,
+  accessToken: string,
+): Promise<{ deleted_table_count: number }> {
+  return requestJson<{ deleted_table_count: number }>(
+    `/api/reports/${reportId}/tables/${encodeURIComponent(tableId)}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+    "통계를 삭제하지 못했습니다.",
+  );
+}
+
 export async function uploadReport(
   file: File,
   options: ReportUploadOptions = {},
@@ -283,7 +294,118 @@ export async function uploadSourceData(
       title: options.title,
     }),
     { method: "POST", body: formData },
-    "통계 원장 데이터를 업로드하지 못했습니다.",
+    "증분 데이터를 업로드하지 못했습니다.",
+  );
+}
+
+export async function setIncrementalMapping(
+  reportId: number,
+  tableCode: string,
+  sourceKey: string,
+): Promise<{
+  source_key: string;
+  applied: boolean;
+  applied_cell_count: number;
+  message: string;
+  reason_code?: string;
+}> {
+  return requestJson<{
+    source_key: string;
+    applied: boolean;
+    applied_cell_count: number;
+    message: string;
+    reason_code?: string;
+  }>(
+    apiPath(`/api/reports/${reportId}/incremental-mappings/${encodeURIComponent(tableCode)}`, {
+      source_key: sourceKey,
+    }),
+    { method: "PUT" },
+    "연결 키를 저장하지 못했습니다.",
+  );
+}
+
+export async function previewIncrementalMapping(
+  reportId: number,
+  tableCode: string,
+  sourceKey: string,
+): Promise<{
+  source_key: string;
+  title?: string;
+  compatible: boolean;
+  applied_cell_count: number;
+  reason_code: string;
+  message: string;
+  evidence: Record<string, unknown>;
+}> {
+  return requestJson(
+    apiPath(
+      `/api/reports/${reportId}/incremental-mappings/${encodeURIComponent(tableCode)}/preview`,
+      { source_key: sourceKey },
+    ),
+    {},
+    "연결 키의 반영 결과를 미리 확인하지 못했습니다.",
+  );
+}
+
+export async function fetchIncrementalConnections(
+  reportId: number,
+): Promise<IncrementalConnectionOverview> {
+  return requestJson<IncrementalConnectionOverview>(
+    `/api/reports/${reportId}/incremental-connections`,
+    {},
+    "증분 연결 현황을 불러오지 못했습니다.",
+  );
+}
+
+export async function createStatisticFromIncrement(
+  reportId: number,
+  sourceKey: string,
+  tableCode: string,
+  title: string,
+): Promise<{
+  table_id: string;
+  table_code: string;
+  title: string;
+  source_key: string;
+  created_cell_count: number;
+}> {
+  return requestJson(
+    apiPath(
+      `/api/reports/${reportId}/incremental-connections/${encodeURIComponent(sourceKey)}/create-statistic`,
+      { table_code: tableCode, title },
+    ),
+    { method: "POST" },
+    "증분으로 새 통계를 만들지 못했습니다.",
+  );
+}
+
+export async function keepExistingIncrementTable(
+  reportId: number,
+  tableCode: string,
+): Promise<void> {
+  await requestJson(
+    `/api/reports/${reportId}/incremental-connections/${encodeURIComponent(tableCode)}/keep-existing`,
+    { method: "POST" },
+    "기존값 유지 결정을 저장하지 못했습니다.",
+  );
+}
+
+export async function ignoreUnmatchedIncrement(
+  reportId: number,
+  sourceKey: string,
+): Promise<void> {
+  await requestJson(
+    `/api/reports/${reportId}/incremental-connections/${encodeURIComponent(sourceKey)}/ignore`,
+    { method: "POST" },
+    "증분 제외 결정을 저장하지 못했습니다.",
+  );
+}
+
+export async function confirmIncrementReport(reportId: number): Promise<void> {
+  await requestJson<{ confirmed: boolean }>(
+    `/api/reports/${reportId}/confirm-increment`,
+    { method: "POST" },
+    "연보 초안을 확정하지 못했습니다.",
   );
 }
 

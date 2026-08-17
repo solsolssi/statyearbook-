@@ -10,7 +10,6 @@ from app.db.schema import init_db
 from app.services.yearbook_reproduction_build_service import (
     YearbookReproductionBuildService,
 )
-from app.services.database_report_service import DatabaseReportService, TEST_REPORT_ID
 from app.services.confirmed_source_mapping_service import (
     ConfirmedSourceMapping,
     ConfirmedSourceMappingService,
@@ -202,29 +201,6 @@ class YearbookReproductionServiceTest(unittest.TestCase):
                         """,
                         (int(new_source["id"]),),
                     )
-            test_report = DatabaseReportService(db_path).get_overview_for_report(
-                TEST_REPORT_ID
-            )
-            self.assertTrue(test_report.summary.is_test_report)
-            self.assertFalse(test_report.summary.validation_available)
-            self.assertEqual(test_report.summary.report_id, TEST_REPORT_ID)
-            self.assertTrue(
-                any(option.kind == "test" for option in test_report.available_reports)
-            )
-            self.assertTrue(all(not table.checks for table in test_report.tables))
-            self.assertEqual(test_report.tables[0].generation_status, "exact")
-            self.assertTrue(
-                any(
-                    table.generation_status == "mapping_review"
-                    for table in test_report.tables
-                )
-            )
-            self.assertTrue(
-                any(
-                    table.generation_status == "new_table"
-                    for table in test_report.tables
-                )
-            )
             with connect(db_path) as connection:
                 with connection:
                     connection.execute(
@@ -263,19 +239,6 @@ class YearbookReproductionServiceTest(unittest.TestCase):
                         """
                     )
             YearbookReproductionBuildService(db_path).run(report_id=report_id)
-            test_overview = DatabaseReportService(db_path).get_overview_for_report(
-                TEST_REPORT_ID
-            )
-            empty_summary = next(
-                table for table in test_overview.tables if table.code == "1-1"
-            )
-            empty_table = DatabaseReportService(db_path).get_table(
-                empty_summary.id, TEST_REPORT_ID
-            )
-            assert empty_table is not None
-            self.assertEqual(empty_table.generation_status, "empty")
-            self.assertEqual(str(empty_table.rows[0]["c0"]), "2023")
-            self.assertEqual(empty_table.rows[0]["c1"], "")
 
             with connect(db_path) as connection:
                 report_count = connection.execute(

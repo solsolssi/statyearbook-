@@ -166,21 +166,80 @@ class ReportDeleteTest(unittest.TestCase):
                     ).fetchone()["count"]
                     self.assertEqual(count, 0, table_name)
 
-    def test_delete_report_blocks_reports_used_as_a_base(self) -> None:
+    def test_delete_report_detaches_reports_used_as_a_base(self) -> None:
         with TemporaryDirectory() as directory:
             db_path = Path(directory) / "report.sqlite"
             with connect(db_path) as connection:
                 init_db(connection)
                 base_report_id = insert_report(connection, title="기준 연보")
-                insert_report(
+                child_report_id = insert_report(
                     connection,
                     title="파생 연보",
                     file_hash="child-hash",
                     base_report_id=base_report_id,
                 )
+                connection.execute(
+                    """
+                    INSERT INTO report_update_batches (
+                        base_report_id, report_id, update_kind
+                    ) VALUES (?, ?, 'incremental_draft')
+                    """,
+                    (base_report_id, child_report_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO report_incremental_uploads (
+                        report_id, base_report_id, target_year, payload_json
+                    ) VALUES (?, ?, 2026, '{}')
+                    """,
+                    (child_report_id, base_report_id),
+                )
 
-            with self.assertRaisesRegex(ValueError, "파생 연보를 먼저 삭제"):
-                DatabaseReportService(db_path).delete_report(base_report_id)
+            deleted = DatabaseReportService(db_path).delete_report(base_report_id)
+
+            self.assertIsNotNone(deleted)
+            with connect(db_path) as connection:
+                child = connection.execute(
+                    "SELECT base_report_id FROM annual_reports WHERE id = ?",
+                    (child_report_id,),
+                ).fetchone()
+                update_batch = connection.execute(
+                    "SELECT base_report_id FROM report_update_batches WHERE report_id = ?",
+                    (child_report_id,),
+                ).fetchone()
+                incremental_upload = connection.execute(
+                    "SELECT base_report_id FROM report_incremental_uploads WHERE report_id = ?",
+                    (child_report_id,),
+                ).fetchone()
+            self.assertIsNone(child["base_report_id"])
+            self.assertIsNotNone(update_batch)
+            self.assertIsNone(update_batch["base_report_id"])
+            self.assertIsNotNone(incremental_upload)
+            self.assertIsNone(incremental_upload["base_report_id"])
+
+    def test_delete_report_ignores_hidden_ledger_generated_children(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                base_report_id = insert_report(connection, title="기준 연보")
+                child_report_id = insert_report(
+                    connection,
+                    title="예전 증분 테스트",
+                    file_hash="ledger-child-hash",
+                    base_report_id=base_report_id,
+                    origin_kind="ledger_generated",
+                )
+
+            deleted = DatabaseReportService(db_path).delete_report(base_report_id)
+
+            self.assertIsNotNone(deleted)
+            with connect(db_path) as connection:
+                child = connection.execute(
+                    "SELECT base_report_id FROM annual_reports WHERE id = ?",
+                    (child_report_id,),
+                ).fetchone()
+            self.assertIsNone(child["base_report_id"])
 
     def test_delete_report_blocks_hidden_templates(self) -> None:
         with TemporaryDirectory() as directory:

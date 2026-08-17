@@ -74,7 +74,9 @@ class SourceDataImportResult(BaseModel):
     mode: Literal["append_year"]
     base_report_id: int
     target_year: int
-    batch_id: int
+    # Increment uploads are report-scoped.  This remains for API compatibility
+    # with older clients but is no longer a global source-ledger batch id.
+    batch_id: int = 0
     datasets: int = 0
     items: int = 0
     values: int = 0
@@ -83,7 +85,7 @@ class SourceDataImportResult(BaseModel):
     unchanged_values: int = 0
     reused: bool = False
     generated_report_id: int
-    reproduction_run_id: int
+    reproduction_run_id: int = 0
     source_snapshot_id: int = 0
     generated_table_count: int = 0
     review_table_count: int = 0

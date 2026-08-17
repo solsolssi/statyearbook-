@@ -47,6 +47,8 @@ class EditableColumnPatch(BaseModel):
     source_col_indexes: list[int] = Field(min_length=1)
     label: str
     label_en: str = ""
+    header_path: list[str] = Field(default_factory=list)
+    header_path_en: list[str] = Field(default_factory=list)
     footnote_marker: str = ""
 
 
@@ -76,6 +78,8 @@ class EditableTablePart(BaseModel):
     metadata: EditableMetadata
     columns: list[EditableColumnPatch] = Field(default_factory=list)
     cells: list[EditableCellPatch] = Field(default_factory=list)
+    replace_structure: bool = False
+    replace_rows: bool = False
 
 
 class TableContentUpdateRequest(BaseModel):
@@ -86,4 +90,10 @@ class TableContentUpdateRequest(BaseModel):
     section_title_en: str = Field(default="", max_length=500)
     domain: str = Field(default="", max_length=200)
     hierarchy_patches: list[EditableHierarchyPatch] = Field(default_factory=list)
+    deleted_part_ids: list[str] = Field(default_factory=list)
     parts: list[EditableTablePart] = Field(min_length=1)
+
+
+class StatisticCloneRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=500)

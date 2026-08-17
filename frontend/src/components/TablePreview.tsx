@@ -1,15 +1,14 @@
 import {
   ArrowRight,
   ClipboardCheck,
-  Download,
   FileText,
-  Info,
   Sparkles,
 } from "lucide-react";
 
 import type { StatTable } from "../types";
 import { resolveIssueLocation } from "../utils/validationLocation";
 import { DataGrid } from "./DataGrid";
+import { DownloadMenu } from "./DownloadMenu";
 import { StatusBadge } from "./StatusBadge";
 
 interface TablePreviewProps {
@@ -146,20 +145,13 @@ export function TablePreview({ table, onOpen }: TablePreviewProps) {
       <section className="preview-grid-block">
         <div className="section-label">
           <FileText aria-hidden="true" size={16} />
-          <span>{table.is_test_table ? "테스트 생성 표 미리보기" : "원본 표 미리보기"}</span>
+          <span>{table.is_test_table ? "생성 표 미리보기" : "원본 표 미리보기"}</span>
         </div>
         <DataGrid columns={table.columns} rows={table.rows} theme={table.theme} maxRows={6} />
       </section>
 
       <div className="preview-actions">
-        <button className="secondary-button" type="button">
-          <Download aria-hidden="true" size={16} />
-          <span>다운로드</span>
-        </button>
-        <button className="secondary-button" type="button">
-          <Info aria-hidden="true" size={16} />
-          <span>메타정보</span>
-        </button>
+        <DownloadMenu table={table} />
         <button className="primary-button" type="button" onClick={onOpen}>
           <span>상세 보기</span>
           <ArrowRight aria-hidden="true" size={16} />
