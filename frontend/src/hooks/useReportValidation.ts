@@ -19,7 +19,8 @@ export function useReportValidation(
       options: {
         selectedRuleKeys: string[];
         reuseExisting: boolean;
-        includeLlm: boolean;
+        includeProfileLlm: boolean;
+        includeLanguageLlm: boolean;
         sourceValidationRunId?: number;
       },
     ) => {

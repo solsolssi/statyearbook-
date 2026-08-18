@@ -125,6 +125,13 @@ export interface IncrementalConnectionItem {
   evidence: Record<string, unknown>;
   candidates: IncrementalConnectionCandidate[];
   confirmed_by_user: boolean;
+  llm_assistance?: {
+    status: string;
+    confidence: number;
+    model: string;
+    reason: string;
+    plan: Record<string, unknown>;
+  } | null;
 }
 
 export interface IncrementalConnectionOverview {
@@ -490,6 +497,14 @@ export interface SourceDataImportResult {
   review_table_count: number;
   deleted_table_count: number;
   new_table_count: number;
+  llm_assistance?: {
+    available: boolean;
+    candidates: number;
+    proposed: number;
+    applied: number;
+    rejected: number;
+    message?: string;
+  };
 }
 
 export interface ReportTableDifference {

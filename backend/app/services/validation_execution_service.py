@@ -19,7 +19,7 @@ from app.validation.selection import (
     normalize_validation_rule_keys,
     selected_language_check_types,
 )
-from app.services.report_update_service import compare_table_rows, tables_by_code
+from app.services.report_update_service import tables_by_code
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,8 @@ class ValidationExecutionService:
         report_id: int,
         selected_rule_keys: list[str] | tuple[str, ...] | None = None,
         reuse_existing: bool = True,
-        include_llm: bool = False,
+        include_profile_llm: bool = False,
+        include_language_llm: bool = False,
         source_validation_run_id: int | None = None,
     ) -> dict[str, object]:
         rule_keys = normalize_validation_rule_keys(selected_rule_keys)
@@ -73,8 +74,9 @@ class ValidationExecutionService:
                 report_id=report_id,
                 run_id=int(selected_source["id"]),
             )
+            and not include_profile_llm
         ):
-            if include_llm and self._has_pending_language_reviews(
+            if include_language_llm and self._has_pending_language_reviews(
                 int(selected_source["id"]),
                 selected_language_check_types(rule_keys),
             ):
@@ -90,10 +92,10 @@ class ValidationExecutionService:
                 selected_rule_keys=rule_keys,
             )
 
-        if reuse_existing and selected_source is None:
+        if reuse_existing and selected_source is None and not include_profile_llm:
             existing = self._matching_current_run(report_id, rule_keys)
             if existing is not None:
-                if include_llm and self._has_pending_language_reviews(
+                if include_language_llm and self._has_pending_language_reviews(
                     int(existing["id"]),
                     selected_language_check_types(rule_keys),
                 ):
@@ -109,9 +111,19 @@ class ValidationExecutionService:
                     selected_rule_keys=rule_keys,
                 )
 
+        # Profile LLM is only needed for new/changed tables.  Cross-report
+        # identical tables remain safely reusable.  The exception is an
+        # explicit run from this same report: the user may be asking to enrich
+        # profiles that were previously left for review, so those tables must
+        # execute locally once.
+        selected_source_is_current = bool(
+            selected_source is not None
+            and int(selected_source["report_id"]) == report_id
+        )
         reusable = (
             self._reusable_tables(report, rule_keys, selected_source=selected_source)
             if reuse_existing
+            and not (include_profile_llm and selected_source_is_current)
             else []
         )
         reusable_table_ids = {item.target_table_id for item in reusable}
@@ -125,6 +137,7 @@ class ValidationExecutionService:
                 report_id=report_id,
                 table_ids=local_table_ids,
                 selected_rule_keys=rule_keys,
+                use_llm_profiles=include_profile_llm,
             )
             run_id = calculation.run_id
         else:
@@ -147,7 +160,7 @@ class ValidationExecutionService:
                 report_id=report_id,
                 run_id=run_id,
                 source_path=str(report["source_file_path"]),
-                include_llm=include_llm,
+                include_llm=include_language_llm,
                 table_ids=local_table_ids,
                 selected_check_types=language_types,
             )
@@ -157,7 +170,7 @@ class ValidationExecutionService:
             mappings=reusable,
             selected_rule_keys=rule_keys,
         )
-        if include_llm and language_types:
+        if include_language_llm and language_types:
             # A revised report may have copied pending candidates from its base
             # report. Complete those in this run instead of creating another
             # full run or treating a prior same-year report as a cache source.
@@ -282,8 +295,7 @@ class ValidationExecutionService:
                     source = candidate_tables.get(code)
                     if source is None:
                         continue
-                    change_type, _, _ = compare_table_rows(connection, target, source)
-                    if change_type != "matching":
+                    if not validation_table_matches(connection, target, source):
                         continue
                     resolved[target_id] = ReusableTableValidation(
                         target_table_id=target_id,
@@ -716,3 +728,61 @@ def run_rule_keys(run: DatabaseRow) -> tuple[str, ...]:
     if not isinstance(parsed, list) or not parsed:
         return all_validation_rule_keys()
     return normalize_validation_rule_keys(str(value) for value in parsed)
+
+
+def validation_table_matches(
+    connection: DatabaseConnection,
+    target: DatabaseRow,
+    source: DatabaseRow,
+) -> bool:
+    """Whether a prior table's validation results remain executable.
+
+    A normal next-year revision changes the literal base date even when the
+    statistic, structure and values are identical.  Metadata validation only
+    depends on whether base date/source exist, so compare presence for those
+    two fields while keeping semantic metadata, every cell value and header
+    roles exact.  This lets v2 reuse genuinely unchanged checks without ever
+    reusing a changed value or changed table structure.
+    """
+
+    exact_metadata_fields = (
+        "title",
+        "title_en",
+        "section_title",
+        "section_title_en",
+        "domain",
+        "unit",
+        "note",
+    )
+    if any(
+        str(target[field] or "").strip() != str(source[field] or "").strip()
+        for field in exact_metadata_fields
+    ):
+        return False
+    if any(
+        bool(str(target[field] or "").strip())
+        != bool(str(source[field] or "").strip())
+        for field in ("base_date", "source")
+    ):
+        return False
+
+    def cell_signature(table_id: int) -> list[tuple[int, int, str, int]]:
+        return [
+            (
+                int(row["row_index"]),
+                int(row["col_index"]),
+                str(row["text_value"] or "").strip(),
+                int(row["is_header"] or 0),
+            )
+            for row in connection.execute(
+                """
+                SELECT row_index, col_index, text_value, is_header
+                FROM stat_table_cells
+                WHERE table_id = ?
+                ORDER BY row_index, col_index
+                """,
+                (table_id,),
+            ).fetchall()
+        ]
+
+    return cell_signature(int(target["id"])) == cell_signature(int(source["id"]))

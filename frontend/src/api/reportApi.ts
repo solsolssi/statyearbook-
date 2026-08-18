@@ -38,6 +38,7 @@ export interface ReportUploadOptions {
   title?: string;
   mode?: "completed_report_new";
   baseReportId?: number;
+  includeLlm?: boolean;
 }
 
 export interface SourceDataUploadOptions {
@@ -48,6 +49,7 @@ export interface SourceDataUploadOptions {
   infoFile: File;
   itemFile: File;
   valueFile: File;
+  includeLlm?: boolean;
 }
 
 export interface ValidationRunResult {
@@ -247,6 +249,7 @@ export async function uploadReport(
       mode: options.mode,
       base_report_id:
         options.baseReportId === undefined ? undefined : String(options.baseReportId),
+      include_llm: options.includeLlm === undefined ? undefined : String(options.includeLlm),
     }),
     {
       method: "POST",
@@ -292,6 +295,7 @@ export async function uploadSourceData(
       base_report_id: String(options.baseReportId),
       target_year: String(options.targetYear),
       title: options.title,
+      include_llm: options.includeLlm === undefined ? undefined : String(options.includeLlm),
     }),
     { method: "POST", body: formData },
     "증분 데이터를 업로드하지 못했습니다.",
@@ -414,7 +418,8 @@ export async function runReportValidation(
   options: {
     selectedRuleKeys: string[];
     reuseExisting: boolean;
-    includeLlm?: boolean;
+    includeProfileLlm?: boolean;
+    includeLanguageLlm?: boolean;
     sourceValidationRunId?: number;
   },
 ): Promise<ValidationRunResult> {
@@ -426,12 +431,43 @@ export async function runReportValidation(
       body: JSON.stringify({
         selected_rule_keys: options.selectedRuleKeys,
         reuse_existing: options.reuseExisting,
-        include_llm: options.includeLlm ?? false,
+        include_profile_llm: options.includeProfileLlm ?? false,
+        include_language_llm: options.includeLanguageLlm ?? false,
         source_validation_run_id: options.sourceValidationRunId,
       }),
     },
     "연보 검수를 실행하지 못했습니다.",
   );
+}
+
+export async function downloadValidationReportArchive(
+  reportId: number,
+  statuses: string[],
+  contents: string[],
+): Promise<void> {
+  const params = new URLSearchParams();
+  for (const status of statuses) {
+    params.append("status", status);
+  }
+  for (const content of contents) {
+    params.append("component", content);
+  }
+  const response = await fetch(
+    `${API_BASE_URL}/api/reports/${reportId}/validation-report?${params.toString()}`,
+  );
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? "검수 리포트를 만들지 못했습니다.");
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `validation-report-${reportId}.zip`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 export async function fetchImportJob(jobId: number): Promise<ReportImportJob> {

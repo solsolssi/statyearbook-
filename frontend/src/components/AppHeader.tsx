@@ -17,7 +17,7 @@ import type {
 } from "../types";
 import type { UploadSubmission } from "../hooks/useReportImport";
 
-export type AppSection = "annual" | "source" | "keyStats" | "editAccess";
+export type AppSection = "annual" | "source" | "editAccess";
 
 interface AppHeaderProps {
   activeSection: AppSection;
@@ -25,7 +25,7 @@ interface AppHeaderProps {
   availableTemplates: ReportOption[];
   selectedReportId: string;
   onSectionChange: (section: AppSection) => void;
-  onUpload: (submission: UploadSubmission) => void;
+  onUpload: (submission: UploadSubmission) => Promise<boolean>;
   uploadState: "idle" | "uploading" | "error";
 }
 
@@ -48,7 +48,6 @@ interface UploadModeOption {
 const navItems: Array<{ id: AppSection; label: string }> = [
   { id: "annual", label: "통계 연보" },
   { id: "source", label: "통계 원장" },
-  { id: "keyStats", label: "주요통계집" },
   { id: "editAccess", label: "수정 권한" },
 ];
 
@@ -119,9 +118,12 @@ export function AppHeader({
             selectedReportId={selectedReportId}
             uploadState={uploadState}
             onClose={() => setDialogOpen(false)}
-            onUpload={(submission) => {
-              onUpload(submission);
-              setDialogOpen(false);
+            onUpload={async (submission) => {
+              const completed = await onUpload(submission);
+              if (completed) {
+                setDialogOpen(false);
+              }
+              return completed;
             }}
           />
         ) : null}
@@ -154,7 +156,7 @@ interface UploadDecisionDialogProps {
   selectedReportId: string;
   uploadState: "idle" | "uploading" | "error";
   onClose: () => void;
-  onUpload: (submission: UploadSubmission) => void;
+  onUpload: (submission: UploadSubmission) => Promise<boolean>;
 }
 
 function UploadDecisionDialog({
@@ -186,6 +188,7 @@ function UploadDecisionDialog({
   const [reportTitle, setReportTitle] = useState(
     `${baseReport ? baseReport.year + 1 : new Date().getFullYear()} 행정안전통계연보`,
   );
+  const [includeLlm, setIncludeLlm] = useState(false);
   const [completedFile, setCompletedFile] = useState<File | null>(null);
   const [sourceFileSet, setSourceFileSet] = useState<SourceFileSet>({
     infoFile: null,
@@ -228,7 +231,7 @@ function UploadDecisionDialog({
       ? Boolean(completedFile)
       : Boolean(sourceFileSet.infoFile && sourceFileSet.itemFile && sourceFileSet.valueFile));
 
-  function submit() {
+  async function submit() {
     if (!canSubmit || (needsBaseReport && !baseReport)) {
       return;
     }
@@ -237,18 +240,19 @@ function UploadDecisionDialog({
       if (!completedFile) {
         return;
       }
-      onUpload({
+      await onUpload({
         mode,
         targetYear: parsedYear,
         title: reportTitle.trim(),
         file: completedFile,
+        includeLlm,
       });
       return;
     }
     if (!baseReport || !sourceFileSet.infoFile || !sourceFileSet.itemFile || !sourceFileSet.valueFile) {
       return;
     }
-    onUpload({
+    await onUpload({
       mode,
       baseReportId: baseReport.id,
       targetYear: parsedYear,
@@ -256,6 +260,7 @@ function UploadDecisionDialog({
       infoFile: sourceFileSet.infoFile,
       itemFile: sourceFileSet.itemFile,
       valueFile: sourceFileSet.valueFile,
+      includeLlm,
     });
   }
 
@@ -275,7 +280,7 @@ function UploadDecisionDialog({
   return (
     <div className="upload-dialog-backdrop" role="presentation">
       <section
-        className="upload-dialog"
+        className="upload-dialog yearbook-upload-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="upload-dialog-title"
@@ -393,6 +398,26 @@ function UploadDecisionDialog({
             />
           </div>
         )}
+
+        <label className="upload-llm-option">
+          <input
+            type="checkbox"
+            checked={includeLlm}
+            onChange={(event) => setIncludeLlm(event.target.checked)}
+          />
+          <span>
+            <strong>
+              {mode === "completed_report_new"
+                ? "파싱·검수 프로파일 LLM 보조"
+                : "증분 연결 LLM 보조"}
+            </strong>
+            <small>
+              {mode === "completed_report_new"
+                ? "파싱 경고 표와 계산 프로파일이 불확실한 표만 보조 해석합니다. 검수 결과는 생성하지 않습니다."
+                : "규칙 연결의 근거가 충분하지만 애매한 후보만 보조 해석하며, 불확실하면 확인 필요로 남깁니다."}
+            </small>
+          </span>
+        </label>
 
         <div className="upload-dialog__footer">
           <button type="button" className="secondary-button" onClick={onClose}>

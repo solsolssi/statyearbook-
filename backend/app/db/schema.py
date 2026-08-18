@@ -922,6 +922,25 @@ CREATE TABLE IF NOT EXISTS llm_usage_events (
 
 CREATE INDEX IF NOT EXISTS idx_llm_usage_events_run
 ON llm_usage_events(run_id, created_at);
+
+CREATE TABLE IF NOT EXISTS report_llm_assistance_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id INTEGER NOT NULL,
+    workflow_kind TEXT NOT NULL,
+    target_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    confidence REAL NOT NULL DEFAULT 0,
+    model TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    plan_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE,
+    UNIQUE (report_id, workflow_kind, target_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_llm_assistance_report
+ON report_llm_assistance_decisions(report_id, workflow_kind, status);
 """
 
 

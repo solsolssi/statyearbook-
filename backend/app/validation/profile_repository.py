@@ -39,6 +39,7 @@ class ValidationProfileRepository:
         tables: list[ValidationTable],
         provider: ProfileDraftProvider | None = None,
         refresh: bool = False,
+        refresh_needs_review: bool = False,
     ) -> dict[str, ValidationProfile]:
         draft_provider = provider or default_profile_draft_provider()
         profiles: dict[str, ValidationProfile] = {}
@@ -72,7 +73,13 @@ class ValidationProfileRepository:
                         )
                     ):
                         inherited_profile = previous_profile
-                    if profile is None or refresh or curated_refresh_required or dynamic_scope_refresh_required:
+                    if (
+                        profile is None
+                        or refresh
+                        or curated_refresh_required
+                        or dynamic_scope_refresh_required
+                        or (refresh_needs_review and profile.requires_review)
+                    ):
                         try:
                             draft = (
                                 inherited_profile_draft(table, inherited_profile)

@@ -144,7 +144,7 @@ def unresolved_increment_counts(
     connection: DatabaseConnection,
     report_id: int,
 ) -> tuple[int, int]:
-    """Count disjoint logical blockers that must be resolved before confirm."""
+    """Count pending incremental items for audit and operational reporting."""
     logical_statuses: dict[str, list[str]] = defaultdict(list)
     for row in connection.execute(
         """
@@ -1369,13 +1369,30 @@ class IncrementalYearbookService:
             if report is None:
                 raise ValueError("확정할 연보 초안을 찾을 수 없습니다.")
             if str(report["origin_kind"] or "") == "incremental_draft":
-                review_count, unmatched_count = unresolved_increment_counts(connection, report_id)
-                if review_count or unmatched_count:
-                    raise ValueError(
-                        "안전하게 반영되지 않은 항목이 남아 있어 확정할 수 없습니다. "
-                        f"확인 필요 통계 {review_count}개, 미연결 증분 {unmatched_count}개를 "
-                        "증분 연결 화면에서 먼저 처리해 주세요."
-                    )
+                # Confirmation is a publication-state transition, not a demand
+                # that every uploaded increment already has a target table.
+                # Keep unresolved mappings as report-scoped audit records while
+                # removing their draft-only review state from the confirmed
+                # yearbook. The confirmed tables begin at "검수 전" and are
+                # checked through the normal validation workflow afterwards.
+                connection.execute(
+                    """
+                    UPDATE generated_report_table_status
+                    SET generation_status = 'increment_deferred',
+                        generation_message = '연보 확정 시 증분 반영 여부를 보류했습니다. 확정 연보에서 검수를 진행해 주세요.'
+                    WHERE report_id = ?
+                      AND generation_status IN ('mapping_review', 'new_table')
+                    """,
+                    (report_id,),
+                )
+                connection.execute(
+                    """
+                    UPDATE report_incremental_table_mappings
+                    SET mapping_status = 'deferred', updated_at = CURRENT_TIMESTAMP
+                    WHERE report_id = ? AND mapping_status = 'review'
+                    """,
+                    (report_id,),
+                )
             with connection:
                 updated = connection.execute(
                     """
@@ -1421,6 +1438,23 @@ class IncrementalYearbookService:
                 """,
                 (report_id,),
             ).fetchall()
+            assistance_by_target = {
+                str(assistance["target_key"]): {
+                    "status": str(assistance["status"] or ""),
+                    "confidence": float(assistance["confidence"] or 0),
+                    "model": str(assistance["model"] or ""),
+                    "reason": str(assistance["reason"] or ""),
+                    "plan": safe_json_object(str(assistance["plan_json"] or "{}")),
+                }
+                for assistance in connection.execute(
+                    """
+                    SELECT target_key,status,confidence,model,reason,plan_json
+                    FROM report_llm_assistance_decisions
+                    WHERE report_id = ? AND workflow_kind = 'increment'
+                    """,
+                    (report_id,),
+                ).fetchall()
+            }
             connections: list[dict[str, Any]] = []
             unmatched: list[dict[str, Any]] = []
             ignored: list[dict[str, Any]] = []
@@ -1440,6 +1474,12 @@ class IncrementalYearbookService:
                     "candidates": safe_json_list(str(row["candidates_json"] or "[]")),
                     "confirmed_by_user": bool(row["confirmed_by_user"]),
                 }
+                assistance_key = (
+                    f"increment:{item['source_key']}"
+                    if item["match_method"] in {"new_increment", "ignored_increment"}
+                    else f"table:{item['table_code']}"
+                )
+                item["llm_assistance"] = assistance_by_target.get(assistance_key)
                 if item["match_method"] == "new_increment":
                     unmatched.append(item)
                 elif item["match_method"] == "ignored_increment":

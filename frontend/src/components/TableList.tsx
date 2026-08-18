@@ -90,7 +90,8 @@ export function TableList({
           onScroll={(event) => onScrollTopChange(event.currentTarget.scrollTop)}
         >
           {tables.map((table) => {
-            const reviewCount = groupedValidationIssueCount(table.checks, "확인 필요");
+            const validationReviewCount = groupedValidationIssueCount(table.checks, "확인 필요");
+            const reviewCount = validationReviewCount || (table.status === "needs_review" ? 1 : 0);
             const criticalCount = groupedValidationIssueCount(table.checks, "오류 의심");
 
             return (

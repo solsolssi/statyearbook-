@@ -91,3 +91,4 @@ class SourceDataImportResult(BaseModel):
     review_table_count: int = 0
     deleted_table_count: int = 0
     new_table_count: int = 0
+    llm_assistance: dict[str, object] = Field(default_factory=dict)

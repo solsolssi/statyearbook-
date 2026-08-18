@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from app.db.connection import connect
 from app.db.schema import init_db
@@ -407,6 +408,55 @@ class ValidationExecutionServiceTest(unittest.TestCase):
             self.assertEqual(reusable_runs[0]["normal_count"], 0)
             self.assertEqual(reusable_runs[0]["needs_review_count"], 1)
             self.assertEqual(reusable_runs[0]["suspected_error_count"], 0)
+
+    def test_language_llm_can_resume_pending_candidates_without_recalculating(self) -> None:
+        with TemporaryDirectory() as directory:
+            db_path = Path(directory) / "report.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                with connection:
+                    report_id = insert_report(connection, year=2027, title="언어 재검수 연보")
+                    table_id = insert_table(
+                        connection,
+                        report_id=report_id,
+                        code="1-1-1",
+                        values=("구분", "합계", "정부 Government", "3"),
+                    )
+                    run_id = int(connection.execute(
+                        """
+                        INSERT INTO validation_runs (
+                            report_id, rules_version, started_at, completed_at,
+                            selected_rules_json
+                        ) VALUES (?, 'test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
+                        """,
+                        (report_id, json.dumps(["sum", "translation"])),
+                    ).lastrowid)
+                    insert_check(connection, run_id=run_id, table_id=table_id, check_type="합계 검수")
+                    connection.execute(
+                        """
+                        INSERT INTO linguistic_review_candidates (
+                            run_id, table_id, review_type, candidate_kind,
+                            source_kind, location, current_value, korean_text,
+                            english_text, glossary_json, reason, prompt_version
+                        ) VALUES (?, ?, '번역 검수', 'translation_pair',
+                                  'document', '2행 1열', '정부 Government',
+                                  '정부', 'Government', '[]', '후보', 'test')
+                        """,
+                        (run_id, table_id),
+                    )
+
+            service = ValidationExecutionService(db_path)
+            with patch.object(service, "_run_pending_llm_reviews") as resume:
+                result = service.run(
+                    report_id=report_id,
+                    selected_rule_keys=["sum", "translation"],
+                    reuse_existing=True,
+                    include_language_llm=True,
+                    source_validation_run_id=run_id,
+                )
+
+            self.assertEqual(result["run_id"], run_id)
+            resume.assert_called_once_with(run_id)
 
 def insert_report(
     connection,

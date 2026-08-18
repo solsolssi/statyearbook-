@@ -59,6 +59,8 @@ def export_validation_workbooks(
     year: int | None = None,
     report_id: int | None = None,
     run_id: int | None = None,
+    statuses: Iterable[str] | None = None,
+    check_types: Iterable[str] | None = None,
     output_dir: Path = Path("exports"),
 ) -> ExportResult:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -70,19 +72,39 @@ def export_validation_workbooks(
             "SELECT * FROM stat_tables WHERE report_id = ? ORDER BY table_order, id",
             (report["id"],),
         ).fetchall()
+        selected_statuses = tuple(dict.fromkeys(statuses or ()))
+        selected_check_types = tuple(dict.fromkeys(check_types or ()))
+        clauses = ["vc.run_id = ?"]
+        parameters: list[object] = [resolved_run_id]
+        if selected_statuses:
+            clauses.append(
+                f"vc.status IN ({','.join('?' for _ in selected_statuses)})"
+            )
+            parameters.extend(selected_statuses)
+        else:
+            clauses.append("vc.status != '정상'")
+        if selected_check_types:
+            clauses.append(
+                f"vc.check_type IN ({','.join('?' for _ in selected_check_types)})"
+            )
+            parameters.extend(selected_check_types)
+        else:
+            clauses.append(
+                f"vc.check_type NOT IN ({','.join('?' for _ in EXCLUDED_CHECK_TYPES)})"
+            )
+            parameters.extend(sorted(EXCLUDED_CHECK_TYPES))
+
         failing_checks = connection.execute(
-            """
+            f"""
             SELECT vc.*, st.code, st.title, st.table_order
             FROM validation_checks vc
             JOIN stat_tables st ON st.id = vc.table_id
-            WHERE vc.run_id = ?
-              AND vc.status != '정상'
-              AND vc.check_type NOT IN ({})
+            WHERE {' AND '.join(clauses)}
             ORDER BY st.table_order,
                      CASE vc.status WHEN '오류 의심' THEN 0 ELSE 1 END,
                      vc.row_index IS NULL, vc.row_index, vc.col_index, vc.id
-            """.format(",".join("?" for _ in EXCLUDED_CHECK_TYPES)),
-            (resolved_run_id, *sorted(EXCLUDED_CHECK_TYPES)),
+            """,
+            tuple(parameters),
         ).fetchall()
 
         contacts = {int(table["id"]): parse_contact_metadata(table["source"] or "") for table in tables}

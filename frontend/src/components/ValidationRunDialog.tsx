@@ -13,7 +13,8 @@ interface ValidationRunDialogProps {
   onRun: (options: {
     selectedRuleKeys: string[];
     reuseExisting: boolean;
-    includeLlm: boolean;
+    includeProfileLlm: boolean;
+    includeLanguageLlm: boolean;
     sourceValidationRunId?: number;
   }) => Promise<boolean>;
 }
@@ -34,7 +35,8 @@ export function ValidationRunDialog({
     () => new Set(orderedCatalog.map((item) => item.key)),
   );
   const [reuseExisting, setReuseExisting] = useState(true);
-  const [includeLlm, setIncludeLlm] = useState(false);
+  const [includeProfileLlm, setIncludeProfileLlm] = useState(false);
+  const [includeLanguageLlm, setIncludeLanguageLlm] = useState(false);
   const [reuseRuns, setReuseRuns] = useState<ValidationReuseRunOption[]>([]);
   const [reuseRunsState, setReuseRunsState] = useState<"loading" | "ready" | "error">("loading");
   const [sourceRunId, setSourceRunId] = useState("");
@@ -42,6 +44,8 @@ export function ValidationRunDialog({
   const isRunning = state === "running";
   const languageReviewSelected =
     selectedKeys.has("spelling") || selectedKeys.has("translation");
+  const calculationReviewSelected =
+    selectedKeys.has("sum") || selectedKeys.has("ratio");
   const selectedRuleKeys = useMemo(
     () => orderedCatalog
       .map((item) => item.key)
@@ -125,6 +129,12 @@ export function ValidationRunDialog({
     selectedRuleKeys,
   ]);
 
+  useEffect(() => {
+    if (!calculationReviewSelected && includeProfileLlm) {
+      setIncludeProfileLlm(false);
+    }
+  }, [calculationReviewSelected, includeProfileLlm]);
+
   function toggle(key: string) {
     setSelectionTouched(true);
     setSelectedKeys((current) => {
@@ -147,7 +157,8 @@ export function ValidationRunDialog({
         .map((item) => item.key)
         .filter((key) => selectedKeys.has(key)),
       reuseExisting,
-      includeLlm: includeLlm && languageReviewSelected,
+      includeProfileLlm: includeProfileLlm && calculationReviewSelected,
+      includeLanguageLlm: includeLanguageLlm && languageReviewSelected,
       sourceValidationRunId: reuseExisting ? selectedSourceRunId : undefined,
     });
     if (completed) {
@@ -271,13 +282,29 @@ export function ValidationRunDialog({
           <label>
             <input
               type="checkbox"
-              checked={includeLlm && languageReviewSelected}
-              disabled={!languageReviewSelected}
-              onChange={(event) => setIncludeLlm(event.target.checked)}
+              checked={includeProfileLlm && calculationReviewSelected}
+              disabled={!calculationReviewSelected}
+              onChange={(event) => setIncludeProfileLlm(event.target.checked)}
             />
             <span>
-              <strong>언어 후보 LLM 자동 판정</strong>
-              <small>선택하지 않으면 오탈자·번역 후보를 재검수 필요로 남깁니다.</small>
+              <strong>합계·비율 프로파일 LLM 보조</strong>
+              <small>
+                새롭거나 구조가 변경되어 규칙만으로 확정하기 어려운 표의 계산 검수식을 보강합니다.
+              </small>
+            </span>
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={includeLanguageLlm && languageReviewSelected}
+              disabled={!languageReviewSelected}
+              onChange={(event) => setIncludeLanguageLlm(event.target.checked)}
+            />
+            <span>
+              <strong>오탈자·번역 LLM 검수</strong>
+              <small>
+                선택하지 않으면 언어 후보를 재검수 필요로 남기고, 다음 검수에서 이 옵션만 켜 이어서 판정할 수 있습니다.
+              </small>
             </span>
           </label>
         </div>

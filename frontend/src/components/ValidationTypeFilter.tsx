@@ -33,14 +33,14 @@ export function ValidationTypeFilter({
     <details className={`validation-type-filter validation-type-filter--${align}`}>
       <summary>
         <SlidersHorizontal aria-hidden="true" size={15} />
-        <span>검수 항목</span>
+        <span>확인 항목</span>
         <strong>
           {visibleCount}/{enabledTypes.length}
         </strong>
       </summary>
       <div className="validation-type-filter__menu">
         <div className="validation-type-filter__heading">
-          <strong>표시할 검수</strong>
+          <strong>표시할 확인 항목</strong>
           <button type="button" onClick={toggleAllVisible} disabled={enabledTypes.length === 0}>
             {allVisible ? "모두 숨기기" : "모두 표시"}
           </button>

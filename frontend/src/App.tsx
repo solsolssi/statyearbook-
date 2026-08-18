@@ -13,7 +13,9 @@ import { confirmIncrementReport, deleteReport, fetchTable } from "./api/reportAp
 import type { ReportOption, StatTable, TableStatus } from "./types";
 import {
   DEFAULT_HIDDEN_VALIDATION_TYPES,
+  INCREMENTAL_REVIEW_TYPES,
   OPTIONAL_VALIDATION_TYPES,
+  VALIDATION_CHECK_TYPES,
   activeValidationTypesForTables,
   summaryWithValidationVisibility,
   tablesWithValidationVisibility,
@@ -87,14 +89,32 @@ export default function App() {
   );
 
   const rawTables = report.data?.tables ?? [];
+  const isIncrementDraft = ["incremental_draft", "upload_draft"].includes(
+    report.data?.summary.origin_kind ?? "",
+  );
+  const filterTypeOrder = useMemo(
+    () => (
+      isIncrementDraft
+        ? INCREMENTAL_REVIEW_TYPES
+        : [
+            ...VALIDATION_CHECK_TYPES,
+            ...catalogTypes.filter(
+              (type) => !VALIDATION_CHECK_TYPES.includes(
+                type as (typeof VALIDATION_CHECK_TYPES)[number],
+              ),
+            ),
+          ]
+    ),
+    [catalogTypes, isIncrementDraft],
+  );
   const validationTypes = useMemo(
     () =>
       validationTypesForTables([
         ...rawTables,
         ...(selectedTableDetail ? [selectedTableDetail] : []),
         ...(detailTable ? [detailTable] : []),
-      ], catalogTypes),
-    [catalogTypes, detailTable, rawTables, selectedTableDetail],
+      ], filterTypeOrder, !isIncrementDraft),
+    [detailTable, filterTypeOrder, isIncrementDraft, rawTables, selectedTableDetail],
   );
   const activeValidationTypes = useMemo(
     () =>
@@ -239,8 +259,11 @@ export default function App() {
     }
     try {
       await confirmIncrementReport(reportId);
+      setSelectedTableDetail(null);
+      setDetailTable(null);
+      selectedTableRequestRef.current = "";
       setReportRefreshKey((current) => current + 1);
-      window.alert("연보를 확정했습니다.");
+      window.alert("연보를 확정했습니다. 모든 통계는 검수 전 상태입니다.");
       return true;
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "연보 초안을 확정하지 못했습니다.");
@@ -324,7 +347,7 @@ export default function App() {
 
   const reportWorkspace = (
     <ReportWorkspace
-      datasetLabel={activeSection === "keyStats" ? "주요통계집" : "통계 연보"}
+      datasetLabel="통계 연보"
       summary={visibleSummary ?? report.data.summary}
       availableReports={report.data.available_reports}
       tables={tables}
@@ -354,10 +377,6 @@ export default function App() {
       deleteState={deleteState}
       onDeleteReport={handleDeleteReport}
       onConfirmIncrementDraft={handleConfirmIncrementDraft}
-      onCreatedIncrementalTable={(tableId) => {
-        setReportRefreshKey((current) => current + 1);
-        handleOpen(tableId);
-      }}
       onSelect={handleSelect}
       onOpen={handleOpen}
       onTableListScrollTopChange={setTableListScrollTop}
@@ -380,7 +399,7 @@ export default function App() {
         uploadState={uploadState}
       />
 
-      {activeSection === "annual" || activeSection === "keyStats" ? reportWorkspace : null}
+      {activeSection === "annual" ? reportWorkspace : null}
       {activeSection === "source" ? <SourceStatisticsPage /> : null}
       {activeSection === "editAccess" && passwordReportId ? (
         <PasswordSettingsPage

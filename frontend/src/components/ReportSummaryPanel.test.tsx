@@ -73,7 +73,7 @@ describe("ReportSummaryPanel", () => {
 
     expect(screen.queryByText("연보 업로드 완료")).toBeNull();
     expect(screen.queryByText("원장 기반 연보 생성")).toBeNull();
-    expect(screen.getByText("검수 항목")).toBeTruthy();
+    expect(screen.getByText("확인 항목")).toBeTruthy();
     expect(screen.getByRole("button", { name: "검수 진행" })).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "검수 진행" }).closest(".summary-control-row"),

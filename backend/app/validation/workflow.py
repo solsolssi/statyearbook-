@@ -61,6 +61,7 @@ class ValidationWorkflow:
         calculation = self._calculation.run(
             report_id=selected_report_id,
             refresh_profiles=selected_options.refresh_profiles,
+            use_llm_profiles=selected_options.include_llm,
         )
         language = self._language.run(
             report_id=selected_report_id,

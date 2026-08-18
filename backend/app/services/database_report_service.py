@@ -50,6 +50,7 @@ GENERATION_STATUS_LABELS = {
     "unavailable": "생성 확인 필요",
     "source_missing": "증분 데이터 없음",
     "mapping_review": "증분 연결",
+    "parse_review": "파싱 확인",
     "recipe_required": "생성 규칙 필요",
     "increment_applied": "증분 반영",
     "increment_no_change": "증분 변경 없음",
@@ -556,6 +557,12 @@ class DatabaseReportService:
             include_highlights=include_highlights,
         )
         status, status_label = status_from_checks(checks)
+        if (
+            run_id is None
+            and str(report["origin_kind"] or "") in {"incremental_confirmed", "uploaded"}
+            and status == TableStatus.NORMAL
+        ):
+            status_label = "검수 전"
         if validation_stale:
             status = TableStatus.NEEDS_REVIEW
             status_label = "재검수 필요"
@@ -577,7 +584,9 @@ class DatabaseReportService:
             """,
             (int(report["id"]), str(table_row["code"])),
         ).fetchone()
-        if generation is not None and str(generation["generation_status"]) in {"mapping_review", "new_table"}:
+        if generation is not None and str(generation["generation_status"]) in {
+            "mapping_review", "new_table", "parse_review",
+        }:
             status = TableStatus.NEEDS_REVIEW
             status_label = generation_status_label(str(generation["generation_status"]))
         update = connection.execute(
@@ -1074,6 +1083,8 @@ def combined_status(tables: list[StatTable]) -> tuple[TableStatus, str]:
         return TableStatus.SUSPECTED_ERROR, "오류 의심"
     if any(table.status == "needs_review" for table in tables):
         return TableStatus.NEEDS_REVIEW, "확인 필요"
+    if tables and all(table.status_label == "검수 전" for table in tables):
+        return TableStatus.NORMAL, "검수 전"
     return TableStatus.NORMAL, "정상"
 
 

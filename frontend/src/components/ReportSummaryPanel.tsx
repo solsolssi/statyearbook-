@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CheckCircle2, ClipboardCheck, Database, Download, GitBranch, LoaderCircle, Trash2 } from "lucide-react";
+import { CheckCircle2, ClipboardCheck, Database, Download, FileSpreadsheet, LoaderCircle, Trash2 } from "lucide-react";
 
 import type {
   ReportOption,
@@ -10,7 +10,7 @@ import type {
 import { ValidationTypeFilter } from "./ValidationTypeFilter";
 import { ValidationRunDialog } from "./ValidationRunDialog";
 import { ReportWorkbookDownloadDialog } from "./ReportWorkbookDownloadDialog";
-import { IncrementalConnectionsDialog } from "./IncrementalConnectionsDialog";
+import { ValidationReportDownloadDialog } from "./ValidationReportDownloadDialog";
 
 type SummaryFilter = TableStatus | "all";
 
@@ -34,13 +34,12 @@ interface ReportSummaryPanelProps {
   onRunValidation: (options: {
     selectedRuleKeys: string[];
     reuseExisting: boolean;
-    includeLlm: boolean;
+    includeProfileLlm: boolean;
+    includeLanguageLlm: boolean;
     sourceValidationRunId?: number;
   }) => Promise<boolean>;
   onDeleteReport: (report: ReportOption) => Promise<boolean>;
   onConfirmIncrementDraft?: () => Promise<boolean>;
-  onOpenTable?: (tableCode: string) => void;
-  onCreatedIncrementalTable?: (tableId: string) => void;
 }
 
 const summaryCards: Array<{
@@ -78,12 +77,10 @@ export function ReportSummaryPanel({
   onRunValidation,
   onDeleteReport,
   onConfirmIncrementDraft,
-  onOpenTable,
-  onCreatedIncrementalTable,
 }: ReportSummaryPanelProps) {
   const [validationDialogOpen, setValidationDialogOpen] = useState(false);
+  const [validationReportDialogOpen, setValidationReportDialogOpen] = useState(false);
   const [downloadDialogOpen, setDownloadDialogOpen] = useState(false);
-  const [connectionsDialogOpen, setConnectionsDialogOpen] = useState(false);
   const currentReportOption =
     summary.report_id && summary.report_id > 0
       ? {
@@ -192,16 +189,6 @@ export function ReportSummaryPanel({
             연보 확정
           </button>
         ) : null}
-        {isIncrementDraft && summary.report_id ? (
-          <button
-            className="summary-connections-button"
-            type="button"
-            onClick={() => setConnectionsDialogOpen(true)}
-          >
-            <GitBranch aria-hidden="true" size={17} />
-            증분 연결
-          </button>
-        ) : null}
         {canDownloadSelectedReport && !isIncrementDraft ? (
           <button
             className="summary-download-button"
@@ -252,6 +239,16 @@ export function ReportSummaryPanel({
           ) : null}
           {canRunValidation ? (
             <div className="report-validation-actions">
+              {summary.validation_scope !== "none" ? (
+                <button
+                  className="report-validation-export-button"
+                  type="button"
+                  onClick={() => setValidationReportDialogOpen(true)}
+                >
+                  <FileSpreadsheet aria-hidden="true" size={17} />
+                  <span>검수 리포트</span>
+                </button>
+              ) : null}
               <button
                 type="button"
                 disabled={validationRunState === "running"}
@@ -283,15 +280,11 @@ export function ReportSummaryPanel({
           onRun={onRunValidation}
         />
       ) : null}
-      {connectionsDialogOpen && summary.report_id ? (
-        <IncrementalConnectionsDialog
-          reportId={summary.report_id}
-          onClose={() => setConnectionsDialogOpen(false)}
-          onOpenTable={(tableCode) => {
-            setConnectionsDialogOpen(false);
-            onOpenTable?.(tableCode);
-          }}
-          onCreatedTable={onCreatedIncrementalTable}
+      {validationReportDialogOpen && selectedReport ? (
+        <ValidationReportDownloadDialog
+          reportId={selectedReport.id}
+          reportTitle={selectedReport.title}
+          onClose={() => setValidationReportDialogOpen(false)}
         />
       ) : null}
       {downloadDialogOpen ? (

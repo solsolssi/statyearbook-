@@ -18,6 +18,7 @@ from app.validation.language_workflow import LanguageValidationWorkflow
 from app.validation.repository import ValidationRepository
 from app.validation.workflow import validation_issue_count
 from app.services.report_update_service import ReportUpdateService
+from app.services.llm_assistance_service import ReportLLMAssistanceService
 from app.workflows.report_job_repository import ReportProcessingJobRepository
 
 
@@ -161,13 +162,38 @@ class ReportProcessingWorkflow:
                 import_result = self._run_stage(job_id, "import", lambda: self._import_source(job))
                 report_id = int(import_result["report_id"])
                 run_id = None
+            llm_import_result: dict[str, object] = {}
+            llm_profile_result: dict[str, object] = {}
+            if options.include_llm:
+                llm_import_result = self._jobs.completed_stage_result(
+                    job_id, "llm_import_assistance"
+                )
+                if not llm_import_result:
+                    llm_import_result = self._run_stage(
+                        job_id,
+                        "llm_import_assistance",
+                        lambda: ReportLLMAssistanceService(self._db_path).assist_import(report_id),
+                    )
+                llm_profile_result = self._jobs.completed_stage_result(
+                    job_id, "llm_profile_assistance"
+                )
+                if not llm_profile_result:
+                    llm_profile_result = self._run_stage(
+                        job_id,
+                        "llm_profile_assistance",
+                        lambda: ReportLLMAssistanceService(self._db_path).assist_profile_drafts(report_id),
+                    )
             partial_update = bool(import_result.get("update_batch_id"))
             changed_table_ids = [
                 int(value)
                 for value in import_result.get("changed_table_ids", [])
             ]
             if not options.validate_after_import:
-                result = {"import": import_result}
+                result = {
+                    "import": import_result,
+                    "llm_import_assistance": llm_import_result,
+                    "llm_profile_assistance": llm_profile_result,
+                }
                 self._jobs.update(
                     job_id,
                     report_id=report_id,
@@ -202,6 +228,7 @@ class ReportProcessingWorkflow:
                             report_id=report_id,
                             refresh_profiles=options.refresh_profiles,
                             table_ids=changed_table_ids if partial_update else None,
+                            use_llm_profiles=options.include_llm,
                         )
                     ),
                 )
@@ -244,6 +271,8 @@ class ReportProcessingWorkflow:
                     )
             result = {
                 "import": import_result,
+                "llm_import_assistance": llm_import_result,
+                "llm_profile_assistance": llm_profile_result,
                 "calculation_validation": calculation_result,
                 "language_validation": language_result,
                 "issues": validation_issue_count(self._db_path, run_id),

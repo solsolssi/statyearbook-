@@ -169,6 +169,11 @@ export function IncrementalConnectionsDialog({
                       {item.candidates.length ? (
                         <em>추천 {item.candidates[0].source_key} · {Math.round(item.candidates[0].score * 100)}%</em>
                       ) : null}
+                      {item.llm_assistance ? (
+                        <em>
+                          LLM 제안 {Math.round(item.llm_assistance.confidence * 100)}% · {item.llm_assistance.reason}
+                        </em>
+                      ) : null}
                     </button>
                     <button
                       className="incremental-resolution-button"
@@ -191,6 +196,11 @@ export function IncrementalConnectionsDialog({
                     <strong>{String(item.evidence.title || item.title || item.source_key)}</strong>
                     <span>{item.source_key}</span>
                     <small>표항목 {String(item.evidence.items ?? 0)}개 · 값 {String(item.evidence.values ?? 0)}개</small>
+                    {item.llm_assistance ? (
+                      <em>
+                        LLM 제안 {Math.round(item.llm_assistance.confidence * 100)}% · {item.llm_assistance.reason}
+                      </em>
+                    ) : null}
                     {Number(item.evidence.items ?? 0) > 0 && Number(item.evidence.values ?? 0) > 0 ? (
                       <div className="incremental-item-actions">
                         <button

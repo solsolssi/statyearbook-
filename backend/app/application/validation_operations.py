@@ -26,6 +26,8 @@ class ValidationApplicationService:
         selected_rule_keys: list[str] | None = None,
         reuse_existing: bool = True,
         include_llm: bool = False,
+        include_profile_llm: bool | None = None,
+        include_language_llm: bool | None = None,
         source_validation_run_id: int | None = None,
     ) -> ValidationRunResult:
         if report_id is None:
@@ -35,7 +37,12 @@ class ValidationApplicationService:
                 report_id=report_id,
                 selected_rule_keys=selected_rule_keys,
                 reuse_existing=reuse_existing,
-                include_llm=include_llm,
+                include_profile_llm=(
+                    include_llm if include_profile_llm is None else include_profile_llm
+                ),
+                include_language_llm=(
+                    include_llm if include_language_llm is None else include_language_llm
+                ),
                 source_validation_run_id=source_validation_run_id,
             )
         )

@@ -83,7 +83,15 @@ class ValidationProfile:
 
     @property
     def requires_review(self) -> bool:
-        return self.status != "approved"
+        """Whether the profile still needs interpretation before execution.
+
+        ``ready`` is an executable deterministic profile.  It can await a
+        human approval separately, but it must not be sent back to the LLM
+        merely because it has not been formally approved yet.  The LLM review
+        queue is reserved for incomplete/uncertain drafts.
+        """
+
+        return str(self.status) in {"draft", "needs_review"}
 
 
 @dataclass(frozen=True)
@@ -118,7 +126,11 @@ class HeuristicProfileDraftProvider:
         analysis = structure.attributes
         templates = list(structure.templates)
         checks = infer_profile_checks(table, analysis=analysis, templates=templates)
-        needs_llm_review = previous_profile is not None and previous_profile.structure_signature != signature
+        uncovered_columns = uncovered_calculation_columns(table, checks)
+        needs_llm_review = (
+            previous_profile is not None
+            and previous_profile.structure_signature != signature
+        ) or bool(uncovered_columns)
         status = profile_status(checks, needs_llm_review=needs_llm_review)
         table_type = ", ".join(templates) if templates else "general"
 
@@ -129,6 +141,9 @@ class HeuristicProfileDraftProvider:
             notes = "기존 통계표와 구조 서명이 달라 새 표별 검수 기준을 생성했습니다. 실제 서비스에서는 GPT API가 변경된 표 구조를 다시 해석해야 합니다."
         if status == "needs_review":
             notes = f"{notes} 일부 검수 후보의 확신도가 낮아 프로파일 재해석 대상으로 분류했습니다."
+        if uncovered_columns:
+            labels = ", ".join(leaf_header(table, column) for column in uncovered_columns)
+            notes = f"{notes} 산식이 확정되지 않은 계산 열: {labels}."
 
         curated = merge_curated_profile(
             table.code,
@@ -162,6 +177,7 @@ class HeuristicProfileDraftProvider:
                 "common_rules": COMMON_RULE_IDS,
                 "templates": templates,
                 "analysis": analysis,
+                "uncovered_calculation_columns": uncovered_columns,
                 "checks": checks,
                 "table_rules": table_rules,
                 "requires_llm_review": needs_llm_review,
@@ -176,8 +192,16 @@ class GPTProfileDraftProvider:
 
     source = "llm"
 
-    def __init__(self, *, model: str = "gpt-5-mini") -> None:
+    def __init__(
+        self,
+        *,
+        model: str = "gpt-5-mini",
+        review_only: bool = False,
+        decision_provider: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> None:
         self._fallback = HeuristicProfileDraftProvider()
+        self._review_only = review_only
+        self._decision_provider = decision_provider
         self._settings = resolve_llm_client_settings(
             openai_model=model,
             bizrouter_model=f"openai/{model}",
@@ -191,13 +215,25 @@ class GPTProfileDraftProvider:
         previous_profile: ValidationProfile | None = None,
     ) -> ProfileDraft:
         baseline = self._fallback.draft(table, previous_profile=previous_profile)
-        if not self._settings.enabled or not self._settings.api_key:
+        if (
+            self._review_only
+            and baseline.status != "needs_review"
+            and not (previous_profile is not None and previous_profile.requires_review)
+        ):
+            return baseline
+        if (
+            self._decision_provider is None
+            and (not self._settings.enabled or not self._settings.api_key)
+        ):
             return baseline
 
         body = profile_review_request(table, baseline, previous_profile, model=self.model)
         try:
-            response = ResponsesTransport(self._settings).create(body)
-            decision = parse_responses_json(response)
+            decision = (
+                self._decision_provider(body)
+                if self._decision_provider is not None
+                else parse_responses_json(ResponsesTransport(self._settings).create(body))
+            )
             checks = parse_llm_profile_checks(table, decision.get("checks_json"))
         except Exception as error:
             return replace(
@@ -232,6 +268,42 @@ class GPTProfileDraftProvider:
             notes=str(decision.get("notes") or "LLM이 휴리스틱 산식 후보를 재검토한 프로파일입니다."),
             llm_model=self.model,
         )
+
+
+def uncovered_calculation_columns(
+    table: ValidationTable,
+    checks: list[dict[str, Any]],
+) -> list[int]:
+    """Return numeric columns that look calculated but have no executable spec."""
+
+    covered: set[int] = set()
+    for check in checks:
+        target_column = check.get("target_column")
+        if isinstance(target_column, int):
+            covered.add(target_column)
+        columns = check.get("columns")
+        if isinstance(columns, list):
+            covered.update(value for value in columns if isinstance(value, int))
+
+    label_columns = set(leading_label_columns(table))
+    uncovered: list[int] = []
+    keywords = (
+        "합계", "소계", "계", "비율", "비중", "증감률", "승인률", "성공률", "지수",
+        "total", "subtotal", "ratio", "rate", "share", "index", "percentage",
+    )
+    for column in range(column_count(table)):
+        if column in label_columns or column in covered:
+            continue
+        label = normalize_text(table.column_text(column))
+        if not any(keyword in label for keyword in keywords):
+            continue
+        numeric_count = sum(
+            cell_number(row, column) is not None
+            for _, row in table.data_rows()
+        )
+        if numeric_count >= 2:
+            uncovered.append(column)
+    return uncovered
 
 
 def structure_signature(table: ValidationTable) -> str:
@@ -2021,13 +2093,31 @@ def dedupe_check_specs(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         check_type = check.get("type")
         if check_type in {"region_total", "column_sum"}:
             check_type = "column_sum"
+        operand_columns = tuple(check.get("operand_columns", []))
+        if check_type == "row_arithmetic":
+            terms = check.get("terms", [])
+            if (
+                isinstance(terms, list)
+                and terms
+                and all(
+                    isinstance(term, dict)
+                    and term.get("op") == "+"
+                    and isinstance(term.get("column"), int)
+                    for term in terms
+                )
+            ):
+                # ``c=a+b`` and a semantic ``합계 = a + b`` inference are the
+                # same executable relationship.  Keep the first, otherwise a
+                # single bad cell appears twice in the review list/report.
+                check_type = "row_sum"
+                operand_columns = tuple(sorted(int(term["column"]) for term in terms))
         key = (
             check_type,
             check.get("target_column"),
             check.get("value_column"),
             check.get("rate_column"),
             check.get("change_column"),
-            tuple(check.get("operand_columns", [])),
+            operand_columns,
             check.get("denominator_column"),
             tuple(check.get("denominator_columns", [])),
             check.get("target_row"),

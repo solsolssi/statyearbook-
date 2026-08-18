@@ -175,22 +175,19 @@ class IncrementalYearbookServiceTest(unittest.TestCase):
             self.assertEqual(str(unmatched["source_key"]), "STAT-NEW")
 
             service = IncrementalYearbookService(db_path)
-            with self.assertRaisesRegex(ValueError, "미연결 증분 1개"):
-                service.confirm_draft(created.report_id)
-            service.ignore_unmatched_increment(
-                report_id=created.report_id,
-                source_key="STAT-NEW",
-            )
-            overview = service.list_connections(created.report_id)
-            self.assertEqual(overview["summary"]["unmatched"], 0)
-            self.assertEqual(len(overview["ignored_increments"]), 1)
             service.confirm_draft(created.report_id)
             with connect(db_path) as connection:
                 confirmed = connection.execute(
                     "SELECT origin_kind FROM annual_reports WHERE id = ?",
                     (created.report_id,),
                 ).fetchone()
+                deferred = connection.execute(
+                    """SELECT mapping_status FROM report_incremental_table_mappings
+                       WHERE report_id = ? AND table_code = '미연결-STAT-NEW'""",
+                    (created.report_id,),
+                ).fetchone()
             self.assertEqual(str(confirmed["origin_kind"]), "incremental_confirmed")
+            self.assertEqual(str(deferred["mapping_status"]), "deferred")
 
     def test_exact_title_is_a_confirmed_connection_without_a_stored_key(self) -> None:
         """A normal HWPX upload can lack the increment's source key metadata."""
@@ -774,7 +771,7 @@ class IncrementalYearbookServiceTest(unittest.TestCase):
             self.assertEqual(str(mapping["mapping_status"]), "review")
             self.assertEqual(str(mapping["reason_code"]), "REFERENCE_VALUE_MISMATCH")
 
-    def test_review_table_must_be_explicitly_resolved_before_confirmation(self) -> None:
+    def test_review_table_is_deferred_when_confirmation_is_requested(self) -> None:
         with TemporaryDirectory() as directory:
             db_path = Path(directory) / "report.sqlite"
             with connect(db_path) as connection:
@@ -803,10 +800,6 @@ class IncrementalYearbookServiceTest(unittest.TestCase):
                     )
 
             service = IncrementalYearbookService(db_path)
-            with self.assertRaisesRegex(ValueError, "확인 필요 통계 1개"):
-                service.confirm_draft(report_id)
-            result = service.keep_existing_table(report_id=report_id, table_code="1-1")
-            self.assertTrue(result["resolved"])
             service.confirm_draft(report_id)
             with connect(db_path) as connection:
                 status = connection.execute(
@@ -814,12 +807,14 @@ class IncrementalYearbookServiceTest(unittest.TestCase):
                     (report_id,),
                 ).fetchone()
                 mapping = connection.execute(
-                    "SELECT reason_code, confirmed_by_user FROM report_incremental_table_mappings WHERE report_id = ?",
+                    "SELECT mapping_status, confirmed_by_user FROM report_incremental_table_mappings WHERE report_id = ?",
                     (report_id,),
                 ).fetchone()
-            self.assertEqual(str(status["generation_status"]), "increment_no_change")
-            self.assertEqual(str(mapping["reason_code"]), "USER_CONFIRMED_KEEP_EXISTING")
-            self.assertEqual(int(mapping["confirmed_by_user"]), 1)
+            self.assertEqual(str(status["generation_status"]), "increment_deferred")
+            self.assertEqual(str(mapping["mapping_status"]), "deferred")
+            self.assertEqual(int(mapping["confirmed_by_user"]), 0)
+            confirmed_table = DatabaseReportService(db_path).get_payload_for_report(report_id).tables[0]
+            self.assertEqual(confirmed_table.status_label, "검수 전")
 
 
 def write_xlsx(path: Path, headers: set[str], rows: list[dict[str, object]]) -> Path:

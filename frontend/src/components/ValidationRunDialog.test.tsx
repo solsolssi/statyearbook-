@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ValidationCatalogItem } from "../types";
@@ -47,10 +47,93 @@ describe("ValidationRunDialog", () => {
       expect(onRun).toHaveBeenCalledWith({
         selectedRuleKeys: ["sum"],
         reuseExisting: true,
-        includeLlm: false,
+        includeProfileLlm: false,
+        includeLanguageLlm: false,
         sourceValidationRunId: undefined,
       });
     });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("allows LLM rule assistance even when language checks are not selected", async () => {
+    const onRun = vi.fn().mockResolvedValue(true);
+    const view = render(
+      <ValidationRunDialog
+        reportId={100}
+        reportTitle="2027 신규 연보"
+        catalog={catalog}
+        state="idle"
+        onClose={() => undefined}
+        onRun={onRun}
+      />,
+    );
+    const dialog = within(view.container);
+
+    fireEvent.click(dialog.getByLabelText(/번역 검수/));
+    fireEvent.click(dialog.getByLabelText(/합계·비율 프로파일 LLM 보조/));
+    fireEvent.click(dialog.getByRole("button", { name: "선택 항목 검수" }));
+
+    await waitFor(() => {
+      expect(onRun).toHaveBeenCalledWith(expect.objectContaining({
+        selectedRuleKeys: ["sum"],
+        includeProfileLlm: true,
+        includeLanguageLlm: false,
+      }));
+    });
+  });
+
+  it("disables profile LLM assistance when no calculation checks are selected", async () => {
+    const onRun = vi.fn().mockResolvedValue(true);
+    const view = render(
+      <ValidationRunDialog
+        reportId={100}
+        reportTitle="2027 신규 연보"
+        catalog={catalog}
+        state="idle"
+        onClose={() => undefined}
+        onRun={onRun}
+      />,
+    );
+    const dialog = within(view.container);
+
+    fireEvent.click(dialog.getByLabelText(/합계 검수/));
+
+    expect(
+      (dialog.getByLabelText(/합계·비율 프로파일 LLM 보조/) as HTMLInputElement).disabled,
+    ).toBe(true);
+
+    fireEvent.click(dialog.getByRole("button", { name: "선택 항목 검수" }));
+
+    await waitFor(() => {
+      expect(onRun).toHaveBeenCalledWith(expect.objectContaining({
+        selectedRuleKeys: ["translation"],
+        includeProfileLlm: false,
+      }));
+    });
+  });
+
+  it("keeps language LLM separate from calculation profile assistance", async () => {
+    const onRun = vi.fn().mockResolvedValue(true);
+    const view = render(
+      <ValidationRunDialog
+        reportId={100}
+        reportTitle="2027 신규 연보"
+        catalog={catalog}
+        state="idle"
+        onClose={() => undefined}
+        onRun={onRun}
+      />,
+    );
+    const dialog = within(view.container);
+
+    fireEvent.click(dialog.getByLabelText(/오탈자·번역 LLM 검수/));
+    fireEvent.click(dialog.getByRole("button", { name: "선택 항목 검수" }));
+
+    await waitFor(() => {
+      expect(onRun).toHaveBeenCalledWith(expect.objectContaining({
+        includeProfileLlm: false,
+        includeLanguageLlm: true,
+      }));
+    });
   });
 });

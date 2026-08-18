@@ -354,7 +354,12 @@ class ValidationReuseRunOption(BaseModel):
 class ValidationRunRequest(BaseModel):
     selected_rule_keys: list[str] = Field(default_factory=list)
     reuse_existing: bool = True
+    # ``include_llm`` is kept for older API clients.  New clients send the two
+    # independent switches below so calculation-profile drafting never forces
+    # a full spelling/translation pass (and vice versa).
     include_llm: bool = False
+    include_profile_llm: bool | None = None
+    include_language_llm: bool | None = None
     source_validation_run_id: int | None = Field(default=None, gt=0)
 
 

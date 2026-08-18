@@ -1,6 +1,8 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
+from io import BytesIO
+import zipfile
 
 from fastapi import (
     APIRouter,
@@ -13,6 +15,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import StreamingResponse
 
 from app.core.config import get_settings
 from app.models.report import (
@@ -46,6 +49,7 @@ from app.models.yearbook_edits import (
 from app.application.imports import ReportImportApplicationService
 from app.application.report_queries import ReportQueryService
 from app.application.validation_operations import ValidationApplicationService
+from app.export.validation_workbooks import export_validation_workbooks
 from app.services.report_service import get_report_service
 from app.services.report_import_service import (
     ReportImportRequest,
@@ -53,6 +57,7 @@ from app.services.report_import_service import (
 )
 from app.services.source_statistics_service import SourceStatisticsService
 from app.services.incremental_yearbook_service import IncrementalYearbookService
+from app.services.llm_assistance_service import ReportLLMAssistanceService
 from app.services.report_update_service import ReportComparisonService
 from app.services.yearbook_edit_service import (
     YearbookEditAuthenticationError,
@@ -79,6 +84,7 @@ async def import_source_statistics(
     base_report_id: int = Query(gt=0),
     target_year: int = Query(ge=1900, le=2200),
     title: str | None = Query(default=None, min_length=1),
+    include_llm: bool = Query(default=False),
     info_file: UploadFile = File(),
     item_file: UploadFile = File(),
     value_file: UploadFile = File(),
@@ -101,6 +107,11 @@ async def import_source_statistics(
                 item_path=item_path,
                 value_path=value_path,
             )
+            llm_assistance = (
+                ReportLLMAssistanceService().assist_increment(generated.report_id)
+                if include_llm
+                else {}
+            )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
     return SourceDataImportResult(
@@ -117,6 +128,7 @@ async def import_source_statistics(
         deleted_table_count=generated.deleted_table_count,
         new_table_count=generated.new_table_count,
         source_snapshot_id=0,
+        llm_assistance=llm_assistance,
     )
 
 
@@ -430,7 +442,16 @@ def run_validation(
             report_id,
             selected_rule_keys=request.selected_rule_keys,
             reuse_existing=request.reuse_existing,
-            include_llm=request.include_llm,
+            include_profile_llm=(
+                request.include_llm
+                if request.include_profile_llm is None
+                else request.include_profile_llm
+            ),
+            include_language_llm=(
+                request.include_llm
+                if request.include_language_llm is None
+                else request.include_language_llm
+            ),
             source_validation_run_id=request.source_validation_run_id,
         )
     except ValueError as error:
@@ -442,6 +463,52 @@ def list_validation_reuse_runs(
     report_id: int = Query(gt=0),
 ) -> list[ValidationReuseRunOption]:
     return ValidationApplicationService().reusable_runs(report_id)
+
+
+@router.get("/reports/{report_id}/validation-report")
+def download_validation_report(
+    report_id: int,
+    status_filter: list[str] | None = Query(default=None, alias="status"),
+    component_filter: list[str] | None = Query(default=None, alias="component"),
+) -> StreamingResponse:
+    allowed_statuses = {"확인 필요", "오류 의심"}
+    allowed_components = {"validation_index", "highlighted", "metadata"}
+    selected_statuses = tuple(
+        dict.fromkeys(value for value in (status_filter or []) if value in allowed_statuses)
+    )
+    if status_filter and not selected_statuses:
+        raise HTTPException(status_code=400, detail="내보낼 검수 상태를 선택해 주세요.")
+    selected_components = tuple(
+        dict.fromkeys(value for value in (component_filter or []) if value in allowed_components)
+    )
+    if component_filter and not selected_components:
+        raise HTTPException(status_code=400, detail="포함할 리포트 파일을 선택해 주세요.")
+    if not selected_components:
+        selected_components = ("validation_index", "highlighted", "metadata")
+    try:
+        with TemporaryDirectory() as directory:
+            result = export_validation_workbooks(
+                report_id=report_id,
+                statuses=selected_statuses or ("오류 의심", "확인 필요"),
+                output_dir=Path(directory),
+            )
+            archive = BytesIO()
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+                component_paths = {
+                    "metadata": result.metadata_path,
+                    "highlighted": result.highlighted_path,
+                    "validation_index": result.validation_index_path,
+                }
+                for component in selected_components:
+                    path = component_paths[component]
+                    bundle.write(path, arcname=path.name)
+            archive.seek(0)
+    except RuntimeError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    headers = {
+        "Content-Disposition": f'attachment; filename="validation-report-{report_id}.zip"'
+    }
+    return StreamingResponse(archive, media_type="application/zip", headers=headers)
 
 
 @router.post(

@@ -129,6 +129,7 @@ describe("validation visibility baseline", () => {
       status_label: "증분 연결",
       generation_status: "mapping_review",
       generation_status_label: "증분 연결",
+      incremental_reason_code: "NO_RELIABLE_CANDIDATE",
     };
     const [visible] = tablesWithValidationVisibility(
       [source],
@@ -137,7 +138,32 @@ describe("validation visibility baseline", () => {
 
     expect(visible.checks).toEqual([]);
     expect(visible.status).toBe("needs_review");
-    expect(visible.status_label).toBe("증분 연결");
+    expect(visible.status_label).toBe("통계 번호 미연결");
+    expect(activeValidationTypesForTables([source]).has("통계 번호 미연결")).toBe(true);
+  });
+
+  it("separates incremental data and format problems in the visibility filter", () => {
+    const missingData = {
+      ...table([]),
+      generation_status: "mapping_review",
+      incremental_reason_code: "MISSING_ITEM_METADATA",
+    };
+    const differentFormat = {
+      ...table([]),
+      generation_status: "mapping_review",
+      incremental_reason_code: "HEADER_STRUCTURE_MISMATCH",
+    };
+
+    const [dataVisible, formatHidden] = tablesWithValidationVisibility(
+      [missingData, differentFormat],
+      new Set(["형식 불일치"]),
+    );
+
+    expect(dataVisible.status_label).toBe("증분 데이터 부족");
+    expect(formatHidden.status).toBe("normal");
+    const activeTypes = activeValidationTypesForTables([missingData, differentFormat]);
+    expect(activeTypes.has("증분 데이터 부족")).toBe(true);
+    expect(activeTypes.has("형식 불일치")).toBe(true);
   });
 
   it("labels pending language checks as revalidation work", () => {

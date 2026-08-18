@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "v1_logical_statistics": 20,
+  "v2_logical_statistics": 21,
+  "cases": [
+    {
+      "id": "parse-basic",
+      "tables": [
+        "9-1-1",
+        "9-1-2"
+      ],
+      "expected": "parsed"
+    },
+    {
+      "id": "sum-error",
+      "tables": [
+        "9-1-3"
+      ],
+      "v1": "error",
+      "v2": "normal_after_fix"
+    },
+    {
+      "id": "ratio-error",
+      "tables": [
+        "9-1-5"
+      ],
+      "v1": "error",
+      "v2": "normal_after_fix"
+    },
+    {
+      "id": "increment-year-row",
+      "tables": [
+        "9-2-1"
+      ],
+      "expected": "2028 row appended; 2023 removed"
+    },
+    {
+      "id": "increment-year-column",
+      "tables": [
+        "9-2-2"
+      ],
+      "expected": "2028 column appended; 2023 removed"
+    },
+    {
+      "id": "increment-snapshot",
+      "tables": [
+        "9-2-3"
+      ],
+      "expected": "snapshot values replaced"
+    },
+    {
+      "id": "merged-header",
+      "tables": [
+        "9-2-4"
+      ],
+      "expected": "two-level header retained"
+    },
+    {
+      "id": "multi-part",
+      "tables": [
+        "9-2-5"
+      ],
+      "expected": "logical statistic with table part"
+    },
+    {
+      "id": "language-pending",
+      "tables": [
+        "9-3-1",
+        "9-3-2",
+        "9-3-3"
+      ],
+      "expected": "pending without language LLM; reviewed on rerun with language LLM"
+    },
+    {
+      "id": "outlier",
+      "tables": [
+        "9-3-4"
+      ],
+      "expected": "outlier candidate"
+    },
+    {
+      "id": "metadata-missing",
+      "tables": [
+        "9-3-5"
+      ],
+      "expected": "metadata review"
+    },
+    {
+      "id": "llm-ambiguous-mapping",
+      "tables": [
+        "9-4-1",
+        "9-4-2"
+      ],
+      "sources": [
+        "M-A-016",
+        "M-A-017"
+      ],
+      "expected": "review or conservative LLM-assisted connection"
+    },
+    {
+      "id": "changed-structure",
+      "tables": [
+        "9-4-3"
+      ],
+      "expected": "new profile and local revalidation"
+    },
+    {
+      "id": "unchanged-reuse",
+      "tables": [
+        "9-1-1",
+        "9-1-2",
+        "9-4-4"
+      ],
+      "expected": "reuse prior checks"
+    },
+    {
+      "id": "increment-no-values",
+      "tables": [
+        "9-3-3"
+      ],
+      "source": "M-V-013",
+      "expected": "increment data insufficient"
+    },
+    {
+      "id": "increment-format-mismatch",
+      "tables": [
+        "9-3-4"
+      ],
+      "source": "M-V-014",
+      "expected": "format mismatch"
+    },
+    {
+      "id": "new-statistic-profile",
+      "tables": [
+        "9-5-1"
+      ],
+      "source": "M-V-021",
+      "expected": "deterministic c=a+b plus optional LLM ratio profile"
+    },
+    {
+      "id": "deleted-statistic",
+      "tables": [
+        "9-4-5"
+      ],
+      "source": "M-V-020",
+      "expected": "deletion proposal reflected in draft"
+    }
+  ]
+}
