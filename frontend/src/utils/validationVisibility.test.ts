@@ -4,6 +4,7 @@ import type { StatTable, ValidationIssue } from "../types";
 import {
   DEFAULT_HIDDEN_VALIDATION_TYPES,
   activeValidationTypesForTables,
+  reportReviewStage,
   tablesWithValidationVisibility,
   validationTypesForTables,
 } from "./validationVisibility";
@@ -63,6 +64,47 @@ function table(checks: ValidationIssue[]): StatTable {
 }
 
 describe("validation visibility baseline", () => {
+  it("separates draft, first-validation, and validated report stages", () => {
+    expect(reportReviewStage({ origin_kind: "upload_draft", validation_scope: "none" })).toBe("draft");
+    expect(reportReviewStage({ origin_kind: "uploaded", validation_scope: "none" })).toBe("unvalidated");
+    expect(reportReviewStage({ origin_kind: "uploaded", validation_scope: "full" })).toBe("validated");
+  });
+
+  it("shows clean draft tables as unvalidated while preserving connection problems", () => {
+    const clean = { ...table([]), status: "normal" as const, status_label: "정상" };
+    const review = {
+      ...table([]),
+      generation_status: "mapping_review",
+      incremental_reason_code: "NO_RELIABLE_CANDIDATE",
+    };
+    const [cleanVisible, reviewVisible] = tablesWithValidationVisibility(
+      [clean, review],
+      new Set(),
+      "draft",
+    );
+
+    expect(cleanVisible.status_label).toBe("검수 전");
+    expect(reviewVisible.status).toBe("needs_review");
+    expect(reviewVisible.status_label).toBe("통계 번호 미연결");
+  });
+
+  it("resets every confirmed table to unvalidated before the first run", () => {
+    const oldDraftReview = {
+      ...table([issue("증분 데이터 부족", "확인 필요", "warning")]),
+      generation_status: "mapping_review",
+      incremental_reason_code: "MISSING_ITEM_METADATA",
+    };
+    const [visible] = tablesWithValidationVisibility(
+      [oldDraftReview],
+      new Set(),
+      "unvalidated",
+    );
+
+    expect(visible.status).toBe("normal");
+    expect(visible.status_label).toBe("검수 전");
+    expect(visible.checks).toEqual([]);
+  });
+
   it("hides only outlier checks by default and recalculates status", () => {
     const source = table([
       issue("합계 검수", "정상", "info"),
@@ -82,14 +124,13 @@ describe("validation visibility baseline", () => {
     const types = validationTypesForTables([
       table([issue("사용자 정의 검수", "정상", "info")]),
     ]);
-    expect(types.slice(0, 7)).toEqual([
+    expect(types.slice(0, 6)).toEqual([
       "합계 검수",
       "비율 검수",
       "오탈자 검수",
       "번역 검수",
       "메타정보 검수",
       "이상치 검수",
-      "파란색 표기 확인",
     ]);
     expect(types.at(-1)).toBe("사용자 정의 검수");
   });
@@ -105,6 +146,21 @@ describe("validation visibility baseline", () => {
     expect(types).not.toContain("검수 프로파일 확인");
     expect(visible.checks.map((check) => check.type)).toEqual(["합계 검수"]);
     expect(visible.status).toBe("normal");
+  });
+
+  it("hides blue-source checks from screen-facing filters and results", () => {
+    const source = table([
+      issue("파란색 표기 확인", "오류 의심", "critical"),
+      issue("합계 검수", "정상", "info"),
+    ]);
+    const types = validationTypesForTables([source]);
+    const active = activeValidationTypesForTables([source]);
+    const [visible] = tablesWithValidationVisibility([source], new Set());
+
+    expect(types).not.toContain("파란색 표기 확인");
+    expect(active.has("파란색 표기 확인")).toBe(false);
+    expect(visible.checks.map((check) => check.type)).toEqual(["합계 검수"]);
+    expect(visible.status_label).toBe("정상");
   });
 
   it("keeps manually edited tables in the review queue until validation runs again", () => {

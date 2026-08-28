@@ -40,7 +40,7 @@ describe("ValidationTypeFilter", () => {
     expect((screen.getByLabelText("파란색 표기 확인") as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByLabelText("재검수 필요") as HTMLInputElement).disabled).toBe(true);
 
-    fireEvent.click(screen.getByText("모두 숨기기"));
+    fireEvent.click(screen.getByText("전체 해제"));
     expect(onVisibilityChange).toHaveBeenCalledWith("합계 검수", false);
     expect(onVisibilityChange).not.toHaveBeenCalledWith("파란색 표기 확인", false);
   });

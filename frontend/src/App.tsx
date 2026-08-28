@@ -17,6 +17,7 @@ import {
   OPTIONAL_VALIDATION_TYPES,
   VALIDATION_CHECK_TYPES,
   activeValidationTypesForTables,
+  reportReviewStage,
   summaryWithValidationVisibility,
   tablesWithValidationVisibility,
   validationTypesForTables,
@@ -84,11 +85,14 @@ export default function App() {
     },
     [],
   );
-  const { runValidation, validationRunState } = useReportValidation(
+  const { runValidation, stopValidation, validationRunState, validationJob } = useReportValidation(
     handleValidationCompleted,
   );
 
   const rawTables = report.data?.tables ?? [];
+  const reviewStage = report.data
+    ? reportReviewStage(report.data.summary)
+    : "unvalidated";
   const isIncrementDraft = ["incremental_draft", "upload_draft"].includes(
     report.data?.summary.origin_kind ?? "",
   );
@@ -108,13 +112,21 @@ export default function App() {
     [catalogTypes, isIncrementDraft],
   );
   const validationTypes = useMemo(
-    () =>
-      validationTypesForTables([
-        ...rawTables,
-        ...(selectedTableDetail ? [selectedTableDetail] : []),
-        ...(detailTable ? [detailTable] : []),
-      ], filterTypeOrder, !isIncrementDraft),
-    [detailTable, filterTypeOrder, isIncrementDraft, rawTables, selectedTableDetail],
+    () => {
+      if (reviewStage === "unvalidated") {
+        return [];
+      }
+      return validationTypesForTables(
+        [
+          ...rawTables,
+          ...(selectedTableDetail ? [selectedTableDetail] : []),
+          ...(detailTable ? [detailTable] : []),
+        ],
+        filterTypeOrder,
+        !isIncrementDraft,
+      );
+    },
+    [detailTable, filterTypeOrder, isIncrementDraft, rawTables, reviewStage, selectedTableDetail],
   );
   const activeValidationTypes = useMemo(
     () =>
@@ -135,15 +147,22 @@ export default function App() {
     [activeValidationTypes, validationTypes],
   );
   const tables = useMemo(
-    () => tablesWithValidationVisibility(rawTables, hiddenValidationTypes),
-    [hiddenValidationTypes, rawTables],
+    () => tablesWithValidationVisibility(rawTables, hiddenValidationTypes, reviewStage),
+    [hiddenValidationTypes, rawTables, reviewStage],
   );
   const visibleSelectedTableDetail = useMemo(
     () =>
       selectedTableDetail
-        ? tablesWithValidationVisibility([selectedTableDetail], hiddenValidationTypes)[0]
+        ? tablesWithValidationVisibility([selectedTableDetail], hiddenValidationTypes, reviewStage)[0]
         : null,
-    [hiddenValidationTypes, selectedTableDetail],
+    [hiddenValidationTypes, reviewStage, selectedTableDetail],
+  );
+  const visibleDetailTable = useMemo(
+    () =>
+      detailTable
+        ? tablesWithValidationVisibility([detailTable], hiddenValidationTypes, reviewStage)[0]
+        : null,
+    [detailTable, hiddenValidationTypes, reviewStage],
   );
   const visibleSummary = useMemo(
     () =>
@@ -300,14 +319,14 @@ export default function App() {
     );
   }
 
-  if (detailTable) {
+  if (detailTable && visibleDetailTable) {
     const detailReportId = report.data?.summary.report_id ?? undefined;
     const detailIsDraft = ["incremental_draft", "upload_draft"].includes(
       report.data?.summary.origin_kind ?? "",
     );
     return (
       <DetailView
-        table={detailTable}
+        table={visibleDetailTable}
         reportId={detailReportId && detailReportId > 0 ? detailReportId : undefined}
         isDraft={detailIsDraft}
         validationTypes={validationTypes}
@@ -349,6 +368,7 @@ export default function App() {
     <ReportWorkspace
       datasetLabel="통계 연보"
       summary={visibleSummary ?? report.data.summary}
+      reviewStage={reviewStage}
       availableReports={report.data.available_reports}
       tables={tables}
       selectedTableId={selectedTableId}
@@ -361,6 +381,7 @@ export default function App() {
       validationCatalog={validationCatalog}
       hiddenValidationTypes={hiddenValidationTypes}
       validationRunState={validationRunState}
+      validationJob={validationJob}
       tableListScrollTop={tableListScrollTop}
       onReportChange={handleReportChange}
       onQueryChange={setQuery}
@@ -374,6 +395,7 @@ export default function App() {
           ? runValidation(reportId, options)
           : Promise.resolve(false);
       }}
+      onStopValidation={() => void stopValidation()}
       deleteState={deleteState}
       onDeleteReport={handleDeleteReport}
       onConfirmIncrementDraft={handleConfirmIncrementDraft}

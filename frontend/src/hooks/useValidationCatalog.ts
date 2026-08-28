@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 
 import { fetchValidationCatalog } from "../api/reportApi";
 import type { ValidationCatalogItem } from "../types";
-import { VALIDATION_CHECK_TYPES } from "../utils/validationVisibility";
+import {
+  VALIDATION_CHECK_TYPES,
+  isScreenVisibleValidationType,
+} from "../utils/validationVisibility";
 
 const FALLBACK_CATALOG: ValidationCatalogItem[] = VALIDATION_CHECK_TYPES.map(
   (label, order) => ({
@@ -24,7 +27,11 @@ export function useValidationCatalog(): ValidationCatalogItem[] {
     fetchValidationCatalog()
       .then((items) => {
         if (active && items.length > 0) {
-          setCatalog([...items].sort((left, right) => left.order - right.order));
+          setCatalog(
+            items
+              .filter((item) => isScreenVisibleValidationType(item.label))
+              .sort((left, right) => left.order - right.order),
+          );
         }
       })
       .catch(() => {

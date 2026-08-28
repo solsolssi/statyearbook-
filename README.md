@@ -563,6 +563,8 @@ python -m app.workflows.report_worker
 
 ## 참고 문서
 
+- `docs/PROJECT_HANDOVER_GUIDE.md`: macOS·Windows 설치, 실행, 수정, 테스트, 배포, 백업, 장애 대응을 포함한 상세 인수인계 가이드
+- `exports/통계연보_검수_보조_시스템_프로젝트_인수인계_가이드.pptx`: 인수인계 회의와 신규 담당자 교육용 PowerPoint
 - `docs/automated-validation-workflow.md`: 자동 검수 작업 단계와 재시도 구조
 - `docs/excel-series-yearbook-architecture.md`: Excel 시계열 원장 기반 연보 생성 구조
 - `docs/deployment-operations.md`: Railway/Vercel 운영과 모니터링

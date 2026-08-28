@@ -7,15 +7,18 @@ import type {
   TableStatus,
   ValidationCatalogItem,
 } from "../types";
+import type { ValidationJob } from "../api/reportApi";
 import { ValidationTypeFilter } from "./ValidationTypeFilter";
 import { ValidationRunDialog } from "./ValidationRunDialog";
 import { ReportWorkbookDownloadDialog } from "./ReportWorkbookDownloadDialog";
 import { ValidationReportDownloadDialog } from "./ValidationReportDownloadDialog";
+import type { ReportReviewStage } from "../utils/validationVisibility";
 
 type SummaryFilter = TableStatus | "all";
 
 interface ReportSummaryPanelProps {
   summary: ReportSummary;
+  reviewStage?: ReportReviewStage;
   datasetLabel: string;
   availableReports: ReportOption[];
   selectedReportId: string;
@@ -25,6 +28,7 @@ interface ReportSummaryPanelProps {
   validationCatalog: ValidationCatalogItem[];
   hiddenValidationTypes: ReadonlySet<string>;
   validationRunState: "idle" | "running" | "error";
+  validationJob?: ValidationJob | null;
   deleteState: "idle" | "deleting";
   onReportChange: (reportId: string) => void;
   onFilterChange: (filter: SummaryFilter) => void;
@@ -38,6 +42,7 @@ interface ReportSummaryPanelProps {
     includeLanguageLlm: boolean;
     sourceValidationRunId?: number;
   }) => Promise<boolean>;
+  onStopValidation?: () => void;
   onDeleteReport: (report: ReportOption) => Promise<boolean>;
   onConfirmIncrementDraft?: () => Promise<boolean>;
 }
@@ -59,6 +64,7 @@ const summaryCards: Array<{
 
 export function ReportSummaryPanel({
   summary,
+  reviewStage = "validated",
   datasetLabel,
   availableReports,
   selectedReportId,
@@ -68,6 +74,7 @@ export function ReportSummaryPanel({
   validationCatalog,
   hiddenValidationTypes,
   validationRunState,
+  validationJob,
   deleteState,
   onReportChange,
   onFilterChange,
@@ -75,6 +82,7 @@ export function ReportSummaryPanel({
   onShowAllValidationTypes,
   onHideAllValidationTypes,
   onRunValidation,
+  onStopValidation = () => undefined,
   onDeleteReport,
   onConfirmIncrementDraft,
 }: ReportSummaryPanelProps) {
@@ -124,7 +132,7 @@ export function ReportSummaryPanel({
   const canRunValidation = Boolean(
     summary.validation_available !== false && summary.report_id,
   );
-  const showValidationTypeFilter = validationTypes.length > 0;
+  const showValidationTypeFilter = validationTypes.length > 0 && reviewStage !== "unvalidated";
   const canDownloadSelectedReport = Boolean(
     selectedReport &&
       selectedReport.id > 0 &&
@@ -201,28 +209,42 @@ export function ReportSummaryPanel({
         ) : null}
       </div>
 
-      <div className="mini-summary-grid">
-        {summaryCards.map((card) => (
-          <button
-            className={[
-              "mini-summary-card",
-              card.tone ? `mini-summary-card--${card.tone}` : "",
-              activeFilter === card.filter ? "is-active" : "",
-            ]
-              .filter(Boolean)
-              .join(" ")}
-            key={card.filter}
-            type="button"
-            onClick={() => onFilterChange(card.filter)}
-          >
-            <span>
-              {summary.validation_scope === "none" && card.label === "정상"
+      <div
+        className={`mini-summary-grid mini-summary-grid--${
+          reviewStage === "unvalidated" ? 2 : reviewStage === "draft" ? 3 : 4
+        }`}
+      >
+        {summaryCards
+          .filter((card) => {
+            if (reviewStage === "unvalidated") {
+              return ["all", "normal"].includes(card.filter);
+            }
+            if (reviewStage === "draft") {
+              return ["all", "normal", "needs_review"].includes(card.filter);
+            }
+            return true;
+          })
+          .map((card) => (
+            <button
+              className={[
+                "mini-summary-card",
+                card.tone ? `mini-summary-card--${card.tone}` : "",
+                activeFilter === card.filter ? "is-active" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              key={card.filter}
+              type="button"
+              onClick={() => onFilterChange(card.filter)}
+            >
+              <span>
+                {reviewStage !== "validated" && card.label === "정상"
                   ? "검수 전"
                   : card.label}
-            </span>
-            <strong>{summary[card.countKey]}</strong>
-          </button>
-        ))}
+              </span>
+              <strong>{summary[card.countKey]}</strong>
+            </button>
+          ))}
       </div>
 
       {showValidationTypeFilter || canRunValidation ? (
@@ -276,8 +298,10 @@ export function ReportSummaryPanel({
           reportTitle={selectedReport.title}
           catalog={validationCatalog}
           state={validationRunState}
+          job={validationJob}
           onClose={() => setValidationDialogOpen(false)}
           onRun={onRunValidation}
+          onStop={onStopValidation}
         />
       ) : null}
       {validationReportDialogOpen && selectedReport ? (

@@ -8,16 +8,25 @@ import type {
   TableStatus,
   ValidationCatalogItem,
 } from "../types";
+import type { ValidationJob } from "../api/reportApi";
 import { ReportSummaryPanel } from "./ReportSummaryPanel";
 import { TableList } from "./TableList";
 import { TablePreview } from "./TablePreview";
+import {
+  REVALIDATION_REQUIRED_FILTER,
+  incrementalReviewType,
+  type ReportReviewStage,
+  summaryWithValidationVisibility,
+} from "../utils/validationVisibility";
 
 type FilterValue = TableStatus | "all" | "has_issues";
 
-function matchesWorkspaceFilter(
+export function matchesWorkspaceFilter(
   table: StatTableSummary,
   query: string,
   filter: FilterValue,
+  hiddenValidationTypes: ReadonlySet<string>,
+  reviewStage: ReportReviewStage = "validated",
 ) {
   const normalizedQuery = query.trim().toLowerCase();
   const hasQueryMatch =
@@ -33,12 +42,34 @@ function matchesWorkspaceFilter(
       (table.status !== "normal" ||
         table.checks.some((check) => check.status !== "정상")));
 
-  return hasQueryMatch && hasFilterMatch;
+  // `tables` arrives after the selected validation types have been applied.
+  // A type choice is therefore a real table-list filter as well as a check
+  // display filter: when only "비율 검수" is selected, retain only tables
+  // that were actually ratio-checked, including tables whose result is normal.
+  const generatedReviewType = incrementalReviewType(table);
+  const hasSelectedValidationCheck =
+    table.checks.length > 0 ||
+    (table.validated_types ?? []).some((type) => !hiddenValidationTypes.has(type)) ||
+    Boolean(generatedReviewType && !hiddenValidationTypes.has(generatedReviewType)) ||
+    Boolean(table.validation_stale && !hiddenValidationTypes.has(REVALIDATION_REQUIRED_FILTER));
+
+  // Before the first validation run there is no validation evidence to use as
+  // a population filter. Keep every table visible; draft diagnostics are
+  // expressed through their generated review status instead.
+  const belongsToReviewScope =
+    reviewStage === "validated"
+      ? hasSelectedValidationCheck
+      : reviewStage === "draft"
+        ? !generatedReviewType || !hiddenValidationTypes.has(generatedReviewType)
+        : true;
+
+  return hasQueryMatch && belongsToReviewScope && hasFilterMatch;
 }
 
 interface ReportWorkspaceProps {
   datasetLabel: string;
   summary: ReportSummary;
+  reviewStage: ReportReviewStage;
   availableReports: ReportOption[];
   tables: StatTableSummary[];
   selectedTableId: string;
@@ -51,6 +82,7 @@ interface ReportWorkspaceProps {
   validationCatalog: ValidationCatalogItem[];
   hiddenValidationTypes: ReadonlySet<string>;
   validationRunState: "idle" | "running" | "error";
+  validationJob?: ValidationJob | null;
   deleteState: "idle" | "deleting";
   tableListScrollTop: number;
   onReportChange: (reportId: string) => void;
@@ -66,6 +98,7 @@ interface ReportWorkspaceProps {
     includeLanguageLlm: boolean;
     sourceValidationRunId?: number;
   }) => Promise<boolean>;
+  onStopValidation?: () => void;
   onDeleteReport: (report: ReportOption) => Promise<boolean>;
   onConfirmIncrementDraft?: () => Promise<boolean>;
   onSelect: (tableId: string) => void;
@@ -76,6 +109,7 @@ interface ReportWorkspaceProps {
 export function ReportWorkspace({
   datasetLabel,
   summary,
+  reviewStage = "validated",
   availableReports,
   tables,
   selectedTableId,
@@ -88,6 +122,7 @@ export function ReportWorkspace({
   validationCatalog,
   hiddenValidationTypes,
   validationRunState,
+  validationJob,
   deleteState,
   tableListScrollTop,
   onReportChange,
@@ -97,15 +132,34 @@ export function ReportWorkspace({
   onShowAllValidationTypes,
   onHideAllValidationTypes,
   onRunValidation,
+  onStopValidation = () => undefined,
   onDeleteReport,
   onConfirmIncrementDraft,
   onSelect,
   onOpen,
   onTableListScrollTopChange,
 }: ReportWorkspaceProps) {
-  const filteredTables = useMemo(() => {
-    return tables.filter((table) => matchesWorkspaceFilter(table, query, filter));
-  }, [filter, query, tables]);
+  // Validation-type choices define the population represented by the summary
+  // cards.  A status-card click only narrows the list below; it must not
+  // recalculate the other status counts to zero.
+  const scopedTables = useMemo(() => {
+    return tables.filter((table) =>
+      matchesWorkspaceFilter(table, query, "all", hiddenValidationTypes, reviewStage),
+    );
+  }, [hiddenValidationTypes, query, reviewStage, tables]);
+  const filteredTables = useMemo(
+    () =>
+      filter === "all"
+        ? scopedTables
+        : scopedTables.filter((table) =>
+            matchesWorkspaceFilter(table, query, filter, hiddenValidationTypes, reviewStage),
+          ),
+    [filter, hiddenValidationTypes, query, reviewStage, scopedTables],
+  );
+  const filteredSummary = useMemo(
+    () => summaryWithValidationVisibility(summary, scopedTables),
+    [scopedTables, summary],
+  );
 
   const activeId = filteredTables.some((table) => table.id === selectedTableId)
     ? selectedTableId
@@ -121,7 +175,9 @@ export function ReportWorkspace({
   function handleSummaryFilterChange(nextFilter: FilterValue) {
     onFilterChange(nextFilter);
 
-    const nextTables = tables.filter((table) => matchesWorkspaceFilter(table, query, nextFilter));
+    const nextTables = tables.filter((table) =>
+      matchesWorkspaceFilter(table, query, nextFilter, hiddenValidationTypes, reviewStage),
+    );
     if (nextTables.length > 0 && !nextTables.some((table) => table.id === selectedTableId)) {
       onSelect(nextTables[0].id);
     }
@@ -131,7 +187,8 @@ export function ReportWorkspace({
     <div className="workspace">
       <div className="workspace-sidebar">
         <ReportSummaryPanel
-          summary={summary}
+          summary={filteredSummary}
+          reviewStage={reviewStage}
           datasetLabel={datasetLabel}
           availableReports={availableReports}
           selectedReportId={selectedReportId || String(summary.report_id ?? "")}
@@ -141,6 +198,7 @@ export function ReportWorkspace({
           validationCatalog={validationCatalog}
           hiddenValidationTypes={hiddenValidationTypes}
           validationRunState={validationRunState}
+          validationJob={validationJob}
           deleteState={deleteState}
           onReportChange={onReportChange}
           onFilterChange={handleSummaryFilterChange}
@@ -148,10 +206,12 @@ export function ReportWorkspace({
           onShowAllValidationTypes={onShowAllValidationTypes}
           onHideAllValidationTypes={onHideAllValidationTypes}
           onRunValidation={onRunValidation}
+          onStopValidation={onStopValidation}
           onDeleteReport={onDeleteReport}
           onConfirmIncrementDraft={onConfirmIncrementDraft}
         />
         <TableList
+          reviewStage={reviewStage}
           tables={filteredTables}
           activeTableId={activeId}
           query={query}

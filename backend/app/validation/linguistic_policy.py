@@ -11,6 +11,24 @@ LINGUISTIC_CHECK_TYPES = {
 }
 
 
+# Exact, context-independent statistical labels audited against the 2026
+# yearbook results.  These pairs may be closed locally only when the complete
+# Korean and English values match; substring matches are intentionally unsafe
+# (for example, ``구분 Claasification 기관 Organization`` still has a typo).
+AUDITED_STANDARD_BILINGUAL_LABELS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("구분", "Classification"),
+        ("합계", "Total"),
+        ("계", "Total"),
+        ("소계", "Subtotal"),
+        ("평균", "Average"),
+        ("지역", "Region"),
+        ("연도", "Year"),
+        ("단위", "Unit"),
+    }
+)
+
+
 @dataclass(frozen=True)
 class LinguisticReviewPolicy:
     check_type: str

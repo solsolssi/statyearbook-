@@ -11,6 +11,7 @@ class LLMReviewResult:
     inserted_checks: int
     final_issue_count: int
     skipped_reason: str = ""
+    cancelled: bool = False
 
 
 @dataclass(frozen=True)

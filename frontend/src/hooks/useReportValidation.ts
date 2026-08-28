@@ -1,7 +1,10 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import {
-  runReportValidation,
+  createValidationJob,
+  fetchValidationJob,
+  stopValidationJob,
+  type ValidationJob,
   type ValidationRunResult,
 } from "../api/reportApi";
 
@@ -12,6 +15,13 @@ export function useReportValidation(
 ) {
   const [validationRunState, setValidationRunState] =
     useState<ValidationRunState>("idle");
+  const [validationJob, setValidationJob] = useState<ValidationJob | null>(null);
+  const pollingRef = useRef<number | null>(null);
+
+  const clearPolling = useCallback(() => {
+    if (pollingRef.current !== null) window.clearInterval(pollingRef.current);
+    pollingRef.current = null;
+  }, []);
 
   const runValidation = useCallback(
     async (
@@ -26,9 +36,19 @@ export function useReportValidation(
     ) => {
       setValidationRunState("running");
       try {
-        const result = await runReportValidation(reportId, options);
-        onCompleted(result);
-        setValidationRunState("idle");
+        const job = await createValidationJob(reportId, options);
+        setValidationJob(job);
+        pollingRef.current = window.setInterval(() => {
+          void fetchValidationJob(job.id).then((updated) => {
+            setValidationJob(updated);
+            if (["completed", "stopped", "failed"].includes(updated.status)) {
+              clearPolling();
+              setValidationRunState(updated.status === "failed" ? "error" : "idle");
+              if (updated.status === "completed" && updated.result) onCompleted(updated.result);
+              if (updated.status === "failed") window.alert(updated.error_message || "연보 검수 중 오류가 발생했습니다.");
+            }
+          }).catch(() => undefined);
+        }, 800);
         return true;
       } catch (error) {
         setValidationRunState("error");
@@ -40,8 +60,13 @@ export function useReportValidation(
         return false;
       }
     },
-    [onCompleted],
+    [clearPolling, onCompleted],
   );
 
-  return { runValidation, validationRunState };
+  const stopValidation = useCallback(async () => {
+    if (!validationJob || ["completed", "stopped", "failed"].includes(validationJob.status)) return;
+    setValidationJob(await stopValidationJob(validationJob.id));
+  }, [validationJob]);
+
+  return { runValidation, stopValidation, validationRunState, validationJob };
 }

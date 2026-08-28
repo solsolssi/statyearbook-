@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 
 from app.db.connection import DB_PATH, connect
 from app.db.schema import init_db
@@ -18,6 +19,7 @@ class LanguagePipelineResult:
     reused_count: int
     blue_candidate_count: int
     source_issue_count: int
+    cancelled: bool = False
 
 
 class LanguageReviewPipeline:
@@ -37,6 +39,8 @@ class LanguageReviewPipeline:
         include_llm: bool,
         table_ids: list[int] | None = None,
         selected_check_types: frozenset[str] | None = None,
+        on_llm_progress: Callable[[int, int], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> LanguagePipelineResult:
         generated = self._candidate_generator.generate(
             report_id=report_id,
@@ -52,6 +56,7 @@ class LanguageReviewPipeline:
             )
         reused = self._reusable_resolver.resolve(run_id=run_id)
 
+        cancelled = False
         if include_llm:
             from app.validation.llm_translation_review import (
                 append_llm_translation_reviews,
@@ -62,8 +67,21 @@ class LanguageReviewPipeline:
                 report_id=report_id,
                 run_id=run_id,
                 limit=None,
+                on_progress=on_llm_progress,
+                should_stop=should_stop,
             )
+            cancelled = llm_result.cancelled
             if llm_result.skipped_reason:
+                if cancelled:
+                    candidate_count, pending_count = self._review_counts(run_id)
+                    return LanguagePipelineResult(
+                        candidate_count=candidate_count,
+                        pending_count=pending_count,
+                        reused_count=reused.resolved_candidates,
+                        blue_candidate_count=generated.blue_candidates,
+                        source_issue_count=generated.source_issues,
+                        cancelled=True,
+                    )
                 raise RuntimeError(
                     "LLM 전수 언어 검수가 실행되지 않았습니다: "
                     f"{llm_result.skipped_reason}"
@@ -84,7 +102,7 @@ class LanguageReviewPipeline:
 
             synchronize_standard_language_pending_checks(self._db_path, run_id=run_id)
         candidate_count, pending_count = self._review_counts(run_id)
-        if include_llm and pending_count:
+        if include_llm and pending_count and not cancelled:
             raise RuntimeError(
                 "LLM 전수 언어 검수가 완료되지 않았습니다: "
                 f"{pending_count}/{candidate_count}건 대기"
@@ -96,6 +114,7 @@ class LanguageReviewPipeline:
             reused_count=reused.resolved_candidates,
             blue_candidate_count=generated.blue_candidates,
             source_issue_count=generated.source_issues,
+            cancelled=cancelled,
         )
 
     def _keep_selected_results(

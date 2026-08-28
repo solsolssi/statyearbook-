@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+from collections.abc import Callable
 
 from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
 from app.db.schema import init_db
@@ -50,8 +51,12 @@ class ValidationExecutionService:
         include_profile_llm: bool = False,
         include_language_llm: bool = False,
         source_validation_run_id: int | None = None,
+        on_progress: Callable[[str, int, int, int], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, object]:
         rule_keys = normalize_validation_rule_keys(selected_rule_keys)
+        if on_progress:
+            on_progress("검수 준비", 0, 1, 5)
         report = self._repository.report(report_id)
         if report is None:
             raise ValueError("검수할 연보를 찾을 수 없습니다.")
@@ -133,6 +138,8 @@ class ValidationExecutionService:
         ]
 
         if local_table_ids:
+            if on_progress:
+                on_progress("합계·비율·메타데이터 검수", 0, len(local_table_ids), 15)
             calculation = CalculationValidationWorkflow(self._db_path).run(
                 report_id=report_id,
                 table_ids=local_table_ids,
@@ -140,6 +147,8 @@ class ValidationExecutionService:
                 use_llm_profiles=include_profile_llm,
             )
             run_id = calculation.run_id
+            if on_progress:
+                on_progress("계산 검수 완료", len(local_table_ids), len(local_table_ids), 35)
         else:
             run_id = self._repository.save_run(
                 report_id=report_id,
@@ -156,14 +165,39 @@ class ValidationExecutionService:
 
         language_types = selected_language_check_types(rule_keys)
         if language_types and local_table_ids:
-            LanguageValidationWorkflow(self._db_path).run(
+            language_result = LanguageValidationWorkflow(self._db_path).run(
                 report_id=report_id,
                 run_id=run_id,
                 source_path=str(report["source_file_path"]),
                 include_llm=include_language_llm,
                 table_ids=local_table_ids,
                 selected_check_types=language_types,
+                on_llm_progress=(
+                    (lambda completed, total: on_progress(
+                        "오탈자·번역 LLM 검수",
+                        completed,
+                        total,
+                        45 + int((completed / max(total, 1)) * 50),
+                    ))
+                    if on_progress and include_language_llm else None
+                ),
+                should_stop=should_stop,
             )
+            if language_result.cancelled:
+                self._finalize_run(
+                    run_id=run_id,
+                    selected_rule_keys=rule_keys,
+                    mappings=reusable,
+                    reused_check_count=0,
+                    selected_source_run_id=(int(selected_source["id"]) if selected_source else None),
+                )
+                result = self._result_payload(
+                    report_id=report_id,
+                    run_id=run_id,
+                    selected_rule_keys=rule_keys,
+                )
+                result["cancelled"] = True
+                return result
 
         reused_check_count = self._copy_reusable_results(
             run_id=run_id,
@@ -182,6 +216,8 @@ class ValidationExecutionService:
             reused_check_count=reused_check_count,
             selected_source_run_id=(int(selected_source["id"]) if selected_source else None),
         )
+        if on_progress:
+            on_progress("검수 결과 저장", 1, 1, 100)
         return self._result_payload(
             report_id=report_id,
             run_id=run_id,

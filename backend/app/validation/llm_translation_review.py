@@ -36,6 +36,7 @@ from app.validation.blue_review import (
     synchronize_blue_review_checks,
 )
 from app.validation.linguistic_policy import (
+    AUDITED_STANDARD_BILINGUAL_LABELS,
     LINGUISTIC_CHECK_TYPES,
     SPELLING_REPLACEMENTS,
     SPELLING_CHECK_TYPE,
@@ -49,6 +50,7 @@ from app.validation.linguistic_review import (
 from app.validation.language_pipeline.execution import ReviewBatchExecutor
 from app.validation.language_pipeline.batching import (
     chunked_by_context,
+    collapse_compatible_review_items,
     compact_prompt_glossary,
     compact_prompt_items,
     group_linguistic_items_by_context,
@@ -110,6 +112,10 @@ TRANSLATION_DEFECT_KINDS = {
     "measure_mismatch",
 }
 LOGGER = logging.getLogger(__name__)
+NORMALIZED_AUDITED_STANDARD_BILINGUAL_LABELS = frozenset(
+    (normalize_source(source), normalize_target(target))
+    for source, target in AUDITED_STANDARD_BILINGUAL_LABELS
+)
 
 
 def apply_reusable_linguistic_reviews(
@@ -142,6 +148,8 @@ def append_llm_translation_reviews(
     blue_only: bool = False,
     standard_language_only: bool = False,
     model_override: str | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> LLMReviewResult:
     if blue_only and standard_language_only:
         raise ValueError("blue_only and standard_language_only cannot both be enabled")
@@ -255,7 +263,12 @@ def append_llm_translation_reviews(
         ),
     )
 
-    batches = chunked_by_context(items, settings["batch_size"])
+    review_items, shared_items_by_representative = collapse_compatible_review_items(items)
+    batches = chunked_by_context(review_items, settings["batch_size"])
+    total_batches = len(batches)
+    completed_batches = 0
+    if on_progress:
+        on_progress(completed_batches, total_batches)
     concurrency = settings["concurrency"]
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         batch_iterator = iter(batches)
@@ -282,7 +295,7 @@ def append_llm_translation_reviews(
                 with connect(db_path) as connection:
                     init_db(connection)
                     with connection:
-                        batch_counts = save_llm_review_decisions(
+                        representative_counts = save_llm_review_decisions(
                             connection,
                             resolved_run_id,
                             batch,
@@ -290,18 +303,57 @@ def append_llm_translation_reviews(
                             reviewed_model=settings["model"],
                             resolution_source="llm",
                         )
-                        inserted_issues += batch_counts[0]
-                        inserted_checks += batch_counts[1]
-                        processed += batch_counts[2]
+                        shared_batch, shared_decisions = (
+                            expand_same_run_shared_decisions(
+                                batch,
+                                decisions,
+                                shared_items_by_representative,
+                            )
+                            if representative_counts[2] == len(decisions)
+                            else ([], [])
+                        )
+                        shared_counts = (
+                            save_llm_review_decisions(
+                                connection,
+                                resolved_run_id,
+                                shared_batch,
+                                shared_decisions,
+                                reviewed_model=settings["model"],
+                                resolution_source="same_run_reuse",
+                            )
+                            if shared_batch
+                            else (0, 0, 0)
+                        )
+                        inserted_issues += representative_counts[0] + shared_counts[0]
+                        inserted_checks += representative_counts[1] + shared_counts[1]
+                        processed += representative_counts[2] + shared_counts[2]
                         refresh_issue_count(connection, resolved_run_id)
                 if blue_only:
                     synchronize_blue_review_checks(db_path, run_id=resolved_run_id)
+                completed_batches += 1
+                if on_progress:
+                    on_progress(completed_batches, total_batches)
             if errors:
                 for future in pending:
                     future.cancel()
                 raise RuntimeError(
                     f"LLM batch group failed after saving {len(completed)} successful batches"
                 ) from errors[0]
+
+            # A request already in flight is allowed to finish and is saved
+            # above.  Stop before scheduling the next batch so partial work
+            # remains a valid, resumable validation run.
+            if should_stop and should_stop():
+                if not blue_only:
+                    synchronize_standard_language_pending_checks(db_path, run_id=resolved_run_id)
+                return LLMReviewResult(
+                    processed,
+                    inserted_issues,
+                    inserted_checks,
+                    current_issue_count(db_path, resolved_run_id),
+                    "cancelled",
+                    cancelled=True,
+                )
 
             for _ in completed:
                 try:
@@ -955,15 +1007,13 @@ class ResponsesAPIClient:
         *,
         require_english_replacement: bool = False,
     ) -> list[dict[str, Any]]:
+        compact_items = compact_prompt_items(items)
         prompt_payload = {
-            "items": compact_prompt_items(items),
+            "items": compact_items,
             "required_result_ids": [item.issue_id for item in items],
-            "required_context_tokens": {
-                str(item.issue_id): review_context_token(item) for item in items
-            },
             "required_result_count": len(items),
+            "required_context_count": len(compact_items),
             "allowed_statuses": ["정상", "확인 필요", "오류 의심"],
-            "allowed_issue_types": ["번역 검수", "오탈자 검수", "파란색 표기 확인"],
         }
         body = {
             "model": self.model,
@@ -1002,7 +1052,7 @@ class ResponsesAPIClient:
                     "schema": REVIEW_RESPONSE_SCHEMA,
                 }
             },
-            "max_output_tokens": max(3000, len(items) * 400),
+            "max_output_tokens": max(2000, len(items) * 260),
         }
         response = self._post(body)
         if self._usage_callback is not None:
@@ -1010,7 +1060,12 @@ class ResponsesAPIClient:
                 self._usage_callback(response)
             except Exception:
                 LOGGER.exception("LLM 사용량 기록에 실패했습니다.")
-        return validated_review_items(response)
+        return validated_review_items(
+            response,
+            requested_review_types={
+                item.issue_id: item.requested_review_type for item in items
+            },
+        )
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         return self._transport.create(body)
@@ -1025,6 +1080,33 @@ def review_batch_with_retries(
     batch: list[SourceReviewItem],
 ) -> list[dict[str, Any]]:
     return _review_batch_executor().execute(client, batch)
+
+
+def expand_same_run_shared_decisions(
+    representatives: list[SourceReviewItem],
+    decisions: list[dict[str, Any]],
+    shared_items_by_representative: dict[int, list[SourceReviewItem]],
+) -> tuple[list[SourceReviewItem], list[dict[str, Any]]]:
+    """Copy one reviewed decision only to context-compatible run candidates."""
+
+    representative_ids = {item.issue_id for item in representatives}
+    shared_items: list[SourceReviewItem] = []
+    shared_decisions: list[dict[str, Any]] = []
+    for decision in decisions:
+        issue_id = int_or_none(decision.get("id"))
+        if issue_id is None or issue_id not in representative_ids:
+            continue
+        for item in shared_items_by_representative.get(issue_id, []):
+            shared_items.append(item)
+            shared_decisions.append(
+                {
+                    **decision,
+                    "id": item.issue_id,
+                    "context_token": review_context_token(item),
+                    "issue_type": item.requested_review_type,
+                }
+            )
+    return shared_items, shared_decisions
 
 
 def recover_incomplete_bilingual_decision(
@@ -1120,14 +1202,14 @@ def group_items_for_retry(items: list[SourceReviewItem]) -> list[list[SourceRevi
 
 SYSTEM_PROMPT = """You are a high-precision Korean government statistical yearbook language reviewer.
 
-The input groups requests that share one title, header, or body-cell context. For every entry in review_requests, return one result using that request id. Copy that group's context_token exactly into every result for the group. required_result_ids and required_context_tokens define the only valid id-token mappings; never move a result between contexts. The output items array must contain exactly required_result_count objects. Review the complete shared value only for requested_review_type and return that same issue_type. Values may contain both text and numbers. Never turn a translation question into a spelling finding.
+The input groups requests that share one title, header, or body-cell context. Return exactly one outer items object for each input context. Copy the input context_token once into that outer object, then return exactly one nested reviews object for every review_requests entry using its request id. required_result_ids defines every required nested review id. Never move a review between contexts. Review the complete shared value only for the requested review type associated with that id. The application restores issue_type from the request id, so do not output issue_type. Values may contain both text and numbers. Never turn a translation question into a spelling finding.
 
 Precision is more important than recall. Report a finding only when the supplied value has a concrete, actionable defect. If the wording is contextually acceptable, conventional in a statistical table, or merely one of several valid alternatives, return "정상". Never create a finding just to improve style.
 
 The standard categories are strictly separated:
 1. 오탈자 검수: Check only clear Korean or English spelling/orthographic errors, broken or duplicated characters, accidental letter/number substitution, spacing, punctuation, and malformed numeric separators when peer values prove the intended format. "진행율" to "진행률" is a spelling correction. Allowed non-normal defect_kind values are korean_spelling, english_spelling, spacing, punctuation, and numeric_format. Do not translate, change word order, improve grammar or style, alter singular/plural, rewrite, formalize, standardize terminology, change romanization style, or suggest a synonym. Those cases are normal for this category. Use "오류 의심" only when the correction is clear. When evidence is insufficient, return "정상" rather than speculating.
 2. 번역 검수: This request is created only for a value containing an identifiable Korean-English pair. Check whether the two sides convey the same material meaning in this table. Allowed non-normal defect_kind values are semantic_omission, semantic_addition, wrong_meaning, entity_mismatch, and measure_mismatch. Accept concise table translations, established abbreviations, non-literal but equivalent wording, word-order variation, capitalization, singular/plural variation, optional contextual scope phrases, and conventional labels. Spacing, spelling, punctuation, grammar polishing, or a merely more natural alternative is normal for this category because spelling has its own request. Return "확인 필요" only for a material omission, addition, role reversal, wrong entity, wrong measure, or clearly different core meaning. Do not propose a stylistic alternative and never return "오류 의심".
-3. 파란색 표기 확인: This remains one combined review for an exact blue-marked HWPX value. Check clear Korean/English typos, semantic alignment, official proper names, and public-sector wording together, then return exactly one result with issue_type "파란색 표기 확인". Do not split it into the standard categories. For Korean-only blue text, provide a concrete English translation. For bilingual blue text, preserve the complete Korean and English value in a corrected replacement.
+3. 파란색 표기 확인: This remains one combined review for an exact blue-marked HWPX value. Check clear Korean/English typos, semantic alignment, official proper names, and public-sector wording together, then return exactly one nested review for its request id. Do not split it into the standard categories. For Korean-only blue text, provide a concrete English translation. For bilingual blue text, preserve the complete Korean and English value in a corrected replacement.
 
 Translation dictionary policy:
 - translation_glossary is evidence, not permission to skip review.
@@ -1140,7 +1222,7 @@ Translation dictionary policy:
 
 General rules:
 - Use the table title, row label, column label, unit, surrounding rows and glossary evidence.
-- Use the id and context_token mapping exactly. The response does not repeat current_value; the application reads the authoritative original from the database.
+- Use each nested review id and its outer context_token mapping exactly. The response does not repeat current_value or issue_type; the application reads both from the authoritative request and database.
 - For 오탈자 검수, correct spelling only. Preserve the source language composition: Korean-only stays Korean, English-only stays English, and bilingual text stays bilingual. Never translate a Korean name as a spelling correction.
 - Korean and English appearing together in one title, header, or cell is the yearbook's normal bilingual layout. Line breaks, Korean-first ordering, slash-separated hierarchy, parenthesized formula letters, and repeated category labels are not defects by themselves.
 - Treat conventional statistical labels as valid when their meaning fits the table. Examples include 구분/Classification, 합계 or 계/Total, 소계/Subtotal, 평균/Average, 지역/Region, 연도/Year, 단위/Unit, 수 or 건수/Number, 비율/Rate or Ratio, 증감/Increase/Decrease or Change.
@@ -1164,14 +1246,17 @@ Return JSON only, no markdown:
 {
   "items": [
     {
-      "id": 123,
       "context_token": "ctx_...",
-      "status": "정상|확인 필요|오류 의심",
-      "issue_type": "번역 검수|오탈자 검수|파란색 표기 확인",
-      "defect_kind": "none|korean_spelling|english_spelling|spacing|punctuation|numeric_format|semantic_omission|semantic_addition|wrong_meaning|entity_mismatch|measure_mismatch",
-      "expected_value": "__UNCHANGED__ or the complete corrected value",
-      "difference": "short reason",
-      "detail": "one concise Korean explanation"
+      "reviews": [
+        {
+          "id": 123,
+          "status": "정상|확인 필요|오류 의심",
+          "defect_kind": "none|korean_spelling|english_spelling|spacing|punctuation|numeric_format|semantic_omission|semantic_addition|wrong_meaning|entity_mismatch|measure_mismatch",
+          "expected_value": "__UNCHANGED__ or the complete corrected value",
+          "difference": "short Korean reason",
+          "detail": "one concise Korean explanation"
+        }
+      ]
     }
   ]
 }
@@ -1179,7 +1264,7 @@ Return JSON only, no markdown:
 
 
 ENGLISH_REPLACEMENT_RETRY_PROMPT = """The previous response was incomplete.
-Copy each shared context_token exactly into its result. For every Korean source in this retry batch, expected_value must be the actual standalone English replacement text. Do not copy Korean, leave the value blank, write an explanation, or request later confirmation. If an official name is uncertain, provide the best conservative public-sector English translation and state the evidence limitation only in detail. difference and detail must be written in Korean.
+Copy each shared context_token exactly into its outer context object and return one nested review for every requested id. For every Korean source in this retry batch, expected_value must be the actual standalone English replacement text. Do not copy Korean, leave the value blank, write an explanation, or request later confirmation. If an official name is uncertain, provide the best conservative public-sector English translation and state the evidence limitation only in detail. difference and detail must be written in Korean.
 """
 
 
@@ -1191,39 +1276,52 @@ REVIEW_RESPONSE_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "integer"},
                     "context_token": {"type": "string", "minLength": 8},
-                    "status": {"type": "string", "enum": ["정상", "확인 필요", "오류 의심"]},
-                    "issue_type": {"type": "string", "enum": ["번역 검수", "오탈자 검수", "파란색 표기 확인"]},
-                    "defect_kind": {
-                        "type": "string",
-                        "enum": [
-                            "none",
-                            "korean_spelling",
-                            "english_spelling",
-                            "spacing",
-                            "punctuation",
-                            "numeric_format",
-                            "semantic_omission",
-                            "semantic_addition",
-                            "wrong_meaning",
-                            "entity_mismatch",
-                            "measure_mismatch"
-                        ]
+                    "reviews": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "integer"},
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["정상", "확인 필요", "오류 의심"],
+                                },
+                                "defect_kind": {
+                                    "type": "string",
+                                    "enum": [
+                                        "none",
+                                        "korean_spelling",
+                                        "english_spelling",
+                                        "spacing",
+                                        "punctuation",
+                                        "numeric_format",
+                                        "semantic_omission",
+                                        "semantic_addition",
+                                        "wrong_meaning",
+                                        "entity_mismatch",
+                                        "measure_mismatch",
+                                    ],
+                                },
+                                "expected_value": {"type": "string", "minLength": 1},
+                                "difference": {"type": "string"},
+                                "detail": {"type": "string"},
+                            },
+                            "required": [
+                                "id",
+                                "status",
+                                "defect_kind",
+                                "expected_value",
+                                "difference",
+                                "detail",
+                            ],
+                            "additionalProperties": False,
+                        },
                     },
-                    "expected_value": {"type": "string", "minLength": 1},
-                    "difference": {"type": "string"},
-                    "detail": {"type": "string"},
                 },
                 "required": [
-                    "id",
                     "context_token",
-                    "status",
-                    "issue_type",
-                    "defect_kind",
-                    "expected_value",
-                    "difference",
-                    "detail",
+                    "reviews",
                 ],
                 "additionalProperties": False,
             },
@@ -1957,6 +2055,10 @@ def glossary_decision_for(item: SourceReviewItem) -> dict[str, str] | None:
     if explicit_spelling is not None:
         return explicit_spelling
 
+    standard_label = audited_standard_label_decision_for(item)
+    if standard_label is not None:
+        return standard_label
+
     entries = item.glossary_matches or []
     korean = normalize_review_text(item.korean_text)
     english = normalize_review_text(item.english_text)
@@ -2042,6 +2144,26 @@ def glossary_decision_for(item: SourceReviewItem) -> dict[str, str] | None:
     # automatic finding. Statistical labels and historical organization names
     # often have multiple valid translations depending on year and table scope.
     return None
+
+
+def audited_standard_label_decision_for(
+    item: SourceReviewItem,
+) -> dict[str, str] | None:
+    """Close only a complete, audited bilingual statistical label locally."""
+
+    if item.requested_review_type not in LINGUISTIC_CHECK_TYPES:
+        return None
+    korean = normalize_review_text(item.korean_text)
+    english = normalize_review_text(item.english_text)
+    if not korean or not english:
+        return None
+    if normalize_source(item.current_value) != normalize_source(f"{korean} {english}"):
+        return None
+
+    normalized_pair = (normalize_source(korean), normalize_target(english))
+    if normalized_pair not in NORMALIZED_AUDITED_STANDARD_BILINGUAL_LABELS:
+        return None
+    return normal_glossary_decision(item, "감사 완료 통계 표준 표현 규칙")
 
 
 def official_organization_glossary_decision_for(

@@ -237,6 +237,7 @@ export interface StatTableSummary {
   summary: string[];
   key_figures: Metric[];
   checks: ValidationIssue[];
+  validated_types?: string[];
   is_test_table?: boolean;
   generation_status?: string;
   generation_status_label?: string;

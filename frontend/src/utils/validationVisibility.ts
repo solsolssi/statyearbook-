@@ -8,6 +8,7 @@ import type {
 } from "../types";
 
 type ValidationTableLike = StatTable | StatTableSummary;
+export type ReportReviewStage = "draft" | "unvalidated" | "validated";
 type GenerationReviewLike = Pick<
   ValidationTableLike,
   "generation_status" | "generation_status_label" | "incremental_reason_code"
@@ -20,7 +21,6 @@ export const VALIDATION_CHECK_TYPES = [
   "번역 검수",
   "메타정보 검수",
   "이상치 검수",
-  "파란색 표기 확인",
   "재검수 필요",
 ] as const;
 
@@ -33,12 +33,17 @@ export const INCREMENTAL_REVIEW_TYPES = [
 
 export const DEFAULT_HIDDEN_VALIDATION_TYPES = new Set<string>(["이상치 검수"]);
 export const INTERNAL_VALIDATION_TYPES = new Set<string>(["검수 프로파일 확인"]);
+// 기존 검수 이력은 보존하되, 파란색 표기 확인은 현재 화면에서 노출하지 않는다.
+export const SCREEN_HIDDEN_VALIDATION_TYPES = new Set<string>(["파란색 표기 확인"]);
 export const REVALIDATION_REQUIRED_FILTER = "재검수 필요";
 export const OPTIONAL_VALIDATION_TYPES = new Set<string>([
-  "파란색 표기 확인",
   REVALIDATION_REQUIRED_FILTER,
   ...INCREMENTAL_REVIEW_TYPES,
 ]);
+
+export function isScreenVisibleValidationType(type: string) {
+  return !SCREEN_HIDDEN_VALIDATION_TYPES.has(type);
+}
 
 const INCREMENT_KEY_REVIEW_REASONS = new Set([
   "NO_INCREMENT_CANDIDATE",
@@ -70,6 +75,15 @@ const GENERATION_REVIEW_STATUS_LABELS: Record<string, string> = {
   unavailable: "생성 확인 필요",
   recipe_required: "생성 규칙 필요",
 };
+
+export function reportReviewStage(
+  summary: Pick<ReportSummary, "origin_kind" | "validation_scope">,
+): ReportReviewStage {
+  if (["incremental_draft", "upload_draft"].includes(summary.origin_kind ?? "")) {
+    return "draft";
+  }
+  return summary.validation_scope === "none" ? "unvalidated" : "validated";
+}
 
 export function incrementalReviewType(
   table: Pick<ValidationTableLike, "generation_status" | "incremental_reason_code">,
@@ -117,13 +131,13 @@ export function validationTypesForTables(
 ) {
   const discovered = new Set<string>(
     preferredOrder.filter(
-      (type) => !INTERNAL_VALIDATION_TYPES.has(type),
+      (type) => !INTERNAL_VALIDATION_TYPES.has(type) && isScreenVisibleValidationType(type),
     ),
   );
   if (includeDiscoveredChecks) {
     for (const table of tables) {
       for (const check of tableChecks(table)) {
-        if (INTERNAL_VALIDATION_TYPES.has(check.type)) {
+        if (INTERNAL_VALIDATION_TYPES.has(check.type) || !isScreenVisibleValidationType(check.type)) {
           continue;
         }
         discovered.add(check.type);
@@ -144,7 +158,7 @@ export function activeValidationTypesForTables(tables: ValidationTableLike[]) {
       active.add(REVALIDATION_REQUIRED_FILTER);
     }
     for (const check of tableChecks(table)) {
-      if (INTERNAL_VALIDATION_TYPES.has(check.type)) {
+      if (INTERNAL_VALIDATION_TYPES.has(check.type) || !isScreenVisibleValidationType(check.type)) {
         continue;
       }
       active.add(check.type);
@@ -159,7 +173,7 @@ export function activeValidationTypesForTables(tables: ValidationTableLike[]) {
 function visibleChecks(checks: ValidationIssue[], hiddenTypes: ReadonlySet<string>) {
   return checks.filter(
     (check) => {
-      if (INTERNAL_VALIDATION_TYPES.has(check.type)) {
+      if (INTERNAL_VALIDATION_TYPES.has(check.type) || !isScreenVisibleValidationType(check.type)) {
         return false;
       }
       if (check.status === REVALIDATION_REQUIRED_FILTER) {
@@ -243,6 +257,7 @@ function partWithVisibleChecks(part: StatTablePart, hiddenTypes: ReadonlySet<str
 export function tablesWithValidationVisibility<T extends ValidationTableLike>(
   tables: T[],
   hiddenTypes: ReadonlySet<string>,
+  reviewStage: ReportReviewStage = "validated",
 ): T[] {
   return tables.map((table) => {
     const checks = visibleChecks(table.checks, hiddenTypes);
@@ -253,6 +268,28 @@ export function tablesWithValidationVisibility<T extends ValidationTableLike>(
         ...("parts" in table
           ? { parts: table.parts.map((part) => partWithVisibleChecks(part, hiddenTypes)) }
           : {}),
+      } as T;
+    }
+
+    // Once a yearbook has been confirmed, validation begins from a clean
+    // report-scoped state. Draft connection diagnostics remain in the audit
+    // tables, but they must not masquerade as validation results.
+    if (reviewStage === "unvalidated") {
+      return {
+        ...table,
+        checks: [],
+        ...("parts" in table
+          ? {
+              parts: table.parts.map((part) => ({
+                ...part,
+                checks: [],
+                status: "normal" as const,
+                status_label: "검수 전",
+              })),
+            }
+          : {}),
+        status: "normal",
+        status_label: "검수 전",
       } as T;
     }
     const generationType = incrementalReviewType(table);
@@ -284,7 +321,9 @@ export function tablesWithValidationVisibility<T extends ValidationTableLike>(
     }
     const status = statusFromChecks(
       checks,
-      table.status === "normal" ? table.status_label : "정상",
+      reviewStage === "draft"
+        ? "검수 전"
+        : table.status === "normal" ? table.status_label : "정상",
     );
 
     return {

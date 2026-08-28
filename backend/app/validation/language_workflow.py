@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 
 from app.db.connection import DB_PATH, connect
 from app.db.schema import init_db
@@ -17,6 +18,7 @@ class LanguageValidationResult:
     reused_count: int
     blue_candidate_count: int
     source_issue_count: int
+    cancelled: bool = False
 
     @property
     def status(self) -> LanguageReviewStatus:
@@ -43,6 +45,8 @@ class LanguageValidationWorkflow:
         include_llm: bool,
         table_ids: list[int] | None = None,
         selected_check_types: frozenset[str] | None = None,
+        on_llm_progress: Callable[[int, int], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> LanguageValidationResult:
         result = self._pipeline.run(
             report_id=report_id,
@@ -51,6 +55,8 @@ class LanguageValidationWorkflow:
             include_llm=include_llm,
             table_ids=table_ids,
             selected_check_types=selected_check_types,
+            on_llm_progress=on_llm_progress,
+            should_stop=should_stop,
         )
 
         return LanguageValidationResult(
@@ -59,6 +65,7 @@ class LanguageValidationWorkflow:
             reused_count=result.reused_count,
             blue_candidate_count=result.blue_candidate_count,
             source_issue_count=result.source_issue_count,
+            cancelled=result.cancelled,
         )
 
 

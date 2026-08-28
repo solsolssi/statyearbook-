@@ -184,6 +184,48 @@ class LanguagePipelineTest(unittest.TestCase):
             [{"id": 1, "status": "정상"}],
         )
 
+    def test_compact_context_response_restores_independent_review_types(self) -> None:
+        response = {
+            "output_text": json.dumps(
+                {
+                    "items": [
+                        {
+                            "context_token": "ctx_shared",
+                            "reviews": [
+                                {
+                                    "id": 11,
+                                    "status": "오류 의심",
+                                    "defect_kind": "spacing",
+                                    "expected_value": "of a",
+                                    "difference": "띄어쓰기 오류",
+                                    "detail": "영문 띄어쓰기를 교정했습니다.",
+                                },
+                                {
+                                    "id": 12,
+                                    "status": "확인 필요",
+                                    "defect_kind": "wrong_meaning",
+                                    "expected_value": "correct translation",
+                                    "difference": "의미 불일치",
+                                    "detail": "국문과 영문의 의미가 다릅니다.",
+                                },
+                            ],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        }
+
+        decisions = validated_review_items(
+            response,
+            requested_review_types={11: "오탈자 검수", 12: "번역 검수"},
+        )
+
+        self.assertEqual(len(decisions), 2)
+        self.assertEqual(decisions[0]["context_token"], "ctx_shared")
+        self.assertEqual(decisions[0]["issue_type"], "오탈자 검수")
+        self.assertEqual(decisions[1]["issue_type"], "번역 검수")
+
     def test_batch_executor_keeps_decisions_bound_to_candidate_ids(self) -> None:
         item = self.review_item()
 

@@ -37,7 +37,7 @@ from app.ingest.table_repairs import (
 )
 from app.ingest.table_shape import wide_row_oriented_text_table_header_count
 from app.validation.models import restore_hyphenated_line_breaks
-from app.validation.presentation import validation_issue_from_row
+from app.validation.presentation import display_check_type, validation_issue_from_row
 from app.validation.spec_repository import load_rule_specs_by_id
 
 
@@ -94,9 +94,18 @@ class DatabaseReportService:
             include_highlights=False,
             include_passing_checks=False,
         )
+        validated_types_by_code = (
+            self._validated_types_by_table_code(int(report["id"])) if report is not None else {}
+        )
         return ReportOverviewPayload(
             summary=self._summary_from_tables(report, tables),
-            tables=[table_summary(table) for table in tables],
+            tables=[
+                table_summary(
+                    table,
+                    validated_types=validated_types_by_code.get(table.code, []),
+                )
+                for table in tables
+            ],
             press_insights=self._press_insights_from_tables(tables),
             available_reports=self.list_reports(),
             available_templates=self.list_templates(),
@@ -504,6 +513,44 @@ class DatabaseReportService:
         ).fetchall()
         return len({re.sub(r"\s+표\d+$", "", row["code"]) for row in rows})
 
+    def _validated_types_by_table_code(self, report_id: int) -> dict[str, list[str]]:
+        """Return compact validation coverage for the list view.
+
+        The overview deliberately omits passing check rows to keep the initial
+        page responsive.  A list filter still needs to know that a normal
+        table was checked for (for example) a ratio, so expose only its
+        distinct display types rather than every passing check result.
+        """
+
+        with connect(self._db_path) as connection:
+            init_db(connection)
+            run_id = self._latest_run_id(connection, report_id)
+            if run_id is None:
+                return {}
+            rows = connection.execute(
+                """
+                SELECT source_table.code, checks.check_type
+                FROM validation_checks AS checks
+                JOIN stat_tables AS source_table ON source_table.id = checks.table_id
+                JOIN validation_runs AS source_run ON source_run.id = checks.run_id
+                WHERE checks.run_id = ?
+                  AND source_table.report_id = ?
+                  AND (
+                    source_table.edited_after_run_id IS NULL
+                    OR source_run.id > source_table.edited_after_run_id
+                  )
+                GROUP BY source_table.code, checks.check_type
+                ORDER BY source_table.code, checks.check_type
+                """,
+                (run_id, report_id),
+            ).fetchall()
+
+        covered: dict[str, set[str]] = {}
+        for row in rows:
+            code = base_table_code(str(row["code"]))
+            covered.setdefault(code, set()).add(display_check_type(str(row["check_type"])))
+        return {code: sorted(types) for code, types in covered.items()}
+
     def _row_to_table(
         self,
         connection: DatabaseConnection,
@@ -559,7 +606,12 @@ class DatabaseReportService:
         status, status_label = status_from_checks(checks)
         if (
             run_id is None
-            and str(report["origin_kind"] or "") in {"incremental_confirmed", "uploaded"}
+            and str(report["origin_kind"] or "") in {
+                "incremental_draft",
+                "upload_draft",
+                "incremental_confirmed",
+                "uploaded",
+            }
             and status == TableStatus.NORMAL
         ):
             status_label = "검수 전"
@@ -704,7 +756,7 @@ class DatabaseReportService:
         return int(row["id"]) if row else None
 
 
-def table_summary(table: StatTable) -> StatTableSummary:
+def table_summary(table: StatTable, *, validated_types: list[str] | None = None) -> StatTableSummary:
     return StatTableSummary(
         id=table.id,
         code=table.code,
@@ -719,6 +771,7 @@ def table_summary(table: StatTable) -> StatTableSummary:
         summary=table.summary,
         key_figures=table.key_figures,
         checks=table.checks,
+        validated_types=validated_types or [],
         is_test_table=table.is_test_table,
         generation_status=table.generation_status,
         generation_status_label=table.generation_status_label,

@@ -23,9 +23,35 @@ const catalog: ValidationCatalogItem[] = [
     default_severity: "warning",
     description: "번역을 확인합니다.",
   },
+  {
+    key: "blue",
+    label: "파란색 표기 확인",
+    order: 2,
+    default_visible: true,
+    default_status: "확인 필요",
+    default_severity: "warning",
+    description: "원본 파란색 표기를 확인합니다.",
+  },
 ];
 
 describe("ValidationRunDialog", () => {
+  it("does not expose blue-source review in the screen selection", () => {
+    const view = render(
+      <ValidationRunDialog
+        reportId={100}
+        reportTitle="2026 수정 연보"
+        catalog={catalog}
+        state="idle"
+        onClose={() => undefined}
+        onRun={vi.fn().mockResolvedValue(true)}
+      />,
+    );
+
+    expect(screen.queryByText("파란색 표기 확인")).toBeNull();
+    expect(screen.getByText("2/2개 선택")).toBeTruthy();
+    view.unmount();
+  });
+
   it("submits only the selected validation types", async () => {
     const onRun = vi.fn().mockResolvedValue(true);
     const onClose = vi.fn();
@@ -52,7 +78,9 @@ describe("ValidationRunDialog", () => {
         sourceValidationRunId: undefined,
       });
     });
-    expect(onClose).toHaveBeenCalled();
+    // Keep the dialog open so the user can follow persisted job progress and
+    // stop the run while preserving completed checks.
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("allows LLM rule assistance even when language checks are not selected", async () => {

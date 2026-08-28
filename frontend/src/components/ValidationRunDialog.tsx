@@ -2,13 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, LoaderCircle, X } from "lucide-react";
 
 import { fetchValidationReuseRuns } from "../api/reportApi";
+import type { ValidationJob } from "../api/reportApi";
 import type { ValidationCatalogItem, ValidationReuseRunOption } from "../types";
+import { isScreenVisibleValidationType } from "../utils/validationVisibility";
 
 interface ValidationRunDialogProps {
   reportId: number;
   reportTitle: string;
   catalog: ValidationCatalogItem[];
   state: "idle" | "running" | "error";
+  job?: ValidationJob | null;
   onClose: () => void;
   onRun: (options: {
     selectedRuleKeys: string[];
@@ -17,6 +20,7 @@ interface ValidationRunDialogProps {
     includeLanguageLlm: boolean;
     sourceValidationRunId?: number;
   }) => Promise<boolean>;
+  onStop?: () => void;
 }
 
 export function ValidationRunDialog({
@@ -24,11 +28,15 @@ export function ValidationRunDialog({
   reportTitle,
   catalog,
   state,
+  job,
   onClose,
   onRun,
+  onStop = () => undefined,
 }: ValidationRunDialogProps) {
   const orderedCatalog = useMemo(
-    () => [...catalog].sort((left, right) => left.order - right.order),
+    () => catalog
+      .filter((item) => isScreenVisibleValidationType(item.label))
+      .sort((left, right) => left.order - right.order),
     [catalog],
   );
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(
@@ -75,7 +83,10 @@ export function ValidationRunDialog({
           setReuseRuns(runs);
           const currentReportRun = runs.find((run) => run.report_id === reportId);
           if (currentReportRun && !selectionTouched) {
-            setSelectedKeys(new Set(currentReportRun.selected_rule_keys));
+            const visibleKeys = new Set(orderedCatalog.map((item) => item.key));
+            setSelectedKeys(
+              new Set(currentReportRun.selected_rule_keys.filter((key) => visibleKeys.has(key))),
+            );
           }
           const compatibleRuns = runs.filter((run) => {
             const keys = currentReportRun && !selectionTouched
@@ -149,7 +160,7 @@ export function ValidationRunDialog({
   }
 
   async function submit() {
-    if (selectedKeys.size === 0 || isRunning) {
+    if (selectedRuleKeys.length === 0 || isRunning) {
       return;
     }
     const completed = await onRun({
@@ -161,9 +172,7 @@ export function ValidationRunDialog({
       includeLanguageLlm: includeLanguageLlm && languageReviewSelected,
       sourceValidationRunId: reuseExisting ? selectedSourceRunId : undefined,
     });
-    if (completed) {
-      onClose();
-    }
+    void completed;
   }
 
   return (
@@ -206,7 +215,7 @@ export function ValidationRunDialog({
           }}>
             전체 해제
           </button>
-          <span>{selectedKeys.size}/{orderedCatalog.length}개 선택</span>
+          <span>{selectedRuleKeys.length}/{orderedCatalog.length}개 선택</span>
         </div>
 
         <div className="validation-run-option-list">
@@ -310,10 +319,25 @@ export function ValidationRunDialog({
         </div>
 
         <div className="upload-dialog__footer upload-dialog__footer--end">
+          {isRunning && job ? (
+            <div className="validation-job-progress" role="status">
+              <strong>{job.progress_percent}%</strong>
+              <span>{job.current_stage}{job.total_units > 0 ? ` · ${job.completed_units}/${job.total_units}` : ""}</span>
+              <div className="validation-job-progress__track"><i style={{ width: `${job.progress_percent}%` }} /></div>
+            </div>
+          ) : null}
+          {!isRunning && job?.status === "stopped" ? (
+            <span className="validation-job-stopped">중단 시점까지의 검수 결과를 저장했습니다.</span>
+          ) : null}
+          {isRunning ? (
+            <button type="button" className="secondary-button" onClick={onStop} disabled={job?.cancel_requested}>
+              {job?.cancel_requested ? "중단 요청됨" : "중단하고 저장"}
+            </button>
+          ) : null}
           <button
             type="button"
             className="primary-button"
-            disabled={selectedKeys.size === 0 || isRunning}
+            disabled={selectedRuleKeys.length === 0 || isRunning}
             onClick={() => void submit()}
           >
             {isRunning ? (

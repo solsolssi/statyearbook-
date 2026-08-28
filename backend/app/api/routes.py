@@ -31,6 +31,7 @@ from app.models.report import (
     ValidationReuseRunOption,
     ValidationRunRequest,
     ValidationRunResult,
+    ValidationJob,
 )
 from app.models.source_statistics import (
     SourceDataImportResult,
@@ -49,6 +50,7 @@ from app.models.yearbook_edits import (
 from app.application.imports import ReportImportApplicationService
 from app.application.report_queries import ReportQueryService
 from app.application.validation_operations import ValidationApplicationService
+from app.services.validation_job_service import ValidationJobService
 from app.export.validation_workbooks import export_validation_workbooks
 from app.services.report_service import get_report_service
 from app.services.report_import_service import (
@@ -456,6 +458,41 @@ def run_validation(
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/validation/jobs", response_model=ValidationJob, status_code=status.HTTP_202_ACCEPTED)
+def create_validation_job(
+    payload: ValidationRunRequest,
+    background_tasks: BackgroundTasks,
+    report_id: int = Query(gt=0),
+) -> ValidationJob:
+    options = {
+        "selected_rule_keys": payload.selected_rule_keys,
+        "reuse_existing": payload.reuse_existing,
+        "include_profile_llm": payload.include_llm if payload.include_profile_llm is None else payload.include_profile_llm,
+        "include_language_llm": payload.include_llm if payload.include_language_llm is None else payload.include_language_llm,
+        "source_validation_run_id": payload.source_validation_run_id,
+    }
+    service = ValidationJobService()
+    job = service.create(report_id, options)
+    background_tasks.add_task(service.run, int(job["id"]))
+    return ValidationJob(**job)
+
+
+@router.get("/validation/jobs/{job_id}", response_model=ValidationJob)
+def get_validation_job(job_id: int) -> ValidationJob:
+    job = ValidationJobService().get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="검수 작업을 찾을 수 없습니다.")
+    return ValidationJob(**job)
+
+
+@router.post("/validation/jobs/{job_id}/stop", response_model=ValidationJob)
+def stop_validation_job(job_id: int) -> ValidationJob:
+    job = ValidationJobService().request_stop(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="검수 작업을 찾을 수 없습니다.")
+    return ValidationJob(**job)
 
 
 @router.get("/validation/reuse-runs", response_model=list[ValidationReuseRunOption])

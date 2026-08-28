@@ -65,6 +65,20 @@ export interface ValidationRunResult {
   reused_report_count: number;
   reused_table_count: number;
   reused_check_count: number;
+  cancelled?: boolean;
+}
+
+export interface ValidationJob {
+  id: number;
+  report_id: number;
+  status: "queued" | "running" | "completed" | "stopped" | "failed";
+  current_stage: string;
+  progress_percent: number;
+  completed_units: number;
+  total_units: number;
+  cancel_requested: boolean;
+  result: ValidationRunResult | null;
+  error_message: string;
 }
 
 export interface TableDownloadCatalogItem {
@@ -438,6 +452,30 @@ export async function runReportValidation(
     },
     "연보 검수를 실행하지 못했습니다.",
   );
+}
+
+export async function createValidationJob(
+  reportId: number,
+  options: Parameters<typeof runReportValidation>[1],
+): Promise<ValidationJob> {
+  return requestJson<ValidationJob>(
+    apiPath("/api/validation/jobs", { report_id: String(reportId) }),
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      selected_rule_keys: options.selectedRuleKeys, reuse_existing: options.reuseExisting,
+      include_profile_llm: options.includeProfileLlm ?? false,
+      include_language_llm: options.includeLanguageLlm ?? false,
+      source_validation_run_id: options.sourceValidationRunId,
+    }) },
+    "검수 작업을 시작하지 못했습니다.",
+  );
+}
+
+export async function fetchValidationJob(jobId: number): Promise<ValidationJob> {
+  return requestJson<ValidationJob>(`/api/validation/jobs/${jobId}`, undefined, "검수 작업 상태를 불러오지 못했습니다.");
+}
+
+export async function stopValidationJob(jobId: number): Promise<ValidationJob> {
+  return requestJson<ValidationJob>(`/api/validation/jobs/${jobId}/stop`, { method: "POST" }, "검수 중단을 요청하지 못했습니다.");
 }
 
 export async function downloadValidationReportArchive(

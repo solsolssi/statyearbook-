@@ -101,7 +101,7 @@ export function AppHeader({
           ) : (
             <Upload aria-hidden="true" size={18} />
           )}
-          <span>{uploadState === "uploading" ? "처리 중" : "연보 업로드"}</span>
+          <span>{uploadState === "uploading" ? "처리 중" : "연보 등록"}</span>
         </button>
         <button
           className="report-upload-button report-compare-button"
@@ -287,7 +287,7 @@ function UploadDecisionDialog({
       >
         <div className="upload-dialog__header">
           <div>
-            <h2 id="upload-dialog-title">연보 업로드</h2>
+            <h2 id="upload-dialog-title">연보 등록</h2>
           </div>
           <button className="icon-button" type="button" aria-label="닫기" onClick={onClose}>
             <X aria-hidden="true" size={20} />

@@ -40,9 +40,9 @@ export function ValidationTypeFilter({
       </summary>
       <div className="validation-type-filter__menu">
         <div className="validation-type-filter__heading">
-          <strong>표시할 확인 항목</strong>
+          <strong>목록에 포함할 검수 항목</strong>
           <button type="button" onClick={toggleAllVisible} disabled={enabledTypes.length === 0}>
-            {allVisible ? "모두 숨기기" : "모두 표시"}
+            {allVisible ? "전체 해제" : "전체 선택"}
           </button>
         </div>
         <div className="validation-type-filter__options">

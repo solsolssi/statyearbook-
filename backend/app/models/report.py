@@ -201,6 +201,7 @@ class StatTableSummary(BaseModel):
     summary: list[str] = Field(default_factory=list)
     key_figures: list[Metric] = Field(default_factory=list)
     checks: list[ValidationIssue] = Field(default_factory=list)
+    validated_types: list[str] = Field(default_factory=list)
     is_test_table: bool = False
     generation_status: str = ""
     generation_status_label: str = ""
@@ -333,6 +334,23 @@ class ValidationRunResult(BaseModel):
     reused_report_count: int = 0
     reused_table_count: int = 0
     reused_check_count: int = 0
+    cancelled: bool = False
+
+
+class ValidationJob(BaseModel):
+    id: int
+    report_id: int
+    status: Literal["queued", "running", "completed", "stopped", "failed"]
+    current_stage: str
+    progress_percent: int = 0
+    completed_units: int = 0
+    total_units: int = 0
+    cancel_requested: bool = False
+    result: ValidationRunResult | None = None
+    error_message: str = ""
+    created_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
 
 
 class ValidationReuseRunOption(BaseModel):

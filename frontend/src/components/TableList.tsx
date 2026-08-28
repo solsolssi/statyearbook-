@@ -4,9 +4,11 @@ import { Search, SlidersHorizontal } from "lucide-react";
 import type { StatTableSummary, TableStatus } from "../types";
 import { groupedValidationIssueCount } from "../utils/validationGrouping";
 import { StatusBadge } from "./StatusBadge";
+import type { ReportReviewStage } from "../utils/validationVisibility";
 
 interface TableListProps {
   tables: StatTableSummary[];
+  reviewStage?: ReportReviewStage;
   activeTableId: string;
   query: string;
   filter: TableStatus | "all" | "has_issues";
@@ -28,6 +30,7 @@ const filterOptions: Array<{ value: TableStatus | "all" | "has_issues"; label: s
 
 export function TableList({
   tables,
+  reviewStage = "validated",
   activeTableId,
   query,
   filter,
@@ -68,11 +71,21 @@ export function TableList({
               onFilterChange(event.target.value as TableStatus | "all" | "has_issues")
             }
           >
-            {filterOptions.map((option) => (
-              <option value={option.value} key={option.value}>
-                {option.label}
-              </option>
-            ))}
+            {filterOptions
+              .filter((option) =>
+                reviewStage === "unvalidated"
+                  ? ["all", "normal"].includes(option.value)
+                  : reviewStage === "draft"
+                    ? ["all", "normal", "needs_review"].includes(option.value)
+                    : true,
+              )
+              .map((option) => (
+                <option value={option.value} key={option.value}>
+                  {reviewStage !== "validated" && option.value === "normal"
+                    ? "검수 전"
+                    : option.label}
+                </option>
+              ))}
           </select>
         </div>
       </div>

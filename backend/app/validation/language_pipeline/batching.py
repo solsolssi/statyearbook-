@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from app.validation.blue_review import normalize_review_text
 from app.validation.language_pipeline.models import SourceReviewItem
@@ -176,3 +177,85 @@ def take_contexts(
             seen.add(key)
         selected.append(item)
     return selected
+
+
+def compatible_review_share_key(item: SourceReviewItem) -> str | None:
+    """Return a conservative, same-run key for one reusable LLM decision.
+
+    Raw text alone is not sufficient for translation reuse.  The same label
+    can have a different meaning in another table, unit, or header position.
+    This key deliberately keeps those semantic inputs while omitting physical
+    table ids and row numbers, allowing repeated cells in compatible physical
+    tables to be reviewed once during the current run.
+    """
+
+    if item.source_record_type != "candidate" or item.source_kind != "document":
+        return None
+    if item.requested_review_type not in {SPELLING_CHECK_TYPE, TRANSLATION_CHECK_TYPE}:
+        return None
+
+    current_value = normalize_review_text(item.current_value)
+    if not current_value or not re.search(r"[A-Za-z가-힣]", current_value):
+        # Number-only and punctuation-only values require their surrounding
+        # values to distinguish decimal, thousands, and notation conventions.
+        return None
+    if item.requested_review_type == TRANSLATION_CHECK_TYPE and not (
+        normalize_review_text(item.korean_text)
+        and normalize_review_text(item.english_text)
+    ):
+        return None
+
+    location = normalize_review_text(item.location)
+    location_kind = (
+        "표 셀"
+        if re.fullmatch(r"\d+행 \d+열(?: \(\d+/\d+\))?", location)
+        else re.sub(r"\s*\(\d+/\d+\)$", "", location)
+    )
+    payload = {
+        "review_type": item.requested_review_type,
+        "candidate_kind": item.candidate_kind,
+        "current_value": current_value,
+        "location_kind": location_kind,
+        "table_title": normalize_review_text(item.table_title),
+        "table_title_en": normalize_review_text(item.table_title_en),
+        "unit": normalize_review_text(item.unit),
+        "row_label": normalize_review_text(item.row_label),
+        "column_label": normalize_review_text(item.column_label),
+        "surrounding_rows": [
+            _normalize_context_numbers(value) for value in item.surrounding_rows
+        ],
+        "prompt_version": item.prompt_version,
+        "glossary": compact_prompt_glossary(item.glossary_matches or []),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def collapse_compatible_review_items(
+    items: list[SourceReviewItem],
+) -> tuple[list[SourceReviewItem], dict[int, list[SourceReviewItem]]]:
+    """Collapse context-compatible candidates for this execution only."""
+
+    representatives: list[SourceReviewItem] = []
+    representative_by_key: dict[str, SourceReviewItem] = {}
+    shared_items: dict[int, list[SourceReviewItem]] = {}
+
+    for item in items:
+        key = compatible_review_share_key(item)
+        representative = representative_by_key.get(key) if key else None
+        if representative is None:
+            representatives.append(item)
+            if key:
+                representative_by_key[key] = item
+            continue
+        shared_items.setdefault(representative.issue_id, []).append(item)
+
+    return representatives, shared_items
+
+
+def _normalize_context_numbers(value: str) -> str:
+    return re.sub(
+        r"(?<![A-Za-z])[-+]?\d[\d,.:/~-]*(?![A-Za-z])",
+        "<NUM>",
+        normalize_review_text(value),
+    )

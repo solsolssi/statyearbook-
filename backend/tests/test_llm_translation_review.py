@@ -10,6 +10,7 @@ from app.db.connection import connect
 from app.db.schema import init_db, repair_misaligned_linguistic_reviews
 from app.validation.blue_review import insert_blue_review
 from app.validation.linguistic_review import prepare_linguistic_reviews
+from app.validation.language_pipeline.batching import collapse_compatible_review_items
 from app.validation.llm_translation_review import (
     ResponsesAPIClient,
     SourceReviewItem,
@@ -21,6 +22,7 @@ from app.validation.llm_translation_review import (
     is_standard_language_item,
     expected_is_existing_bilingual_text,
     expected_drops_bilingual_context,
+    expand_same_run_shared_decisions,
     linguistic_review_fingerprint,
     llm_decision_needs_retry,
     load_linguistic_review_items,
@@ -1132,6 +1134,145 @@ class LLMTranslationReviewTest(unittest.TestCase):
             {"오탈자 검수", "번역 검수"},
         )
 
+    def test_responses_client_returns_one_context_object_as_flat_decisions(self) -> None:
+        spelling = self.source_item(
+            issue_id=11,
+            source_rule_id="source.linguistic_review",
+            candidate_kind="language_spelling",
+            requested_review_type="오탈자 검수",
+            current_value="서울 Seoul",
+            location="2행 1열",
+        )
+        translation = self.source_item(
+            issue_id=12,
+            source_rule_id="source.linguistic_review",
+            candidate_kind="translation_pair",
+            requested_review_type="번역 검수",
+            current_value="서울 Seoul",
+            location="2행 1열",
+        )
+        client = ResponsesAPIClient(
+            api_key="test-key",
+            model="openai/gpt-5-mini",
+            base_url="https://example.invalid/v1",
+            timeout=10,
+            provider="bizrouter",
+        )
+        captured: dict[str, object] = {}
+
+        def fake_post(body: dict[str, object]) -> dict[str, object]:
+            captured.update(body)
+            return {
+                "output_text": json.dumps(
+                    {
+                        "items": [
+                            {
+                                "context_token": review_context_token(spelling),
+                                "reviews": [
+                                    {
+                                        "id": 11,
+                                        "status": "정상",
+                                        "defect_kind": "none",
+                                        "expected_value": "__UNCHANGED__",
+                                        "difference": "정상",
+                                        "detail": "철자를 확인했습니다.",
+                                    },
+                                    {
+                                        "id": 12,
+                                        "status": "정상",
+                                        "defect_kind": "none",
+                                        "expected_value": "__UNCHANGED__",
+                                        "difference": "정상",
+                                        "detail": "번역을 확인했습니다.",
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            }
+
+        client._post = fake_post  # type: ignore[method-assign]
+        decisions = client.review([spelling, translation])
+
+        self.assertEqual(len(decisions), 2)
+        self.assertEqual(
+            {decision["issue_type"] for decision in decisions},
+            {"오탈자 검수", "번역 검수"},
+        )
+        schema = captured["text"]  # type: ignore[index]
+        self.assertIn("reviews", json.dumps(schema, ensure_ascii=False))
+
+    def test_same_run_sharing_requires_compatible_semantic_context(self) -> None:
+        first = self.source_item(
+            issue_id=21,
+            source_rule_id="source.linguistic_review",
+            source_record_type="candidate",
+            source_kind="document",
+            table_id=1,
+            table_code="4-1-1-6 표1",
+            table_title="인구 규모별 행정구역",
+            table_title_en="Administrative Districts by Population",
+            candidate_kind="translation_pair",
+            requested_review_type="번역 검수",
+            current_value="연도 Year",
+            korean_text="연도",
+            english_text="Year",
+            location="2행 1열",
+            row_label="연도 Year",
+            column_label="연도 Year",
+            surrounding_rows=["2024 | 10"],
+        )
+        compatible = self.source_item(
+            **{
+                **first.__dict__,
+                "issue_id": 22,
+                "table_id": 2,
+                "table_code": "4-1-1-6 표2",
+                "location": "8행 1열",
+                "surrounding_rows": ["2025 | 12"],
+            }
+        )
+        incompatible = self.source_item(
+            **{
+                **first.__dict__,
+                "issue_id": 23,
+                "table_id": 3,
+                "table_code": "6-1-1",
+                "table_title": "다른 통계",
+            }
+        )
+
+        representatives, shared = collapse_compatible_review_items(
+            [first, compatible, incompatible]
+        )
+
+        self.assertEqual([item.issue_id for item in representatives], [21, 23])
+        self.assertEqual([item.issue_id for item in shared[21]], [22])
+
+        shared_items, shared_decisions = expand_same_run_shared_decisions(
+            [first],
+            [
+                {
+                    "id": 21,
+                    "context_token": review_context_token(first),
+                    "status": "정상",
+                    "issue_type": "번역 검수",
+                    "expected_value": "__UNCHANGED__",
+                    "difference": "정상",
+                    "detail": "번역을 확인했습니다.",
+                }
+            ],
+            shared,
+        )
+        self.assertEqual([item.issue_id for item in shared_items], [22])
+        self.assertEqual(shared_decisions[0]["id"], 22)
+        self.assertEqual(
+            shared_decisions[0]["context_token"],
+            review_context_token(compatible),
+        )
+
     def test_interleaved_review_types_are_regrouped_before_batching(self) -> None:
         items = [
             self.source_item(
@@ -1183,6 +1324,42 @@ class LLMTranslationReviewTest(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision["status"], "정상")  # type: ignore[index]
         self.assertEqual(decision["expected_value"], "서울 Seoul")  # type: ignore[index]
+
+    def test_exact_audited_standard_label_is_resolved_without_glossary(self) -> None:
+        for review_type in ("오탈자 검수", "번역 검수"):
+            item = self.source_item(
+                source_rule_id="source.linguistic_review",
+                candidate_kind=(
+                    "language_spelling"
+                    if review_type == "오탈자 검수"
+                    else "translation_pair"
+                ),
+                requested_review_type=review_type,
+                current_value="합계 Total",
+                korean_text="합계",
+                english_text="Total",
+                glossary_matches=[],
+            )
+            decision = glossary_decision_for(item)
+            self.assertIsNotNone(decision)
+            self.assertEqual(decision["status"], "정상")  # type: ignore[index]
+
+    def test_standard_label_rule_never_uses_substring_match(self) -> None:
+        item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="language_spelling",
+            requested_review_type="오탈자 검수",
+            current_value="구분 Claasification 기관 Organization",
+            korean_text="구분 기관",
+            english_text="Claasification Organization",
+            glossary_matches=[],
+        )
+
+        decision = glossary_decision_for(item)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision["status"], "오류 의심")  # type: ignore[index]
+        self.assertIn("Classification", decision["expected_value"])  # type: ignore[index]
 
     def test_official_organization_name_overrides_polluted_yearbook_translation(self) -> None:
         item = self.source_item(

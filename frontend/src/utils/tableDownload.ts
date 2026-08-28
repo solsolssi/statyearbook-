@@ -57,7 +57,6 @@ function reportWorkbookSheets(selections: ReportWorkbookSelection[]) {
   const tablePartRows = selections.flatMap((selection) =>
     selection.tables.flatMap((table) =>
       downloadParts(table).map((part, partIndex) => ({
-        report: selection.report,
         table,
         part,
         partIndex,
@@ -65,46 +64,16 @@ function reportWorkbookSheets(selections: ReportWorkbookSelection[]) {
     ),
   );
 
-  return [
-    {
-      title: "목차",
-      rows: [
-        ["선택 연보 수", String(selections.length)],
-        [
-          "전체 표 수",
-          String(selections.reduce((sum, selection) => sum + selection.tables.length, 0)),
-        ],
-        ["전체 시트 수", String(tablePartRows.length)],
-        [],
-        ["연보", "연보 ID", "표 번호", "표 제목", "하위 표", "행 수", "열 수"],
-        ...tablePartRows.map(({ report, table, part }) => [
-          report.title || report.file_name || String(report.year),
-          String(report.id),
-          part.code || table.code,
-          part.title || table.title,
-          part.part_label,
-          String(part.rows.length),
-          String(part.columns.length),
-        ]),
-      ],
-    },
-    ...tablePartRows.map(({ report, table, part, partIndex }) => ({
-      title: `${report.year}_${part.code || table.code}_${part.part_label || partIndex + 1}`,
-      rows: [
-        ["연보"],
-        ["연보 ID", String(report.id)],
-        ["연보 연도", String(report.year)],
-        ["연보 제목", report.title],
-        ["원본 파일", report.file_name],
-        [],
-        ["메타데이터"],
-        ...metadataRows(table, part),
-        [],
-        ["표"],
-        ...tableRows(part),
-      ],
-    })),
-  ];
+  return tablePartRows.map(({ table, part, partIndex }) => ({
+    title: sheetTitle(table, part, partIndex),
+    rows: [
+      ["메타데이터"],
+      ...metadataRows(table, part),
+      [],
+      ["표"],
+      ...tableRows(part),
+    ],
+  }));
 }
 
 function downloadParts(table: StatTable): StatTablePart[] {
@@ -158,8 +127,6 @@ function metadataRows(table: StatTable, part: StatTablePart) {
     ["내선번호", metadata.source_extension],
     ["출처", metadata.source_reference],
     ["주석", metadata.note],
-    ["원본 파일", metadata.original_file],
-    ["시트", metadata.sheet_name],
     ["추출일", metadata.extracted_at],
   ]);
 }
@@ -332,7 +299,9 @@ function safeSheetName(value: string) {
 }
 
 function sheetTitle(table: StatTable, part: StatTablePart, index: number) {
-  return part.part_label || part.code || part.title || `${table.title} ${index + 1}`;
+  const code = part.code || table.code;
+  const title = part.title || table.title;
+  return [code, title].filter((value) => value.trim()).join(" ") || `통계표 ${index + 1}`;
 }
 
 function uniqueSheetNames(values: string[]) {

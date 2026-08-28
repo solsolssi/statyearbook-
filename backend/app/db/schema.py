@@ -77,6 +77,28 @@ ON stat_tables(report_id, table_order);
 CREATE INDEX IF NOT EXISTS idx_stat_table_cells_table_position
 ON stat_table_cells(table_id, row_index, col_index);
 
+CREATE TABLE IF NOT EXISTS validation_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id INTEGER NOT NULL,
+    options_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'queued',
+    current_stage TEXT NOT NULL DEFAULT '대기 중',
+    progress_percent INTEGER NOT NULL DEFAULT 0,
+    completed_units INTEGER NOT NULL DEFAULT 0,
+    total_units INTEGER NOT NULL DEFAULT 0,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    result_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at TEXT,
+    completed_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_validation_jobs_report_status
+ON validation_jobs(report_id, status, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS yearbook_edit_passwords (
     report_id INTEGER NOT NULL,
     table_key TEXT NOT NULL,
