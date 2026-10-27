@@ -13,6 +13,9 @@ from app.core.env import env_value, load_local_env_file
 RESPONSES_PATH = "/responses"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_BIZROUTER_BASE_URL = "https://api.bizrouter.ai/v1"
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+DEFAULT_OLLAMA_MODEL = "qwen3-coder:30b"
+OLLAMA_CHAT_PATH = "/api/chat"
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,7 @@ class LLMClientSettings:
     model: str
     base_url: str
     timeout: int
+    num_ctx: int = 0
 
 
 def resolve_llm_client_settings(
@@ -33,8 +37,8 @@ def resolve_llm_client_settings(
 ) -> LLMClientSettings:
     load_local_env_file()
     provider = os.getenv("LLM_PROVIDER", "auto").strip().lower()
-    if provider not in {"auto", "openai", "bizrouter"}:
-        raise ValueError("LLM_PROVIDER must be auto, openai, or bizrouter")
+    if provider not in {"auto", "openai", "bizrouter", "ollama"}:
+        raise ValueError("LLM_PROVIDER must be auto, openai, bizrouter, or ollama")
 
     bizrouter_key = os.getenv("BIZROUTER_API_KEY", "").strip()
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -42,6 +46,20 @@ def resolve_llm_client_settings(
         provider = "bizrouter" if bizrouter_key else "openai"
     enabled = env_value("LLM_REVIEW_ENABLED", "OPENAI_LLM_REVIEW_ENABLED", default="1")
 
+    if provider == "ollama":
+        # A local Ollama server needs no key; the placeholder keeps the
+        # existing "key present" gates working for the offline provider.
+        return LLMClientSettings(
+            enabled=enabled not in {"0", "false", "no", "off"},
+            provider=provider,
+            api_key="ollama",
+            api_key_env="OLLAMA_MODEL",
+            model=os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL,
+            base_url=os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).rstrip("/"),
+            # Local 30B models are much slower than hosted APIs.
+            timeout=max(int(env_value("LLM_REVIEW_TIMEOUT", default="600")), 10),
+            num_ctx=ollama_num_ctx(),
+        )
     if provider == "bizrouter":
         return LLMClientSettings(
             enabled=enabled not in {"0", "false", "no", "off"},
@@ -76,9 +94,14 @@ class ResponsesTransport:
         self._opener = opener or request.urlopen
 
     def create(self, body: dict[str, Any]) -> dict[str, Any]:
+        if self.settings.provider == "ollama":
+            return ollama_to_responses(self._post(OLLAMA_CHAT_PATH, responses_to_ollama(body, self.settings)))
+        return self._post(RESPONSES_PATH, body)
+
+    def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         api_request = request.Request(
-            f"{self.settings.base_url}{RESPONSES_PATH}",
+            f"{self.settings.base_url}{path}",
             data=payload,
             headers={
                 "Authorization": f"Bearer {self.settings.api_key}",
@@ -108,6 +131,59 @@ class ResponsesTransport:
             delay = retry_after or min(2**attempt, 16)
             time.sleep(delay + (attempt + 1) * 0.25)
         raise RuntimeError(f"{self.settings.provider} Responses API request failed after retries")
+
+
+def ollama_num_ctx() -> int:
+    return max(int(env_value("OLLAMA_NUM_CTX", default="32768")), 2048)
+
+
+def responses_to_ollama(body: dict[str, Any], settings: LLMClientSettings) -> dict[str, Any]:
+    """Translate a Responses API request into an Ollama /api/chat request."""
+
+    messages: list[dict[str, str]] = []
+    for message in body.get("input", []):
+        content = message.get("content", "")
+        if isinstance(content, list):
+            content = "\n".join(
+                str(part.get("text", "")) for part in content if isinstance(part, dict)
+            )
+        messages.append({"role": str(message.get("role", "user")), "content": str(content)})
+
+    chat_body: dict[str, Any] = {
+        "model": body.get("model") or settings.model,
+        "messages": messages,
+        "stream": False,
+        "options": {"temperature": 0},
+    }
+    # Ollama's default context is small; batched review prompts would be cut off.
+    chat_body["options"]["num_ctx"] = settings.num_ctx or ollama_num_ctx()
+    if body.get("max_output_tokens"):
+        chat_body["options"]["num_predict"] = int(body["max_output_tokens"])
+    text_format = body.get("text", {}).get("format", {})
+    if text_format.get("type") == "json_schema" and isinstance(text_format.get("schema"), dict):
+        chat_body["format"] = text_format["schema"]
+    elif text_format.get("type") == "json_object":
+        chat_body["format"] = "json"
+    return chat_body
+
+
+def ollama_to_responses(response: dict[str, Any]) -> dict[str, Any]:
+    """Shape an Ollama chat reply like a Responses API result for existing parsers."""
+
+    message = response.get("message")
+    text = message.get("content", "") if isinstance(message, dict) else ""
+    input_tokens = int(response.get("prompt_eval_count") or 0)
+    output_tokens = int(response.get("eval_count") or 0)
+    return {
+        "status": "incomplete" if response.get("done_reason") == "length" else "completed",
+        "incomplete_details": {"reason": "max_output_tokens"} if response.get("done_reason") == "length" else None,
+        "output_text": text,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    }
 
 
 def retry_after_seconds(body_text: str) -> float:

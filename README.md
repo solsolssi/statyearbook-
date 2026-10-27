@@ -452,6 +452,24 @@ PROFILE_LLM_MODEL=gpt-5-mini
 
 `LLM_PROVIDER=auto`는 BizRouter 키가 있으면 BizRouter를 우선하고, 없으면 OpenAI 설정을 사용합니다.
 
+### 인터넷 없이 Ollama로 실행
+
+`LLM_PROVIDER=ollama`로 두면 모든 LLM 호출(언어 검수, 파싱·증분 보조, 프로파일 보강)이 이 PC의 Ollama 서버로만 갑니다. API 키가 필요 없고 외부로 자료가 나가지 않습니다.
+
+```dotenv
+LLM_PROVIDER=ollama
+LLM_REVIEW_ENABLED=1
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen3-coder:30b
+OLLAMA_NUM_CTX=32768
+LLM_REVIEW_TIMEOUT=600
+LLM_REVIEW_CONCURRENCY=1
+```
+
+- 인터넷이 될 때 미리 `ollama pull qwen3-coder:30b`로 모델을 받아 두고, 백엔드 `pip install`과 프론트엔드 `npm install`도 끝내 둡니다. 그 뒤로는 오프라인에서 실행됩니다.
+- 요청은 OpenAI Responses 형식으로 만든 뒤 `backend/app/core/llm_client.py`에서 Ollama `/api/chat` 형식(JSON 스키마는 `format`)으로 바꿔 보냅니다.
+- 로컬 모델은 클라우드 모델보다 느리고 판정 품질이 낮을 수 있으므로, LLM 판정 결과는 반드시 사람이 확인합니다.
+
 ## CLI 작업
 
 최신 연보를 규칙과 사전 기반으로 검수:
