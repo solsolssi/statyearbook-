@@ -573,10 +573,12 @@ async function requestJson<T>(
 }
 
 function normalizeApiBaseUrl(value: string): string {
-  const normalized = value
-    .trim()
-    .replace(/^VITE_API_BASE_URL\s*=\s*/, "")
-    .replace(/\/+$/, "");
+  const trimmed = value.trim().replace(/^VITE_API_BASE_URL\s*=\s*/, "");
+  if (trimmed === "/") {
+    // Same origin: the backend serves this build, so any host or IP works.
+    return "";
+  }
+  const normalized = trimmed.replace(/\/+$/, "");
   return normalized || DEFAULT_API_BASE_URL;
 }
 

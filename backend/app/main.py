@@ -1,7 +1,10 @@
 from contextlib import asynccontextmanager
+import os
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
 from app.api.operations import router as operations_router
@@ -47,3 +50,11 @@ def readiness_check() -> dict[str, str]:
         "status": "ready",
         "database": configured_database_backend(),
     }
+
+
+# On a single in-house server the API also serves the built frontend
+# (`VITE_API_BASE_URL=/ npm run build`), so the whole app has one address.
+# Mounted last so it never shadows the API routes above.
+frontend_dist = os.getenv("FRONTEND_DIST_DIR", "").strip()
+if frontend_dist and Path(frontend_dist).is_dir():
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
