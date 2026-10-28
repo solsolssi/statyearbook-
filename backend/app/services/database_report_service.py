@@ -2104,7 +2104,11 @@ def build_rows(
                 value, label_en = split_bilingual_display_value(value)
                 if label_en:
                     row[f"{column.key}_en"] = label_en
-            row[column.key] = coerce_display_value(value)
+            display_value = coerce_display_value(value)
+            row[column.key] = display_value
+            if not isinstance(display_value, str) and str(display_value) != value.strip():
+                # Keep the printed notation (e.g. "8,370") so an editor can save it back unchanged.
+                row[f"{column.key}_text"] = value.strip()
             if is_label_column and row["_row_label_en"]:
                 row[f"{column.key}_en"] = row["_row_label_en"]
             elif is_bilingual_descriptor_column:

@@ -517,6 +517,40 @@
   pointer-events: none;
 }
 
+.editable-grid-row-delete {
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: #9e3030;
+  background: #fff4f4;
+  border: 1px solid #e3b6b6;
+  border-radius: 3px;
+  opacity: 0;
+  transform: translateY(-50%);
+  cursor: pointer;
+  transition: opacity 100ms ease, background-color 100ms ease;
+}
+
+.editable-data-grid tbody tr:hover .editable-grid-row-delete,
+.editable-grid-row-delete:focus-visible {
+  opacity: 1;
+}
+
+.editable-grid-row-delete:hover {
+  background: #fde4e4;
+}
+
+.editable-grid-shell.is-dragging .editable-grid-row-delete {
+  display: none;
+}
+
 .editable-data-grid th.is-drag-over {
   box-shadow: inset 3px 0 0 #3776ad;
 }

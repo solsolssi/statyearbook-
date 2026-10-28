@@ -734,7 +734,19 @@ function EditableDataGrid({
   }
 
   function removeRow(index: number) {
+    if (rows.length <= 1) {
+      window.alert("표에는 행이 한 개 이상 있어야 합니다.");
+      return;
+    }
     onRowsChange(rows.filter((_, rowIndex) => rowIndex !== index));
+  }
+
+  function confirmRemoveRow(index: number) {
+    const label = String(rows[index]?.[columns[0]?.key ?? ""] ?? "").trim();
+    if (window.confirm(`${index + 1}행${label ? ` ‘${label}’` : ""}을 삭제할까요?`)) {
+      closeEditor();
+      removeRow(index);
+    }
   }
 
   function startDrag(
@@ -1098,7 +1110,7 @@ function EditableDataGrid({
               >
                 {columns.map((column, columnIndex) => {
                   const editorKey = `cell-${rowIndex}-${column.key}`;
-                  const value = String(row[column.key] ?? "");
+                  const value = cellText(row, column.key);
                   const valueEn = String(row[`${column.key}_en`] ?? "");
                   const footnote = String(row[`${column.key}_footnote`] ?? "");
                   return (
@@ -1132,6 +1144,18 @@ function EditableDataGrid({
                         </span>
                         {valueEn ? <small>{valueEn}</small> : null}
                       </button>
+                      {columnIndex === 0 ? (
+                        <button
+                          className="editable-grid-row-delete"
+                          type="button"
+                          draggable={false}
+                          aria-label={`${rowIndex + 1}행 삭제`}
+                          title="이 행 삭제"
+                          onClick={() => confirmRemoveRow(rowIndex)}
+                        >
+                          <Trash2 aria-hidden="true" size={13} />
+                        </button>
+                      ) : null}
                       {activeEditor === editorKey ? (
                         <GridEditPopover
                           label={`${rowIndex + 1}행 · ${column.label}`}
@@ -1496,7 +1520,7 @@ export function buildTableUpdatePayload(
               : (columnIndex === 0
                   ? sourceColumnIndexes(column).at(-1) ?? columnIndex
                   : sourceColumnIndexes(column)[0] ?? columnIndex),
-            value: String(row[column.key] ?? ""),
+            value: cellText(row, column.key),
             value_en: String(row[`${column.key}_en`] ?? ""),
             footnote_marker: String(row[`${column.key}_footnote`] ?? ""),
           }));
@@ -1506,11 +1530,11 @@ export function buildTableUpdatePayload(
           (item) => Number(item._row_index) === sourceRowIndex,
         ) ?? baseline.rows[rowIndex] ?? {};
         return part.columns.flatMap((column, columnIndex) => {
-          const value = String(row[column.key] ?? "");
+          const value = cellText(row, column.key);
           const valueEn = String(row[`${column.key}_en`] ?? "");
           const footnote = String(row[`${column.key}_footnote`] ?? "");
           if (
-            value === String(previousRow[column.key] ?? "") &&
+            value === cellText(previousRow, column.key) &&
             valueEn === String(previousRow[`${column.key}_en`] ?? "") &&
             footnote === String(previousRow[`${column.key}_footnote`] ?? "")
           ) {
@@ -1557,6 +1581,16 @@ function tablePartColumnsChanged(original: StatTablePart, draft: StatTablePart) 
     return true;
   }
   return original.columns.some((column, index) => column.key !== draft.columns[index]?.key);
+}
+
+/** Text to save for a cell: the printed notation ("8,370") unless the value was edited. */
+function cellText(row: Record<string, string | number>, key: string) {
+  const value = row[key];
+  const printed = row[`${key}_text`];
+  if (typeof value === "number" && typeof printed === "string") {
+    return printed;
+  }
+  return String(value ?? "");
 }
 
 function tablePartRowsChanged(original: StatTablePart, draft: StatTablePart) {

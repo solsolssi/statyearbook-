@@ -287,6 +287,89 @@ describe("buildTableUpdatePayload", () => {
     expect(screen.getByRole("button", { name: "구분 헤더 수정" })).toBeTruthy();
   });
 
+  it("deletes a duplicated row with its delete button after confirmation", () => {
+    const source = tableFixture();
+    source.rows.push({ _row_index: 2, _row_label: "중복", c0: "중복", c1: 10 });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(createElement(TableEditView, {
+      table: source,
+      reportId: 1,
+      accessToken: "token",
+      onCancel: vi.fn(),
+      onSaved: vi.fn(),
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "2행 삭제" }));
+    expect(confirm).toHaveBeenLastCalledWith("2행 ‘중복’을 삭제할까요?");
+    expect(screen.getByRole("button", { name: "2행 구분 수정" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "2행 삭제" }));
+    expect(screen.queryByRole("button", { name: "2행 구분 수정" })).toBeNull();
+    expect(screen.getByRole("button", { name: "1행 구분 수정" }).textContent).toContain("합계");
+  });
+
+  it("keeps at least one row when deleting", () => {
+    const alert = vi.spyOn(window, "alert").mockImplementation(() => undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(createElement(TableEditView, {
+      table: tableFixture(),
+      reportId: 1,
+      accessToken: "token",
+      onCancel: vi.fn(),
+      onSaved: vi.fn(),
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "1행 삭제" }));
+
+    expect(alert).toHaveBeenCalledWith("표에는 행이 한 개 이상 있어야 합니다.");
+    expect(screen.getByRole("button", { name: "1행 구분 수정" })).toBeTruthy();
+  });
+
+  it("sends renumbered rows after a row is deleted", () => {
+    const original = tableFixture();
+    original.rows.push(
+      { _row_index: 2, _row_label: "중복", c0: "중복", c1: 10 },
+      { _row_index: 3, _row_label: "다음", c0: "다음", c1: 5 },
+    );
+    const draft = structuredClone(original);
+    draft.rows.splice(1, 1);
+
+    const payload = buildTableUpdatePayload(original, draft);
+
+    expect(payload.parts[0].replace_rows).toBe(true);
+    expect(payload.parts[0].cells.map((cell) => [cell.row_index, cell.value])).toEqual([
+      [1, "합계"], [1, "10"], [2, "다음"], [2, "5"],
+    ]);
+  });
+
+  it("keeps the printed thousands separators when rows are rewritten", () => {
+    const original = tableFixture();
+    original.rows = [
+      { _row_index: 1, _row_label: "합계", c0: "합계", c1: 8370, c1_text: "8,370" },
+      { _row_index: 2, _row_label: "중복", c0: "중복", c1: 53 },
+      { _row_index: 3, _row_label: "연도", c0: "연도", c1: 2026 },
+    ];
+    const draft = structuredClone(original);
+    draft.rows.splice(1, 1);
+
+    const payload = buildTableUpdatePayload(original, draft);
+
+    expect(payload.parts[0].cells.map((cell) => cell.value)).toEqual(["합계", "8,370", "연도", "2026"]);
+  });
+
+  it("saves the edited value instead of the printed notation", () => {
+    const original = tableFixture();
+    original.rows = [{ _row_index: 1, _row_label: "합계", c0: "합계", c1: 8370, c1_text: "8,370" }];
+    const draft = structuredClone(original);
+    draft.rows[0].c1 = "9,000";
+
+    const payload = buildTableUpdatePayload(original, draft);
+
+    expect(payload.parts[0].cells).toEqual([
+      { row_index: 1, col_index: 1, value: "9,000", value_en: "", footnote_marker: "" },
+    ]);
+  });
+
   it("reorders rows by dragging one row handle onto another row", () => {
     const source = tableFixture();
     source.rows.push({ _row_index: 2, _row_label: "둘째", c0: "둘째", c1: 20 });

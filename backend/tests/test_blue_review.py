@@ -566,6 +566,23 @@ class TableDisplayParsingTests(unittest.TestCase):
         self.assertEqual(rows[0]["c1"], "서구")
         self.assertEqual(rows[0]["c1_en"], "Seo-gu")
 
+    def test_numeric_cells_keep_their_printed_notation_for_editing(self) -> None:
+        matrix = [
+            ["구분\nClassification", "2026", "비율"],
+            ["계\nTotal", "8,370", "41.6"],
+            ["2026", "53", "-"],
+        ]
+
+        label_columns = leading_label_column_indexes(matrix, 1)
+        columns = build_columns(matrix, 1, label_columns)
+        rows = build_rows(matrix, columns, 1, label_column_indexes=label_columns)
+
+        self.assertEqual(rows[0]["c1"], 8370)
+        self.assertEqual(rows[0]["c1_text"], "8,370")
+        self.assertNotIn("c2_text", rows[0])
+        self.assertNotIn("c1_text", rows[1])
+        self.assertNotIn("c2_text", rows[1])
+
     def test_year_measure_header_is_not_merged_into_label_column(self) -> None:
         matrix = [
             ["구분\nClassification", "2010", "2011"],
